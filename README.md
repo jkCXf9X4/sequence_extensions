@@ -3,7 +3,7 @@
 provides high order functions as extesions for the custom list class in python
 
 ```python 
-l = ext_list([1, 2, 3, 4])
+l = list_ext([1, 2, 3, 4])
 
 l.map(lambda x: x*2)
 [2, 4, 6, 8]

@@ -1,16 +1,20 @@
 # this code is free to use, copy, change and do anything that c
 
+from collections import ChainMap
 from functools import reduce
 
 
-class ext_list(list):
+class list_ext(list):
+    """
+    Extend the normal list class
+    """
 
     def map(self, func):
         """
         Map function over the list
         func(x) -> y
 
-        ext_list(map(func, list))
+        list_ext(map(func, list))
         """
         return type(self)(map(func, self))
 
@@ -19,7 +23,7 @@ class ext_list(list):
         Filter the list using func
         func(x) -> bool
 
-        ext_list(filter(func, list))
+        list_ext(filter(func, list))
         """
         return type(self)(filter(func, self))
 
@@ -36,7 +40,7 @@ class ext_list(list):
         """
         Zip list together with iterables
 
-        ext_list(zip(self, *iterables))
+        list_ext(zip(self, *iterables))
         """
         return type(self)(zip(self, *iterables))
 
@@ -106,7 +110,7 @@ class ext_list(list):
 
     def to_type(self, t):
         """
-        ext_list([t(x) for x in list])
+        list_ext([t(x) for x in list])
         """
         return type(self)([t(i) for i in self])
 
@@ -143,11 +147,28 @@ class ext_list(list):
         """
         return tuple(self)
 
-    def to_dict(self, keys):
+    def to_dict(self, items, key=True):
         """
         Convert to dict
         """
-        return {j: i for i, j in self.zip(keys)}
+
+        def f(i, j):
+            return (j, i) if key else (i, j)
+
+        return dict(f(i, j) for i, j in self.zip(items))
+
+    def to_dict_fn(self, func_key=None, func_value=None):
+        """
+        Convert to dict using a
+        {func(i): i for i in self}
+        """
+
+        def f(i):
+            k = func_key(i) if func_key else i
+            v = func_value(i) if func_value else i
+            return (k, v)
+
+        return dict(f(i) for i in self)
 
     def all(self, func) -> bool:
         """
@@ -205,3 +226,10 @@ class ext_list(list):
         Return a list of the set containing all the items
         """
         return type(self)(set(self) | set(l))
+
+    def chainmap(self: list[dict]):
+        """
+        Chain multiple dicts together
+        """
+
+        return dict(ChainMap(*self))

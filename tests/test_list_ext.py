@@ -1,22 +1,22 @@
 import pytest
-from sequence_extensions.ext_list import ext_list
+from sequence_extensions import list_ext
 
 
 @pytest.fixture
 def simple_int_list():
-    return ext_list([1, 2, 3, 4])
+    return list_ext([1, 2, 3, 4])
 
 
 @pytest.fixture
 def empty_list():
-    return ext_list([])
+    return list_ext([])
 
 
 def test_init_1():
-    l1 = ext_list([1, 2, 3, 4])
+    l1 = list_ext([1, 2, 3, 4])
     assert l1[0] == 1
 
-    l2 = ext_list()
+    l2 = list_ext()
     l2.append(1)
     assert l2[0] == 1
 
@@ -43,7 +43,7 @@ def test_reduce(simple_int_list):
 
 
 def test_zip():
-    a = ext_list([1, 2])
+    a = list_ext([1, 2])
 
     b = [1, 2]
 
@@ -119,7 +119,7 @@ def test_to_string_pre(simple_int_list):
 
 
 def test_of_type():
-    l = ext_list([1, "2"])
+    l = list_ext([1, "2"])
     assert l.of_type(str) == ["2"]
 
 
@@ -135,6 +135,12 @@ def test_to_dict(simple_int_list):
     d = simple_int_list.to_dict(["a", "b", "c", "d"])
 
     assert d == {"a": 1, "b": 2, "c": 3, "d": 4}
+
+
+def test_to_dict_fn(simple_int_list):
+    d = simple_int_list.to_dict_fn(func_value=lambda x: x * 2)
+
+    assert d == {1: 2, 2: 4, 3: 6, 4: 8}
 
 
 def test_all(simple_int_list):
@@ -169,7 +175,16 @@ def test_single(simple_int_list):
     l = simple_int_list.single(lambda x: x == 2)
     assert l == 2
 
-    assert ext_list([2]).single() == 2
+    assert list_ext([2]).single() == 2
 
     with pytest.raises(Exception):
         l = simple_int_list.single(lambda x: x % 2 == 0)
+
+
+def test_chainmap():
+
+    l = list_ext([{"a": 1}, {"b": 2}, {"c": 3}])
+
+    d = l.chainmap()
+
+    assert d == {"a": 1, "b": 2, "c": 3}
