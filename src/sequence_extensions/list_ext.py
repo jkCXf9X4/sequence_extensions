@@ -2,6 +2,7 @@
 
 from collections import ChainMap
 from functools import reduce
+from statistics import mean
 
 
 class list_ext(list):
@@ -50,6 +51,27 @@ class list_ext(list):
         [func(i) for i in list]
         """
         [func(i) for i in self]
+
+    def pairwice(self, func):
+        """
+        [a1, a2, a3, a4, ...]
+
+        [func(a1, a2), func(a2, a3),...]
+        """
+
+        return self.window(func, n=2)
+
+    def window(self, func, n=2):
+        """
+        Apply func to a sliding/rolling window of size n
+        [a1, a2, a3, a4, ...]
+
+        for n=2
+        [func(a1, a2), func(a2, a3),...]
+        n=3
+        [func(a1, a2, a3), func(a2, a3, a4),...]
+        """
+        return type(self)([func(*self[i : i + n]) for i in range(len(self) - n + 1)])
 
     @staticmethod
     def execute_or_default(func, default=None, exception=Exception):
@@ -151,38 +173,40 @@ class list_ext(list):
         """
         Convert to dict
         """
+        from sequence_extensions import dict_ext
 
         def f(i, j):
             return (j, i) if key else (i, j)
 
-        return dict(f(i, j) for i, j in self.zip(items))
+        return dict_ext(f(i, j) for i, j in self.zip(items))
 
-    def to_dict_fn(self, func_key=None, func_value=None):
+    def to_dict_fn(self, key_func=None, value_func=None):
         """
         Convert to dict using a
         {func(i): i for i in self}
         """
+        from sequence_extensions import dict_ext
 
         def f(i):
-            k = func_key(i) if func_key else i
-            v = func_value(i) if func_value else i
+            k = key_func(i) if key_func else i
+            v = value_func(i) if value_func else i
             return (k, v)
 
-        return dict(f(i) for i in self)
+        return dict_ext(f(i) for i in self)
 
-    def all(self, func) -> bool:
+    def all(self, func=None) -> bool:
         """
         Check if all items fullfill the condition
         """
-        l = self.map(func)
+        l = self.map(func) if func != None else self
         return all(l)
 
-    def any(self, func) -> bool:
+    def any(self, func=None) -> bool:
         """
         Check if at least one item fullfill the condition
 
         """
-        l = self.map(func)
+        l = self.map(func) if func != None else self
         return any(l)
 
     def contains(self, x) -> bool:
@@ -231,5 +255,15 @@ class list_ext(list):
         """
         Chain multiple dicts together
         """
+        from sequence_extensions import dict_ext
 
-        return dict(ChainMap(*self))
+        return dict_ext(ChainMap(*self))
+
+    def average(self):
+        return mean(self)
+
+    def max(self):
+        return max(self)
+
+    def min(self):
+        return min(self)

@@ -115,3 +115,11 @@ def test_inverse(int_dict):
 
     assert inv == {1:"a", 2: 'b', 3: 'c', 4: 'd'}
 
+
+def test_inverse(int_dict):
+
+    kv = int_dict.first()
+
+    assert kv.key == "a"
+    assert kv.value == 1
+

@@ -138,7 +138,7 @@ def test_to_dict(simple_int_list):
 
 
 def test_to_dict_fn(simple_int_list):
-    d = simple_int_list.to_dict_fn(func_value=lambda x: x * 2)
+    d = simple_int_list.to_dict_fn(value_func=lambda x: x * 2)
 
     assert d == {1: 2, 2: 4, 3: 6, 4: 8}
 
@@ -150,6 +150,11 @@ def test_all(simple_int_list):
     results = simple_int_list.all(lambda x: False)
     assert results == False
 
+    l1 = list_ext([True, True])
+    assert l1.all() == True
+    l2 = list_ext([True, False])
+    assert l2.all() == False
+
 
 def test_any(simple_int_list):
     results = simple_int_list.any(lambda x: x == 1)
@@ -157,6 +162,11 @@ def test_any(simple_int_list):
 
     results = simple_int_list.any(lambda x: x == 6)
     assert results == False
+
+    l1 = list_ext([True, True])
+    assert l1.any() == True
+    l2 = list_ext([True, False])
+    assert l2.any() == True
 
 
 def test_contains(simple_int_list):
@@ -188,3 +198,15 @@ def test_chainmap():
     d = l.chainmap()
 
     assert d == {"a": 1, "b": 2, "c": 3}
+
+
+def test_window(simple_int_list):
+    def f(a, b):
+        return a + b
+
+    assert simple_int_list.pairwice(f) == [3, 5, 7]
+
+    def f(a, b, c):
+        return a + b + c
+
+    assert simple_int_list.window(f, n=3) == [6, 9]

@@ -2,6 +2,7 @@
 
 from functools import reduce
 from typing import Any, Callable, NamedTuple
+from sequence_extensions import list_ext
 
 
 class KeyValueTuple(NamedTuple):
@@ -38,7 +39,19 @@ class dict_ext(dict):
         """
         [[key, value],..]
         """
-        return [[key, value] for key, value in self.items()]
+        return list_ext([[key, value] for key, value in self.items()])
+
+    def to_key_list(self):
+        """
+        [[key, value],..]
+        """
+        return list_ext(self.keys())
+    
+    def to_value_list(self):
+        """
+        [[key, value],..]
+        """
+        return list_ext(self.values())
 
     def to_tuple(self):
         """
@@ -60,7 +73,7 @@ class dict_ext(dict):
         A list of all keys will be returned
         """
 
-        return [key for key, val in self.items() if val == value]
+        return list_ext([key for key, val in self.items() if val == value])
 
     def reduce(self, func : Callable[[KeyValueTuple, KeyValueTuple], tuple[Any, Any]]):
         """
@@ -99,3 +112,14 @@ class dict_ext(dict):
         {key:value} -> {value:key}
         """
         return type(self)({value:key for key, value in self.items()})
+
+    def first(self, func=None):
+        """
+        filter list on func, return first item in the filtered list
+        will raise IndexError if no item is found
+
+        if func == None the first item will be returned
+        """
+        l = self.filter(func) if func != None else self
+
+        return KeyValueTuple(*l.to_list()[0])
