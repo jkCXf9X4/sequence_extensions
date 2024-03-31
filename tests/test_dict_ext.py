@@ -52,6 +52,25 @@ def test_map(int_dict):
     assert d3 == {"aa": 2, "bb": 4, "cc": 6, "dd": 8}
 
 
+def test_map(int_dict):
+    d1 = int_dict.map(lambda key, value: (key * 2, value * 2))
+    assert d1 == {"aa": 2, "bb": 4, "cc": 6, "dd": 8}
+
+    def f(key, value):
+        return (key * 2, value * 2)
+
+    d2 = int_dict.map(f)
+    assert d2 == {"aa": 2, "bb": 4, "cc": 6, "dd": 8}
+
+    def f2(key, value):
+        return key * 2, value * 2
+
+    d3 = int_dict.map(f2)
+    assert d3 == {"aa": 2, "bb": 4, "cc": 6, "dd": 8}
+
+
+
+
 def test_filter(int_dict):
 
     d1 = int_dict.filter(lambda key, value: value % 2 == 0)

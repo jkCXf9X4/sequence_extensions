@@ -45,12 +45,12 @@ class list_ext(list):
         """
         return type(self)(zip(self, *iterables))
 
-    def for_each(self, func):
+    def for_each(self, func) -> None:
         """
         Execute function on each item in list
         [func(i) for i in list]
         """
-        [func(i) for i in self]
+        self.map(func)
 
     def pairwice(self, func):
         """
@@ -59,9 +59,9 @@ class list_ext(list):
         [func(a1, a2), func(a2, a3),...]
         """
 
-        return self.window(func, n=2)
+        return self.window_select(func, n=2)
 
-    def window(self, func, n=2):
+    def window_select(self, func=None, n=2):
         """
         Apply func to a sliding/rolling window of size n
         [a1, a2, a3, a4, ...]
@@ -70,8 +70,15 @@ class list_ext(list):
         [func(a1, a2), func(a2, a3),...]
         n=3
         [func(a1, a2, a3), func(a2, a3, a4),...]
+
         """
         return type(self)([func(*self[i : i + n]) for i in range(len(self) - n + 1)])
+
+    def window(self, n=2):
+        """
+        [[a1, a2], [a2, a3],...]
+        """
+        return type(self)([self[i : i + n] for i in range(len(self) - n + 1)])
 
     @staticmethod
     def execute_or_default(func, default=None, exception=Exception):
@@ -169,16 +176,21 @@ class list_ext(list):
         """
         return tuple(self)
 
-    def to_dict(self, items, key=True):
+    def to_dict_key(self, keys):
         """
         Convert to dict
         """
         from sequence_extensions import dict_ext
 
-        def f(i, j):
-            return (j, i) if key else (i, j)
+        return dict_ext((j, i) for i, j in self.zip(keys))
 
-        return dict_ext(f(i, j) for i, j in self.zip(items))
+    def to_dict_value(self, values):
+        """
+        Convert to dict
+        """
+        from sequence_extensions import dict_ext
+
+        return dict_ext((i, j) for i, j in self.zip(values))
 
     def to_dict_fn(self, key_func=None, value_func=None):
         """

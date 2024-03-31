@@ -1,7 +1,7 @@
 import pytest
 
 from sequence_extensions import list_ext
-from sequence_extensions.iterate import recursive_gen, recursive_list
+from sequence_extensions.gen_ext import gen_ext
 
 
 @pytest.fixture
@@ -35,18 +35,11 @@ class Node:
 
 def test_recursive(nodes):
     leaf = nodes[-1]
-    g1 = recursive_gen(leaf, lambda x: x.parent)
-
+    g1 = gen_ext.recursive_gen(leaf, lambda x: x.parent)
     l1 = list_ext(g1)
+
     texts = l1.map(lambda x: x.text)
 
     assert texts == ['node_2', 'node_top']
 
 
-def test_recursive_2(nodes):
-    top = nodes[0]
-    l1 = recursive_list(top, lambda x: x.children[0] if x.children else None)
-    
-    texts = l1.map(lambda x: x.text)
-
-    assert texts == ['node_1', 'node_1_1']

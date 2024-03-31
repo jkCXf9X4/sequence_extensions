@@ -17,10 +17,19 @@ class dict_ext(dict):
 
     def map(self, func):
         """
-        func(key, item) -> (key, item)
+        func(key, item) -> (key_t, item_t)
+        returns {key_t1 : item_t1, key_t2 : item_t2, ...}
         """
         l = [func(key, value) for key, value in self.items()]
         return type(self)(l)
+    
+    def map_list(self, func):
+        """
+        func(key, item) -> a
+        returns [a1, a2, a3 ...]
+        """
+        l = [func(key, value) for key, value in self.items()]
+        return list_ext(l)
 
     def filter(self, func):
         """
@@ -43,13 +52,13 @@ class dict_ext(dict):
 
     def to_key_list(self):
         """
-        [[key, value],..]
+        [[key1, key2],..]
         """
         return list_ext(self.keys())
     
     def to_value_list(self):
         """
-        [[key, value],..]
+        [[value1, value2],..]
         """
         return list_ext(self.values())
 
@@ -106,6 +115,19 @@ class dict_ext(dict):
 
         """
         return type(self)(self | dict)
+
+    def to_strings(self):
+        """
+        
+        """
+
+        return self.map(lambda a, b: (str(a), str(b)))
+    
+    def to_string(self, separator = "\n"):
+        l = list_ext(self.map_list(lambda a, b: f"{a} : {b}"))
+        s = l.to_string(separator=separator)
+        return s
+
 
     def inverse(self):
         """

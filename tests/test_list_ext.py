@@ -132,9 +132,12 @@ def test_to_tuple(simple_int_list):
 
 
 def test_to_dict(simple_int_list):
-    d = simple_int_list.to_dict(["a", "b", "c", "d"])
+    d = simple_int_list.to_dict_key(["a", "b", "c", "d"])
 
     assert d == {"a": 1, "b": 2, "c": 3, "d": 4}
+
+    assert d.inverse() == simple_int_list.to_dict_value(["a", "b", "c", "d"])
+
 
 
 def test_to_dict_fn(simple_int_list):
@@ -204,9 +207,9 @@ def test_window(simple_int_list):
     def f(a, b):
         return a + b
 
-    assert simple_int_list.pairwice(f) == [3, 5, 7]
+    assert simple_int_list.window_select(f) == [3, 5, 7]
 
     def f(a, b, c):
         return a + b + c
 
-    assert simple_int_list.window(f, n=3) == [6, 9]
+    assert simple_int_list.window_select(f, n=3) == [6, 9]
