@@ -35,40 +35,25 @@ def test_init_array():
     # print(d1)
 
 
-def test_map(int_dict):
-    d1 = int_dict.map(lambda key, value: (key * 2, value * 2))
+def test_map_dict(int_dict):
+    d1 = int_dict.map_dict(lambda key, value: (key * 2, value * 2))
     assert d1 == {"aa": 2, "bb": 4, "cc": 6, "dd": 8}
 
     def f(key, value):
         return (key * 2, value * 2)
 
-    d2 = int_dict.map(f)
+    d2 = int_dict.map_dict(f)
     assert d2 == {"aa": 2, "bb": 4, "cc": 6, "dd": 8}
 
     def f2(key, value):
         return key * 2, value * 2
 
-    d3 = int_dict.map(f2)
+    d3 = int_dict.map_dict(f2)
     assert d3 == {"aa": 2, "bb": 4, "cc": 6, "dd": 8}
 
-
-def test_map(int_dict):
-    d1 = int_dict.map(lambda key, value: (key * 2, value * 2))
-    assert d1 == {"aa": 2, "bb": 4, "cc": 6, "dd": 8}
-
-    def f(key, value):
-        return (key * 2, value * 2)
-
-    d2 = int_dict.map(f)
-    assert d2 == {"aa": 2, "bb": 4, "cc": 6, "dd": 8}
-
-    def f2(key, value):
-        return key * 2, value * 2
-
-    d3 = int_dict.map(f2)
-    assert d3 == {"aa": 2, "bb": 4, "cc": 6, "dd": 8}
-
-
+def test_map_list(int_dict):
+    l1 = int_dict.map_list(lambda key, value: str(key)+ str(value))
+    assert l1 == ["a1", "b2", "c3", "d4"]
 
 
 def test_filter(int_dict):
@@ -90,6 +75,37 @@ def test_for_each(int_dict):
     assert int_dict == d
 
 
+def test_to_strings(int_dict):
+    
+    int_dict : dict_ext
+    
+    string_dict = int_dict.to_strings()    
+    assert string_dict == {"a": "1", "b": "2", "c": "3", "d": "4"}
+
+
+def test_to_string(int_dict):
+    int_dict : dict_ext
+    string_dict = int_dict.to_string()
+    s = "a : 1\nb : 2\nc : 3\nd : 4"
+    assert string_dict == s
+
+
+def test_get_key_from_value(int_dict):
+    int_dict : dict_ext
+    key = int_dict.get_key_from_value(3)
+    assert key == ["c"]
+
+
+def test_get_keys(int_dict):
+    keys = int_dict.get_keys()
+    assert keys == ["a", "b", "c", "d"]
+
+
+def test_get_values(int_dict):
+    values = int_dict.get_values()
+    assert values == [1, 2, 3, 4]
+      
+
 def test_to_list(int_dict):
     l = int_dict.to_list()
     assert l == [["a", 1], ["b", 2], ["c", 3], ["d", 4]]
@@ -106,6 +122,7 @@ def test_to_named_tuple(int_dict):
     # print(t)
     assert t[0].key == "a"
     assert t[0].value == 1
+
 
 def test_reduce(int_dict):
 
@@ -135,7 +152,7 @@ def test_inverse(int_dict):
     assert inv == {1:"a", 2: 'b', 3: 'c', 4: 'd'}
 
 
-def test_inverse(int_dict):
+def test_first(int_dict):
 
     kv = int_dict.first()
 

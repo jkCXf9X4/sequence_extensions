@@ -30,3 +30,14 @@ l.to_string()
 "1, 2, 3, 4"
 
 ```
+
+
+for develompment install 
+pip install -e .
+
+to run tests
+pytest
+
+To generate coverage
+pytest --cov  --cov-report html
+

@@ -203,7 +203,7 @@ def test_chainmap():
     assert d == {"a": 1, "b": 2, "c": 3}
 
 
-def test_window(simple_int_list):
+def test_window_select(simple_int_list):
     def f(a, b):
         return a + b
 
@@ -213,3 +213,11 @@ def test_window(simple_int_list):
         return a + b + c
 
     assert simple_int_list.window_select(f, n=3) == [6, 9]
+
+
+def test_window(simple_int_list):
+
+
+    assert simple_int_list.window() == [[1, 2], [2, 3], [3, 4]]
+
+    assert simple_int_list.window(n=3) == [[1, 2, 3], [2, 3, 4]]

@@ -52,14 +52,11 @@ class list_ext(list):
         """
         self.map(func)
 
-    def pairwice(self, func):
+    def window(self, n=2):
         """
-        [a1, a2, a3, a4, ...]
-
-        [func(a1, a2), func(a2, a3),...]
+        [[a1, a2], [a2, a3],...]
         """
-
-        return self.window_select(func, n=2)
+        return type(self)([self[i : i + n] for i in range(len(self) - n + 1)])
 
     def window_select(self, func=None, n=2):
         """
@@ -72,13 +69,7 @@ class list_ext(list):
         [func(a1, a2, a3), func(a2, a3, a4),...]
 
         """
-        return type(self)([func(*self[i : i + n]) for i in range(len(self) - n + 1)])
-
-    def window(self, n=2):
-        """
-        [[a1, a2], [a2, a3],...]
-        """
-        return type(self)([self[i : i + n] for i in range(len(self) - n + 1)])
+        return type(self)(self.window(n=n).map(lambda x: func(*x)))
 
     @staticmethod
     def execute_or_default(func, default=None, exception=Exception):

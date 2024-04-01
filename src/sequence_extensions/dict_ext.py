@@ -15,7 +15,7 @@ class dict_ext(dict):
     Extend the normal dict class
     """
 
-    def map(self, func):
+    def map_dict(self, func):
         """
         func(key, item) -> (key_t, item_t)
         returns {key_t1 : item_t1, key_t2 : item_t2, ...}
@@ -50,15 +50,35 @@ class dict_ext(dict):
         """
         return list_ext([[key, value] for key, value in self.items()])
 
-    def to_key_list(self):
+    def to_strings(self):
         """
-        [[key1, key2],..]
+        {key:value} -> {"key":"value"}
+        """
+
+        return self.map_dict(lambda a, b: (str(a), str(b)))
+    
+    def to_string(self, separator = "\n"):
+        """ 
+        return string of dict
+        
+        "key1 : value1
+        key2 : value2
+        ..."
+        
+        """
+        l = list_ext(self.map_list(lambda a, b: f"{a} : {b}"))
+        s = l.to_string(separator=separator)
+        return s
+
+    def get_keys(self):
+        """
+        [key1, key2,..]
         """
         return list_ext(self.keys())
     
-    def to_value_list(self):
+    def get_values(self):
         """
-        [[value1, value2],..]
+        [value1, value2,..]
         """
         return list_ext(self.values())
 
@@ -76,7 +96,7 @@ class dict_ext(dict):
         """
         return tuple(KeyValueTuple(key, value) for key, value in self.items())
 
-    def get_key(self, value):
+    def get_key_from_value(self, value):
         """
         Itterate over dict to find the key corresponding to the value
         A list of all keys will be returned
@@ -115,18 +135,6 @@ class dict_ext(dict):
 
         """
         return type(self)(self | dict)
-
-    def to_strings(self):
-        """
-        
-        """
-
-        return self.map(lambda a, b: (str(a), str(b)))
-    
-    def to_string(self, separator = "\n"):
-        l = list_ext(self.map_list(lambda a, b: f"{a} : {b}"))
-        s = l.to_string(separator=separator)
-        return s
 
 
     def inverse(self):
