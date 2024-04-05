@@ -199,15 +199,18 @@ class list_ext(list):
 
     def all(self, func=None) -> bool:
         """
-        Check if all items fullfill the condition
+        Check if all items fulfill the condition
+        
+        if func is provided equivalent to  'all(self.map(func))'
         """
         l = self.map(func) if func != None else self
         return all(l)
 
     def any(self, func=None) -> bool:
         """
-        Check if at least one item fullfill the condition
-
+        Check if at least one item fulfill the condition
+        
+        if func is provided equivalent to  'any(self.map(func))'
         """
         l = self.map(func) if func != None else self
         return any(l)

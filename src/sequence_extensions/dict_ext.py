@@ -54,7 +54,6 @@ class dict_ext(dict):
         """
         {key:value} -> {"key":"value"}
         """
-
         return self.map_dict(lambda a, b: (str(a), str(b)))
     
     def to_string(self, separator = "\n"):
@@ -64,7 +63,6 @@ class dict_ext(dict):
         "key1 : value1
         key2 : value2
         ..."
-        
         """
         l = list_ext(self.map_list(lambda a, b: f"{a} : {b}"))
         s = l.to_string(separator=separator)
@@ -98,7 +96,7 @@ class dict_ext(dict):
 
     def get_key_from_value(self, value):
         """
-        Itterate over dict to find the key corresponding to the value
+        Iterate over dict to find all keys corresponding to the value
         A list of all keys will be returned
         """
 
@@ -113,7 +111,7 @@ class dict_ext(dict):
         """
         t = self.to_named_tuple()
 
-        # ensure that the returned type is the same as the itterable
+        # ensure that the returned type is the same as the iterable
         def f(*args):
             return KeyValueTuple(*func(*args))
 
@@ -136,7 +134,6 @@ class dict_ext(dict):
         """
         return type(self)(self | dict)
 
-
     def inverse(self):
         """
         {key:value} -> {value:key}
@@ -153,3 +150,33 @@ class dict_ext(dict):
         l = self.filter(func) if func != None else self
 
         return KeyValueTuple(*l.to_list()[0])
+    
+    def last(self, func=None):
+        """
+        filter list on func, return last item in the filtered list
+        will raise IndexError if no item is found
+
+        if func == None the last item will be returned
+        """
+        l = self.filter(func) if func != None else self
+
+        return KeyValueTuple(*l.to_list()[-1])
+    
+
+    def all(self, func=None) -> bool:
+        """
+        Check if all items fulfill the condition
+        
+        if func is provided equivalent to  'all(self.map_list(func))'
+        """
+        l = self.map_list(func) if func != None else self
+        return all(l)
+
+    def any(self, func=None) -> bool:
+        """
+        Check if at least one item fulfill the condition
+        
+        if func is provided equivalent to  'any(self.map_list(func))'
+        """
+        l = self.map_list(func) if func != None else self
+        return any(l)

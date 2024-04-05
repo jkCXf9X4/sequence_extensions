@@ -147,10 +147,10 @@ def test_to_dict_fn(simple_int_list):
 
 
 def test_all(simple_int_list):
-    results = simple_int_list.all(lambda x: True)
+    results = simple_int_list.all(lambda x: type(x) == int)
     assert results == True
 
-    results = simple_int_list.all(lambda x: False)
+    results = simple_int_list.all(lambda x: x == 1)
     assert results == False
 
     l1 = list_ext([True, True])

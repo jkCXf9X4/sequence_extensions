@@ -159,3 +159,33 @@ def test_first(int_dict):
     assert kv.key == "a"
     assert kv.value == 1
 
+    kv = int_dict.first(lambda key, value: value % 2 == 0)
+    
+    assert kv.key == "b"
+    assert kv.value == 2
+
+def test_last(int_dict):
+
+    kv = int_dict.last()
+
+    assert kv.key == "d"
+    assert kv.value == 4
+        
+    kv = int_dict.last(lambda key, value: value % 2 == 0)
+    
+    assert kv.key == "d"
+    assert kv.value == 4
+    
+def test_any(int_dict):
+    results = int_dict.any(lambda key, value: value == 1)
+    assert results == True
+
+    results = int_dict.any(lambda key, value: value == 6)
+    assert results == False
+
+def test_all(int_dict):
+    results = int_dict.all(lambda key, value: type(value) == int)
+    assert results == True
+
+    results = int_dict.all(lambda key, value: value == 1)
+    assert results == False
