@@ -1,5 +1,6 @@
 from typing import Any
 import pytest
+from sequence_extensions import list_ext
 from sequence_extensions.dict_ext import dict_ext
 
 
@@ -36,24 +37,28 @@ def test_init_array():
 
 
 def test_map_dict(int_dict):
-    d1 = int_dict.map_dict(lambda key, value: (key * 2, value * 2))
+    d1 = int_dict.map(lambda key, value: (key * 2, value * 2))
     assert d1 == {"aa": 2, "bb": 4, "cc": 6, "dd": 8}
 
     def f(key, value):
         return (key * 2, value * 2)
 
-    d2 = int_dict.map_dict(f)
+    d2 = int_dict.map(f)
     assert d2 == {"aa": 2, "bb": 4, "cc": 6, "dd": 8}
 
     def f2(key, value):
         return key * 2, value * 2
 
-    d3 = int_dict.map_dict(f2)
+    d3 = int_dict.map(f2)
     assert d3 == {"aa": 2, "bb": 4, "cc": 6, "dd": 8}
 
+
 def test_map_list(int_dict):
-    l1 = int_dict.map_list(lambda key, value: str(key)+ str(value))
+    l1 = int_dict.map(lambda key, value: str(key)+ str(value), cast=list_ext)
     assert l1 == ["a1", "b2", "c3", "d4"]
+    
+    l2 = int_dict.map(lambda key, value: [value, key], cast=list_ext)
+    assert l2 == [[1, "a"], [2, "b"], [3, "c"], [4, "d"]]
 
 
 def test_filter(int_dict):
