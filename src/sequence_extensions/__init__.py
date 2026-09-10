@@ -1,2 +1,3 @@
 from sequence_extensions.list_ext import list_ext
 from sequence_extensions.dict_ext import dict_ext
+from sequence_extensions.graph_future import GraphFuture, GraphPool
