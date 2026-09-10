@@ -35,7 +35,7 @@ class Node:
 
 def test_recursive(nodes):
     leaf = nodes[-1]
-    g1 = gen_ext.recursive_gen(leaf, lambda x: x.parent)
+    g1 = gen_ext.recursive_gen(leaf, lambda x: x.parent, stop_f=lambda x: x is not None)
     l1 = list_ext(g1)
 
     texts = l1.map(lambda x: x.text)

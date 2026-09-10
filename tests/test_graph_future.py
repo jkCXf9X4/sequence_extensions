@@ -37,7 +37,7 @@ def create_dependency(x, y):
     return y
 
 
-def test_nested_future_one_nest(caplog):
+def test_nested_future_one_nest():
     """Test with mixed args and kwargs"""
     with GraphPool(max_workers=3) as executor:
         future_1 = GraphFuture(fn_1, 5, y=4)
@@ -98,8 +98,13 @@ def test_nested_future_multinested_2():
         assert future_1.function == fn_2
 
 
-def test_nested_future_split(tmp_path, caplog):
-    """graph 4->2->1"""
+def test_nested_future_split():
+    """graph 4->2->1
+
+    Value derivation: dependency_future_1 = create_dependency(fn_1(5,4)=5, fn_1(2,4)=2) -> 2
+    dependency_future_2 = create_dependency(fn_2(2,4)=4, fn_2(4,8)=8) -> 8
+    dependency_future_3 = create_dependency(dep_1=2, dep_2=8) -> 8
+    """
     with GraphPool(max_workers=3) as executor:
         fn_1_1_future = GraphFuture(fn_1, 5, 4)
 
@@ -125,9 +130,23 @@ def test_nested_future_split(tmp_path, caplog):
         assert dependency_result == 8
 
 
-def test_exception(caplog):
+def test_exception():
     """Run with multinested, GraphFuture returned from first node"""
     with GraphPool(max_workers=6) as executor:
         future_1 = GraphFuture(fn_exception, 45)
-        with pytest.raises(Exception):
+        with pytest.raises(Exception, match="Random stuff"):
             executor.result(future_1)
+
+
+def test_unbound_node_fn_never_called():
+    """A node that is never bound to a pool never has its fn invoked."""
+    called = []
+
+    def never_run(x):
+        called.append(x)
+        return x
+
+    node = GraphFuture(never_run, 1)
+    # never passed to a pool -> fn must never be called
+    assert called == []
+    assert not node.future.done()

@@ -58,9 +58,11 @@ def test_for_each(simple_int_list):
     def _append(x):
         b.append(x)
 
-    simple_int_list.for_each(_append)
+    result = simple_int_list.for_each(_append)
 
-    assert b == simple_int_list
+    assert result is None
+    assert b == [1, 2, 3, 4]
+    assert simple_int_list == [1, 2, 3, 4]
 
 
 def test_get_first(simple_int_list):
@@ -72,8 +74,8 @@ def test_get_first_error(empty_list):
         empty_list.first()
 
 
-def test_get_first_default_error(empty_list):
-    assert empty_list.first_or_default() == None
+def test_first_or_default_returns_none(empty_list):
+    assert empty_list.first_or_default() is None
 
 
 def test_get_first_default_no_error(empty_list):
@@ -95,7 +97,7 @@ def test_last(simple_int_list):
 def test_last_or_default(simple_int_list):
     f = simple_int_list.last_or_default(lambda x: x == 10, default=None)
 
-    assert f == None
+    assert f is None
 
 
 def test_get_last(simple_int_list):
@@ -104,6 +106,7 @@ def test_get_last(simple_int_list):
 
 def test_to_type(simple_int_list):
     fl = simple_int_list.to_type(float)
+    assert fl == [1.0, 2.0, 3.0, 4.0]
     assert all([type(f) == float for f in fl])
 
 
@@ -136,7 +139,9 @@ def test_to_dict(simple_int_list):
 
     assert d == {"a": 1, "b": 2, "c": 3, "d": 4}
 
-    assert d.inverse() == simple_int_list.to_dict_value(["a", "b", "c", "d"])
+    v = simple_int_list.to_dict_value(["a", "b", "c", "d"])
+
+    assert v == {1: "a", 2: "b", 3: "c", 4: "d"}
 
 
 
@@ -193,6 +198,10 @@ def test_single(simple_int_list):
     with pytest.raises(Exception):
         l = simple_int_list.single(lambda x: x % 2 == 0)
 
+    # zero-match case: no item fulfills the condition
+    with pytest.raises(ValueError, match="Expected exactly one item"):
+        simple_int_list.single(lambda x: x > 100)
+
 
 def test_chainmap():
 
@@ -201,6 +210,15 @@ def test_chainmap():
     d = l.chainmap()
 
     assert d == {"a": 1, "b": 2, "c": 3}
+
+
+def test_chainmap_duplicate_key_first_wins():
+
+    l = list_ext([{"a": 1}, {"a": 2, "b": 3}])
+
+    d = l.chainmap()
+
+    assert d == {"a": 1, "b": 3}
 
 
 def test_window_select(simple_int_list):
@@ -221,3 +239,7 @@ def test_window(simple_int_list):
     assert simple_int_list.window() == [[1, 2], [2, 3], [3, 4]]
 
     assert simple_int_list.window(n=3) == [[1, 2, 3], [2, 3, 4]]
+
+    assert simple_int_list.window(n=1) == [[1], [2], [3], [4]]
+
+    assert simple_int_list.window(n=5) == []

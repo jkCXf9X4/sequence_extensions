@@ -33,7 +33,6 @@ def test_init_array():
     t1 = [("a", 1), ("b", 2)]
     d1 = dict_ext(t1)
     assert d1["a"] == 1
-    # print(d1)
 
 
 def test_map_dict(int_dict):
@@ -81,22 +80,17 @@ def test_for_each(int_dict):
 
 
 def test_to_strings(int_dict):
-    
-    int_dict : dict_ext
-    
     string_dict = int_dict.to_strings()    
     assert string_dict == {"a": "1", "b": "2", "c": "3", "d": "4"}
 
 
 def test_to_string(int_dict):
-    int_dict : dict_ext
     string_dict = int_dict.to_string()
     s = "a : 1\nb : 2\nc : 3\nd : 4"
     assert string_dict == s
 
 
 def test_get_key_from_value(int_dict):
-    int_dict : dict_ext
     key = int_dict.get_key_from_value(3)
     assert key == ["c"]
 
@@ -118,13 +112,11 @@ def test_to_list(int_dict):
 
 def test_to_tuple(int_dict):
     t = int_dict.to_tuple()
-    # print(t)
     assert t == (("a", 1), ("b", 2), ("c", 3), ("d", 4))
 
 
 def test_to_named_tuple(int_dict):
     t = int_dict.to_named_tuple()
-    # print(t)
     assert t[0].key == "a"
     assert t[0].value == 1
 
@@ -146,8 +138,38 @@ def test_extend(int_dict):
 
 def test_extend_overwrite(int_dict):
 
-    with pytest.raises(TypeError):
-        int_dict.extend({"d": 5})
+    new_dict = int_dict.extend({"d": 5})
+
+    assert new_dict == {"a": 1, "b": 2, "c": 3, "d": 5}
+
+
+def test_extend_other_wins(int_dict):
+
+    new_dict = int_dict.extend({"d": 5, "e": 6})
+
+    assert new_dict == {"a": 1, "b": 2, "c": 3, "d": 5, "e": 6}
+
+
+def test_filter_none_keeps_all(int_dict):
+
+    d1 = int_dict.filter(None)
+
+    assert d1 == int_dict
+    assert d1 is not int_dict
+
+
+def test_reduce_empty():
+
+    def red(a, b):
+        return (a.key + b.key, a.value + b.value)
+
+    assert dict_ext().reduce(red) == dict_ext()
+
+
+def test_all_any_values_not_keys():
+
+    assert dict_ext({0: "x"}).all() is True
+    assert dict_ext({"a": 0}).any() is False
 
 
 def test_inverse(int_dict):

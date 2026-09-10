@@ -1,0 +1,27 @@
+{
+  "llm": {
+    "model": "deepseek/deepseek-v4-flash-0731",
+    "base_url": "https://openrouter.ai/api/v1",
+    "provider_allow_fallbacks": true,
+    "verify_ssl": false,
+    "call_timeout_seconds": 500
+  },
+  "safety": {
+    "max_iterations": 400,
+    "repeated_call_limit": 5,
+    "repeated_recovery_attempts": 1,
+    "repeated_call_exempt_tools": ["status", "usage"],
+    "timeout_seconds": 7200,
+    "disable_root_timeout": true,
+    "max_agents": 300,
+    "max_depth": 15,
+    "max_same_target_delegations": 0,
+    "spawn_limit_warning_attempts": 2
+  },
+  "agent": {
+    "environment_notes": [
+      "Working dir is project root; run `pytest` from there."
+    ],
+    "stream_children": true 
+  }
+}

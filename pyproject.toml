@@ -1,18 +1,51 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "sequence-extensions"
 version = "0.1.4"
 authors = [
   { name="jkCXf9X4"},
 ]
-description = "Higher order functions extension functins"
+description = "Higher-order function extensions for Python lists, dicts, generators, and dependency-graph futures."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
+keywords = ["list", "dict", "functional", "extensions", "generator", "graph"]
+license = {text = "MIT"}
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov", "ruff"]
 
 [project.urls]
 Homepage = "https://github.com/jkCXf9X4/sequence_extensions"
-Issues = "https://github.com/pypa/sampleproject/issues"
+Issues = "https://github.com/jkCXf9X4/sequence_extensions/issues"
+Documentation = "https://github.com/jkCXf9X4/sequence_extensions#readme"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["sequence_extensions"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
