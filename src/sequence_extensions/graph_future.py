@@ -10,8 +10,27 @@ without the ``with`` statement (though the context manager form guarantees the
 executor is shut down).
 """
 
+import atexit
 import concurrent.futures
 import threading
+import weakref
+
+# Every GraphFuture still alive, so ``GraphPool.__exit__`` can cancel unbound
+# nodes that would otherwise hang forever.
+_LIVE_NODES = weakref.WeakSet()
+# Every GraphPool still alive, so the atexit handler can shut down lazily
+# created executors of pools used without ``with``.
+_LIVE_POOLS = weakref.WeakSet()
+
+
+def _shutdown_live_pools() -> None:
+    """Idempotently shut down the executors of all live pools (atexit hook)."""
+    for pool in list(_LIVE_POOLS):
+        if pool._executor is not None:
+            pool._executor.shutdown(wait=True, cancel_futures=True)
+
+
+atexit.register(_shutdown_live_pools)
 
 
 class GraphFuture:
@@ -30,16 +49,19 @@ class GraphFuture:
     its result becomes this node's result.
     """
 
-    def __init__(self, function, /, *args, **kwargs):
+    def __init__(self, function, *args, **kwargs):
         """Create a node; GraphFuture values among ``args``/``kwargs`` become dependencies."""
         self.function = function
         self.name = getattr(function, "__name__", str(function))
 
+        # ``args=(...)`` keyword form is accepted as positional arguments
+        # (the constructor is not positional-only).
+        if "args" in kwargs:
+            args = tuple(kwargs.pop("args"))
+
         # Keep positional order via integer keys: {0: arg0, 1: arg1, **kwargs}
         self.arguments = {**{i: arg for i, arg in enumerate(args)}, **kwargs}
-        self.dependencies = [
-            x for x in self.arguments.values() if isinstance(x, GraphFuture)
-        ]
+        self.dependencies = [x for x in self.arguments.values() if isinstance(x, GraphFuture)]
 
         self.queued = False
         self.future = concurrent.futures.Future()
@@ -51,6 +73,7 @@ class GraphFuture:
         # to this node's future — guarantees each callback is attached at most
         # once (per dependent), which kills the re-attach recursion loop.
         self._callback_attached = set()
+        _LIVE_NODES.add(self)
 
     # ------------------------------------------------------------ #
     # Introspection
@@ -78,15 +101,19 @@ class GraphFuture:
     # Result access
     # ------------------------------------------------------------ #
     def result(self, timeout=None):
-        """Return this node's result (or obtainable future of a nested graph)."""
+        """
+        Return this node's result, blocking until it is available.
+
+        ``timeout`` (seconds) bounds the wait; on expiry a ``TimeoutError`` is
+        raised.  Raises ``CancelledError`` if the node was cancelled, and
+        propagates the node's function exception if it failed.
+        """
         return self.future.result(timeout=timeout)
 
     def has_result(self) -> bool:
         """True only when the node completed successfully (done, not cancelled, no exception)."""
         return (
-            self.future.done()
-            and not self.future.cancelled()
-            and self.future.exception() is None
+            self.future.done() and not self.future.cancelled() and self.future.exception() is None
         )
 
     # ------------------------------------------------------------ #
@@ -209,8 +236,8 @@ class GraphFuture:
         Split ``self.arguments`` back into (args, kwargs), replacing any
         GraphFuture dependencies with their results.
         """
-        pos = {k: v for k, v in self.arguments.items() if type(k) is int}
-        kw = {k: v for k, v in self.arguments.items() if type(k) is not int}
+        pos = {k: v for k, v in self.arguments.items() if isinstance(k, int)}
+        kw = {k: v for k, v in self.arguments.items() if not isinstance(k, int)}
 
         def materialize(v):
             return v.future.result() if isinstance(v, GraphFuture) else v
@@ -231,9 +258,15 @@ class GraphPool:
             b = GraphFuture(fn_2, a, 4)          # waits for a
             result = pool.result(b)              # -> b's value
 
-    Reactor-style callbacks (not polling) drive scheduling: a leaf is
-    submitted as soon as it is reached; dependents are submitted when their
-    dependencies complete.  The executor's thread pool bounds concurrency.
+    Lifecycle: the executor is created lazily on first use, so the pool works
+    with or without the ``with`` statement.  Pools used without ``with`` are
+    shut down at interpreter exit by an atexit handler.  Re-entering a pool
+    (``__enter__`` twice, including after a previous ``__exit__``) raises
+    ``RuntimeError``; ``__exit__`` cancels pending nodes and shuts the
+    executor down.  Reactor-style callbacks (not polling) drive scheduling: a
+    leaf is submitted as soon as it is reached; dependents are submitted when
+    their dependencies complete.  The executor's thread pool bounds
+    concurrency.
     """
 
     def __init__(self, max_workers: int = 16):
@@ -241,7 +274,13 @@ class GraphPool:
         self.max_workers = max_workers
         self._executor = None
         self._shutdown = False
+        self._entered = False
         self._nodes = []  # every bound node, so __exit__ can cancel stragglers
+        # Pool-level DFS state so re-entrant ``_bind_graph`` calls (a node
+        # whose function returns a GraphFuture that chains back into the
+        # graph being bound) detect the in-progress visit as a cycle.
+        self._visiting = set()
+        _LIVE_POOLS.add(self)
 
     # ------------------------------------------------------------ #
     # Context manager
@@ -254,9 +293,10 @@ class GraphPool:
             )
 
     def __enter__(self) -> "GraphPool":
-        """Create the executor and return the pool (rejects re-entry)."""
-        if self._executor is not None:
+        """Create the executor and return the pool (rejects ANY re-entry)."""
+        if self._entered:
             raise RuntimeError("GraphPool.__enter__ called more than once")
+        self._entered = True
         self._shutdown = False
         self._executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=self.max_workers, thread_name_prefix="graph-worker"
@@ -266,12 +306,9 @@ class GraphPool:
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Cancel pending work, then shut the executor down."""
         self._shutdown = True
-        for node in self._nodes:
+        for node in list(_LIVE_NODES):
             if not node.future.done():
-                try:
-                    node.future.set_exception(concurrent.futures.CancelledError())
-                except concurrent.futures.InvalidStateError:
-                    pass  # a worker settled it concurrently
+                node.future.cancel()
         if self._executor:
             self._executor.shutdown(wait=True, cancel_futures=True)
             self._executor = None
@@ -280,10 +317,15 @@ class GraphPool:
     # ------------------------------------------------------------ #
     # Public facade
     # ------------------------------------------------------------ #
-    def result(self, gf: GraphFuture):
-        """Evaluate the graph reachable from ``gf`` and return its result."""
+    def result(self, gf: GraphFuture, timeout=None):
+        """
+        Evaluate the graph reachable from ``gf`` and return its result.
+
+        Blocks until the result is available; ``timeout`` (seconds) bounds the
+        wait and raises ``TimeoutError`` on expiry.
+        """
         self._bind_graph(gf)
-        return gf.result()
+        return gf.result(timeout=timeout)
 
     # ------------------------------------------------------------ #
     # Scheduling support
@@ -298,20 +340,22 @@ class GraphPool:
         """
         self._ensure_executor()
         seen = set()
-        visiting = set()
 
         def visit(node):
             nid = id(node)
-            if nid in visiting:
+            if nid in self._visiting:
                 raise ValueError("dependency cycle detected")
             if nid in seen:
                 return
-            visiting.add(nid)
+            self._visiting.add(nid)
             seen.add(nid)
-            for dep in node.dependencies:
-                visit(dep)
-            visiting.discard(nid)
-            node._wire(self)
-            self._nodes.append(node)
+            try:
+                for dep in node.dependencies:
+                    visit(dep)
+                node._wire(self)
+                if not any(n is node for n in self._nodes):
+                    self._nodes.append(node)
+            finally:
+                self._visiting.discard(nid)
 
         visit(gf)

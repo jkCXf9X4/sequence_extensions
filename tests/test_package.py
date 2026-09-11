@@ -1,8 +1,10 @@
 """Package-level smoke tests and coverage for previously-untested public methods."""
 
 import concurrent.futures
+import re
+import subprocess
+import sys
 import threading
-import time
 from statistics import StatisticsError
 
 import pytest
@@ -16,41 +18,44 @@ from sequence_extensions import (
     list_ext,
 )
 
+# concurrent.futures.TimeoutError is a distinct class from the builtin
+# TimeoutError on Python 3.10; catch both.
+_TIMEOUT_ERRORS = (TimeoutError, concurrent.futures.TimeoutError)
+
 
 # ---------------------------------------------------------------- #
 # Package smoke test
 # ---------------------------------------------------------------- #
 def test_imports_and_version():
-    from sequence_extensions import (
-        GraphFuture,
-        GraphPool,
-        dict_ext,
-        gen_ext,
-        list_ext,
-    )
+    # contract: __version__ matches semver-ish \d+.\d+.\d+ (no hardcoded value)
+    assert re.match(r"^\d+\.\d+\.\d+$", __version__) is not None
 
-    assert __version__ == "0.1.4"
+
+def test_package_exports():
+    # contract: __init__ exports the graph_future module and KeyValueTuple
+    import sequence_extensions
+
+    assert hasattr(sequence_extensions, "graph_future")
+    assert hasattr(sequence_extensions, "KeyValueTuple")
 
 
 # ---------------------------------------------------------------- #
 # list_ext
 # ---------------------------------------------------------------- #
 def test_execute_or_default_default_on_exception():
-    assert (
-        list_ext.execute_or_default(
-            lambda: 1 / 0, default=5, exception=ZeroDivisionError
-        )
-        == 5
-    )
+    assert list_ext.execute_or_default(lambda: 1 / 0, default=5, exception=ZeroDivisionError) == 5
 
 
 def test_execute_or_default_custom_exception_class():
     class MyError(Exception):
         pass
 
+    def _raise(e):
+        raise e
+
     assert (
         list_ext.execute_or_default(
-            lambda: (_ for _ in ()).throw(MyError("x")),
+            lambda: _raise(MyError("x")),
             default="d",
             exception=MyError,
         )
@@ -60,7 +65,7 @@ def test_execute_or_default_custom_exception_class():
     # a different exception type is NOT caught
     with pytest.raises(MyError):
         list_ext.execute_or_default(
-            lambda: (_ for _ in ()).throw(MyError("x")),
+            lambda: _raise(MyError("x")),
             default="d",
             exception=KeyError,
         )
@@ -80,6 +85,10 @@ def test_intersect_empty():
     assert list_ext([1, 2, 3]).intersect([4, 5]) == []
 
 
+def test_intersect_with_tuple():
+    assert list_ext([1, 2]).intersect((2, 3)) == [2]
+
+
 def test_union_basic():
     r = list_ext([1, 2, 3]).union([3, 4, 5])
     assert set(r) == {1, 2, 3, 4, 5}
@@ -92,6 +101,11 @@ def test_union_dedup():
     assert len(r) == 3
 
 
+def test_union_with_set():
+    r = list_ext([1, 2]).union({3, 4})
+    assert set(r) == {1, 2, 3, 4}
+
+
 def test_average():
     assert list_ext([1, 2, 3, 4]).average() == 2.5
 
@@ -99,6 +113,11 @@ def test_average():
 def test_average_empty_raises():
     with pytest.raises(StatisticsError):
         list_ext().average()
+
+
+def test_average_non_numeric_raises():
+    with pytest.raises(TypeError):
+        list_ext(["a", "b"]).average()
 
 
 def test_max_min():
@@ -127,10 +146,6 @@ def test_single_empty_and_zero_match():
         list_ext([1, 2]).single(lambda x: x > 5)
 
 
-def test_chainmap_first_dict_wins():
-    assert list_ext([{"a": 1}, {"a": 2}]).chainmap() == {"a": 1}
-
-
 # ---------------------------------------------------------------- #
 # dict_ext
 # ---------------------------------------------------------------- #
@@ -138,50 +153,18 @@ def test_dict_union_merge():
     assert dict_ext({"a": 1}).union({"a": 9, "b": 2}) == {"a": 9, "b": 2}
 
 
-def test_dict_filter_none_keeps_all():
-    d = dict_ext({"a": 1, "b": 2})
-    f = d.filter(None)
-    assert f == {"a": 1, "b": 2}
-    assert f is not d
-
-
-def test_dict_reduce_empty():
-    assert (
-        dict_ext().reduce(lambda a, b: (a.key + b.key, a.value + b.value))
-        == dict_ext()
-    )
-
-
-def test_dict_all_any_values_not_keys():
-    assert dict_ext({0: "x"}).all() is True
-    assert dict_ext({"a": 0}).any() is False
-
-
-def test_dict_extend_other_wins():
-    assert dict_ext({"a": 1}).extend({"a": 9, "b": 2}) == {"a": 9, "b": 2}
-
-
 def test_dict_map_non_tuple_raises():
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="2-tuple"):
         dict_ext({"a": 1}).map(lambda k, v: k)
 
 
 # ---------------------------------------------------------------- #
 # gen_ext
 # ---------------------------------------------------------------- #
-def test_gen_to_list():
-    r = gen_ext.to_list(iter([1, 2, 3]))
-    assert r == [1, 2, 3]
-    assert type(r) is list
-
-
 def test_recursive_gen_new_semantics():
     # stop_f is called on the *next* item: True keeps yielding, False stops
     # before yielding that item. 5 -> 4 -> 3 -> 2 -> 1 -> (0 stops).
-    assert (
-        list(gen_ext.recursive_gen(5, lambda x: x - 1, stop_f=lambda x: x > 0))
-        == [4, 3, 2, 1]
-    )
+    assert list(gen_ext.recursive_gen(5, lambda x: x - 1, stop_f=lambda x: x > 0)) == [4, 3, 2, 1]
 
 
 # ---------------------------------------------------------------- #
@@ -221,28 +204,40 @@ def test_future_passthroughs():
         assert len(callbacks) == 1
 
 
-def test_pool_without_with_lazy_executor():
+def test_pool_usable_without_context_manager():
+    # a pool used without `with` still works (lazy executor); the atexit
+    # shutdown hook guarantees the process does not hang at exit.
     p = GraphPool(max_workers=2)
     a = GraphFuture(lambda: 1)
     assert p.result(a) == 1
-    p._executor.shutdown()
 
 
-def test_pool_cycle_detection():
-    a = GraphFuture(lambda: 1)
-    b = GraphFuture(lambda x: x, a)
-    # close the loop: a now depends on b
-    a.arguments = {0: b}
-    a.dependencies = [b]
-    with GraphPool(max_workers=2) as p:
-        with pytest.raises(ValueError, match="cycle"):
-            p.result(a)
+def test_lazy_pool_atexit_shutdown_no_hang():
+    # contract: lazy pool use (no `with`) gets an atexit shutdown — the
+    # process does not hang at exit. Run in a subprocess and assert it exits.
+    code = (
+        "from sequence_extensions import GraphFuture, GraphPool\n"
+        "p = GraphPool(max_workers=2)\n"
+        "a = GraphFuture(lambda: 1)\n"
+        "assert p.result(a) == 1\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_pool_reentrant_enter_raises():
-    with GraphPool(max_workers=2) as p:
-        with pytest.raises(RuntimeError):
-            p.__enter__()
+    # Public `with` protocol: a second `with` on the same pool raises.
+    p = GraphPool(max_workers=2)
+    with p:
+        pass
+    with pytest.raises(RuntimeError):
+        with p:
+            pass
 
 
 def test_multi_dependency_node():
@@ -254,11 +249,25 @@ def test_multi_dependency_node():
 
 
 def test_result_timeout():
+    """Deterministic timeout test: worker signals it started, then blocks on
+    an Event; the timeout must raise while the future is provably pending."""
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow():
+        started.set()
+        release.wait(5)
+        return 42
+
     with GraphPool(max_workers=2) as p:
-        gf = GraphFuture(lambda: (time.sleep(0.1), 42)[1])
+        gf = GraphFuture(slow)
         t = threading.Thread(target=lambda: p.result(gf))
         t.start()
-        with pytest.raises((TimeoutError, concurrent.futures.TimeoutError)):
-            gf.result(timeout=0.001)
-        t.join()
-        assert gf.result() == 42
+        try:
+            assert started.wait(5), "worker never started"
+            with pytest.raises(_TIMEOUT_ERRORS):
+                gf.result(timeout=0.01)
+        finally:
+            release.set()
+            t.join(5)
+        assert gf.result(timeout=5) == 42

@@ -4,8 +4,9 @@ dict_ext: an extended dict class with functional-style helpers
 """
 
 from functools import reduce
-from typing import Any, Callable, NamedTuple, Optional, Tuple
-from sequence_extensions import list_ext
+from typing import Any, Callable, NamedTuple, Optional
+
+from sequence_extensions.list_ext import list_ext
 
 
 class KeyValueTuple(NamedTuple):
@@ -20,34 +21,46 @@ class dict_ext(dict):
     Extend the normal dict class
     """
 
-    def map(self, func: Callable[[Any, Any], Any], cast: Any = dict) -> Any:
+    def map(self, func: Callable[[Any, Any], Any], cast: Any = "dict_ext") -> Any:
         """
-        cast([f(*item_1), f(*item_2), ...])
+        Apply func to each (key, value) pair and cast the results.
 
-        cast usage:
-            cast: dict
-            func(key, value) -> (key_t, value_t)
-            return: {key_t1 : value_t1, key_t2 : value_t2, ...}
+        Parameters
+        ----------
+        func : Callable[[Any, Any], Any]
+            func(key, value) -> result
+        cast : Any, default "dict_ext"
+            How to cast the iterable of func results:
+            - dict: return a plain dict (builtin); accepts any
+              dict-constructible iterable of (key, value) pairs
+              (no 2-tuple validation)
+            - dict_ext: return a dict_ext; each func result must be a
+              (key, value) 2-tuple, otherwise a TypeError is raised
+            - list_ext: return a list_ext of func results (no 2-tuple
+              validation)
+            - other: cast(iterable_of_func_results)
 
-            cast: list
-            func(key, value) -> a_t
-            return: [a_t1, a_t2, ...]
+        Returns
+        -------
+        The func results cast with `cast`.
         """
-        l = [func(*i) for i in self.items()]
+        results = [func(*i) for i in self.items()]
 
-        cast = dict_ext if cast == dict else cast
+        if cast is dict or cast == "dict":
+            return dict(results)
 
-        # when casting to a dict, func must return a (key, value) 2-tuple
-        if cast is dict_ext:
-            for r in l:
+        if cast is dict_ext or cast == "dict_ext":
+            for r in results:
                 if not isinstance(r, (tuple, list)) or len(r) != 2:
                     raise TypeError("map func must return a (key, value) 2-tuple")
+            return dict_ext(results)
 
-        return cast(l)
+        if cast is list_ext or cast == "list_ext":
+            return list_ext(results)
 
-    def filter(
-        self, func: Optional[Callable[[Any, Any], bool]] = None
-    ) -> "dict_ext":
+        return cast(results)
+
+    def filter(self, func: Optional[Callable[[Any, Any], bool]] = None) -> "dict_ext":
         """
         func(key, value) -> bool
 
@@ -61,8 +74,11 @@ class dict_ext(dict):
     def for_each(self, func: Callable[[Any, Any], Any]) -> None:
         """
         func(key, value) -> None
+
+        Returns None.
         """
-        [func(key, value) for key, value in self.items()]
+        for key, value in self.items():
+            func(key, value)
 
     def to_list(self) -> list[list[Any]]:
         """
@@ -79,19 +95,25 @@ class dict_ext(dict):
 
         Returns a new dict_ext with the converted keys/values.
         """
-        return self.map(lambda a, b: (str(a) if key else a, str(b) if value else b))
+        return self.map(
+            lambda a, b: (str(a) if key else a, str(b) if value else b),
+            cast=dict_ext,
+        )
 
     def to_string(self, separator: str = "\n") -> str:
         """
         return string of dict
+
+        separator: str, default "\\n"
+            separator between entries
 
         Return:
         key1 : value1
         key2 : value2
         ...
         """
-        l = self.map(lambda a, b: f"{a} : {b}", list_ext)
-        s = l.to_string(separator=separator)
+        results = self.map(lambda a, b: f"{a} : {b}", list_ext)
+        s = results.to_string(separator=separator)
         return s
 
     def get_keys(self) -> list[Any]:
@@ -106,13 +128,13 @@ class dict_ext(dict):
         """
         return list_ext(self.values())
 
-    def to_tuple(self) -> Tuple[Tuple[Any, Any], ...]:
+    def to_tuple(self) -> tuple[tuple[Any, Any], ...]:
         """
         ((key, value),..)
         """
         return tuple((key, value) for key, value in self.items())
 
-    def to_named_tuple(self) -> Tuple[KeyValueTuple, ...]:
+    def to_named_tuple(self) -> tuple[KeyValueTuple, ...]:
         """
         (a : KeyValueTuple,..)
         a.key
@@ -127,14 +149,14 @@ class dict_ext(dict):
         """
         return list_ext([key for key, val in self.items() if val == value])
 
-    def reduce(
-        self, func: Callable[[KeyValueTuple, KeyValueTuple], Tuple[Any, Any]]
-    ) -> "dict_ext":
+    def reduce(self, func: Callable[[KeyValueTuple, KeyValueTuple], tuple[Any, Any]]) -> "dict_ext":
         """
         Reduce the dict's (key, value) pairs
-        func(a : KeyValueTuple, b : KeyValueTuple) -> (key_c, item_c)
+        func(a : KeyValueTuple, b : KeyValueTuple) -> (key_c, value_c)
         [a|b].key
         [a|b].value
+
+        If the dict is empty, return an empty dict_ext.
         """
         if not self:
             return type(self)()
@@ -143,7 +165,10 @@ class dict_ext(dict):
 
         # ensure that the returned type is the same as the iterable
         def f(*args):
-            return KeyValueTuple(*func(*args))
+            result = func(*args)
+            if not isinstance(result, (tuple, list)) or len(result) != 2:
+                raise TypeError("reduce func must return a (key, value) 2-tuple")
+            return KeyValueTuple(*result)
 
         # convert to dict
         t = (reduce(f, t),)
@@ -165,12 +190,12 @@ class dict_ext(dict):
     def inverse(self) -> "dict_ext":
         """
         {key:value} -> {value:key}
+
+        If multiple keys share the same value, the last one wins.
         """
         return type(self)({value: key for key, value in self.items()})
 
-    def first(
-        self, func: Optional[Callable[[Any, Any], bool]] = None
-    ) -> KeyValueTuple:
+    def first(self, func: Optional[Callable[[Any, Any], bool]] = None) -> KeyValueTuple:
         """
         Filter the dict on func(key, value), return the first (key, value) pair
         as a KeyValueTuple.
@@ -178,13 +203,11 @@ class dict_ext(dict):
 
         if func is None the first item will be returned
         """
-        l = self.filter(func) if func is not None else self
+        results = self.filter(func) if func is not None else self
 
-        return KeyValueTuple(*l.to_list()[0])
+        return KeyValueTuple(*results.to_list()[0])
 
-    def last(
-        self, func: Optional[Callable[[Any, Any], bool]] = None
-    ) -> KeyValueTuple:
+    def last(self, func: Optional[Callable[[Any, Any], bool]] = None) -> KeyValueTuple:
         """
         Filter the dict on func(key, value), return the last (key, value) pair
         as a KeyValueTuple.
@@ -192,28 +215,34 @@ class dict_ext(dict):
 
         if func is None the last item will be returned
         """
-        l = self.filter(func) if func is not None else self
+        results = self.filter(func) if func is not None else self
 
-        return KeyValueTuple(*l.to_list()[-1])
+        return KeyValueTuple(*results.to_list()[-1])
 
     def all(self, func: Optional[Callable[[Any, Any], bool]] = None) -> bool:
         """
         Check if all items fulfill the condition
 
-        if func is provided equivalent to  'all(self.map(func, cast=list))'
+        if func is None, operate on the dict's VALUES only:
+            all(self.values())
+
+        if func is provided equivalent to  'all(self.map(func, cast=list_ext))'
         """
         if func is None:
             return all(self.values())
-        l = self.map(func, cast=list_ext)
-        return all(l)
+        results = self.map(func, cast=list_ext)
+        return all(results)
 
     def any(self, func: Optional[Callable[[Any, Any], bool]] = None) -> bool:
         """
         Check if at least one item fulfill the condition
 
-        if func is provided equivalent to  'any(self.map(func, cast=list))'
+        if func is None, operate on the dict's VALUES only:
+            any(self.values())
+
+        if func is provided equivalent to  'any(self.map(func, cast=list_ext))'
         """
         if func is None:
             return any(self.values())
-        l = self.map(func, cast=list_ext)
-        return any(l)
+        results = self.map(func, cast=list_ext)
+        return any(results)

@@ -3,8 +3,6 @@
 from collections.abc import Iterable, Iterator
 from typing import Callable, Optional, TypeVar
 
-from sequence_extensions.list_ext import list_ext
-
 T = TypeVar("T")
 
 
@@ -38,16 +36,19 @@ class gen_ext:
         Args:
             item: The starting item (not yielded itself).
             iter_f: Function mapping the current item to the next item.
-            stop_f: Predicate on the *next* item: return True to keep
-                yielding, False to stop. Default None means never stop
-                (callers must supply a stop predicate or an iter_f that
-                terminates, e.g. by raising StopIteration).
+            stop_f: Keep-going predicate on the *next* item: return True to
+                continue, False to stop. Default None means never stop —
+                callers must always pass a stop_f, or bound the walk with
+                itertools.islice/takewhile.
 
         Returns:
             An iterator over the yielded items.
         """
         while True:
-            item = iter_f(item)
+            try:
+                item = iter_f(item)
+            except StopIteration:
+                return
             if stop_f is not None and not stop_f(item):
                 return
             yield item
