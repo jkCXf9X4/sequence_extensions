@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sequence_extensions.workflow_schema import Action, Sequential
+from sequence_extensions.workflow.schema import Action, Sequential
 
 __all__ = [
     "find_files",

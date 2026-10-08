@@ -1,10 +1,10 @@
 """
-workflow_engine — execution engine for the V&V workflow layer.
+Execution engine for the V&V workflow layer.
 
 The engine executes the node tree produced by
-:mod:`sequence_extensions.workflow_schema` (``Action`` / ``Sequential`` /
-``Parallel``) on top of the :class:`sequence_extensions.graph_future`
-substrate (``GraphFuture`` / ``GraphPool``).  The semantics follow the paper
+:mod:`sequence_extensions.workflow.schema` (``Action`` / ``Sequential`` /
+``Parallel``) on top of the :class:`sequence_extensions.graph` substrate
+(``GraphFuture`` / ``GraphPool``).  The semantics follow the paper
 "Automation Nation: Taming Complex V&V Workflows" (16th International
 Modelica & FMI Conference, September 2025, Lucerne, Switzerland;
 DOI 10.3384/ecp12076741), section 4.2:
@@ -28,9 +28,8 @@ DOI 10.3384/ecp12076741), section 4.2:
 * **At most once** — every action executes at most once; the engine never
   re-runs a function (no feedback loops).
 
-Public surface (pinned): :class:`FunctionRegistry`, ``DEFAULT_REGISTRY``,
-:func:`run_workflow`, :func:`Test_Framework`.  Internal but unit-testable:
-:func:`check_splice_scope`.
+Public surface (pinned): :func:`run_workflow`, :func:`Test_Framework`.
+Internal but unit-testable: :func:`check_splice_scope`.
 """
 
 from __future__ import annotations
@@ -38,12 +37,12 @@ from __future__ import annotations
 import threading
 from typing import Any, Callable, Union
 
-from .graph_future import GraphFuture, GraphPool
-from .workflow_schema import Action, Parallel, Sequential, parse_workflow
+from ..graph import GraphFuture, GraphPool
+from .params import normalize_params
+from .registry import DEFAULT_REGISTRY, FunctionRegistry
+from .schema import Action, Parallel, Sequential, parse_workflow
 
 __all__ = [
-    "DEFAULT_REGISTRY",
-    "FunctionRegistry",
     "Test_Framework",
     "check_splice_scope",
     "run_workflow",
@@ -53,65 +52,6 @@ _Node = Union[Action, Sequential, Parallel]
 _Group = Union[Sequential, Parallel]
 # Result placeholder for a node cancelled by a splice (its actions do not run).
 _SENTINEL = object()
-
-
-# --------------------------------------------------------------------------- #
-# Function registry
-# --------------------------------------------------------------------------- #
-
-
-class FunctionRegistry:
-    """
-    A name -> function registry for workflow actions.
-
-    Functions are called with keyword arguments only (the engine passes
-    globals, upstream results, and the action's own parameters as kwargs).
-    """
-
-    def __init__(self) -> None:
-        """Create an empty registry."""
-        self._functions: dict[str, Callable[..., Any]] = {}
-
-    def register(self, name: str, fn: Callable[..., Any]) -> None:
-        """
-        Register ``fn`` under ``name`` (replacing any earlier registration).
-
-        Raises ``ValueError`` if ``name`` is empty or ``fn`` is not callable.
-        """
-        if not name:
-            raise ValueError("function name must be a non-empty string")
-        if not callable(fn):
-            raise ValueError(f"function {name!r} must be callable")
-        self._functions[name] = fn
-
-    def get(self, name: str) -> Callable[..., Any]:
-        """
-        Return the function registered under ``name``.
-
-        Raises ``ValueError`` naming the function if it is not registered.
-        """
-        try:
-            return self._functions[name]
-        except KeyError:
-            raise ValueError(f"unknown function: {name!r}") from None
-
-    def names(self) -> list[str]:
-        """Return the registered function names in registration order."""
-        return list(self._functions)
-
-    def __contains__(self, name: object) -> bool:
-        """True if ``name`` is a registered function name."""
-        return name in self._functions
-
-
-#: The default function registry (empty).
-#:
-#: ``run_workflow`` / ``Test_Framework`` use it when no ``registry`` is
-#: given; register your workflow functions on it (or pass your own
-#: ``FunctionRegistry``).  The paper's seven library functions are not part
-#: of the package — deterministic placeholder implementations live in the
-#: test resources (``tests/resources/workflow_stubs.py``).
-DEFAULT_REGISTRY = FunctionRegistry()
 
 
 # --------------------------------------------------------------------------- #
@@ -177,63 +117,6 @@ def _as_node_list(returned: Any) -> list[_Node] | None:
         if returned and all(isinstance(item, (Action, Sequential, Parallel)) for item in returned):
             return list(returned)
     return None
-
-
-# --------------------------------------------------------------------------- #
-# Parameter normalization
-# --------------------------------------------------------------------------- #
-
-
-def _coerce_value(item: Any) -> Any:
-    """
-    Normalize one sweep value.
-
-    Strings are stripped and converted to ``int`` (then ``float``) when
-    possible; other values are returned unchanged.
-    """
-    if isinstance(item, str):
-        text = item.strip()
-        try:
-            return int(text)
-        except ValueError:
-            pass
-        try:
-            return float(text)
-        except ValueError:
-            return text
-    return item
-
-
-def _normalize_values(values: Any) -> list[Any]:
-    """
-    Normalize a ``values`` parameter to a list.
-
-    A string is split on commas; a list or tuple is used as-is; ``None``
-    yields an empty list.  Each item is stripped (if a string), empty items
-    are dropped, and numeric strings are converted to ``int`` (or ``float``).
-    """
-    if values is None:
-        return []
-    items = values.split(",") if isinstance(values, str) else list(values)
-    normalized: list[Any] = []
-    for item in items:
-        if isinstance(item, str) and not item.strip():
-            continue
-        normalized.append(_coerce_value(item))
-    return normalized
-
-
-def _normalize_params(params: dict[str, Any]) -> dict[str, Any]:
-    """
-    Normalize an action's own parameters before the function runs.
-
-    A ``values`` parameter given as a comma-separated string (the XML form,
-    e.g. ``"5, 10, 15"``) is converted to a list of values (``[5, 10, 15]``)
-    so functions receive the same shape from the XML and the Python API.
-    """
-    if "values" in params and isinstance(params["values"], str):
-        return {**params, "values": _normalize_values(params["values"])}
-    return params
 
 
 # --------------------------------------------------------------------------- #
@@ -322,7 +205,7 @@ class _Engine:
         """
         parent, index = self._locate(action)
         fn = self._registry.get(action.function)
-        params = _normalize_params(action.params)
+        params = normalize_params(action.params)
         actions = [getattr(f, "_action", None) for f in upstream]
         future = GraphFuture(
             self._run_action,
@@ -519,7 +402,7 @@ def run_workflow(
     Parse a workflow XML document and execute it; return the final result.
 
     ``xml_source`` is the workflow XML (see
-    :func:`sequence_extensions.workflow_schema.parse_workflow`).  ``registry``
+    :func:`sequence_extensions.workflow.schema.parse_workflow`).  ``registry``
     is the function registry (defaults to ``DEFAULT_REGISTRY``).
     ``parameters`` are extra global parameters: they are merged over the
     XML's global parameters (``<VerificationWorkflow>`` wrapper elements),

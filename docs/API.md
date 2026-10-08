@@ -1,8 +1,23 @@
 # sequence_extensions API Reference
 
-Hand-written API reference for the `sequence_extensions` package — higher-order function extensions for sequences (lists, dicts, generators) plus a small dependency-graph future.
+Hand-written API reference for the `sequence_extensions` package — higher-order function extensions for sequences (lists, dicts, generators) plus a small dependency-graph future and a V&V workflow layer.
 
 > **Version:** this document describes **version 0.2.0** (Python >= 3.9).
+
+## Package layout
+
+```
+sequence_extensions/
+├── ext/        # list_ext / dict_ext / gen_ext (functional sequence helpers)
+├── graph/      # graph_future (GraphFuture / GraphPool execution substrate)
+└── workflow/   # V&V workflow layer
+    ├── schema.py    # Action / Sequential / Parallel + parse_workflow
+    ├── registry.py  # FunctionRegistry + DEFAULT_REGISTRY
+    ├── params.py    # parameter normalization (XML form -> Python form)
+    └── engine.py    # run_workflow / Test_Framework execution engine
+```
+
+All names below are re-exported from the package root.
 
 ## Package exports
 
@@ -15,6 +30,14 @@ from sequence_extensions import (
     GraphFuture,
     GraphPool,
     KeyValueTuple,
+    Action,
+    Sequential,
+    Parallel,
+    parse_workflow,
+    run_workflow,
+    Test_Framework,
+    FunctionRegistry,
+    DEFAULT_REGISTRY,
 )
 
 __version__ = "0.2.0"
@@ -29,6 +52,14 @@ __version__ = "0.2.0"
 | `GraphFuture` | Dependency-graph future node |
 | `GraphPool` | Thread pool that evaluates a `GraphFuture` graph |
 | `KeyValueTuple` | `NamedTuple` with `.key` and `.value` attributes |
+| `Action` | Workflow node: one function call |
+| `Sequential` | Workflow group: children execute in strict order |
+| `Parallel` | Workflow group: independent, concurrent children |
+| `parse_workflow` | Parse a workflow XML document into a root group |
+| `run_workflow` | Parse and execute a workflow XML document |
+| `Test_Framework` | Execute a workflow built via the Python API |
+| `FunctionRegistry` | Name -> function registry for workflow actions |
+| `DEFAULT_REGISTRY` | Default (empty) function registry |
 | `__version__` | `"0.2.0"` |
 
 ---

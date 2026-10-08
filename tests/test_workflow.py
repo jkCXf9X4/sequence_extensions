@@ -34,6 +34,7 @@ from sequence_extensions import (
     Test_Framework,
     parse_workflow,
     run_workflow,
+    workflow_function,
 )
 
 # --------------------------------------------------------------------------- #
@@ -347,6 +348,115 @@ def test_unknown_action_name_raises_clear_error():
     xml = "<sequential><action function='definitely_not_a_function'/></sequential>"
     with pytest.raises(ValueError, match="definitely_not_a_function"):
         run_workflow(xml)
+
+
+# --- decorator registration (workflow_function / registry.function) ---
+
+
+@pytest.fixture
+def pristine_default_registry():
+    """Snapshot DEFAULT_REGISTRY and restore it after the test (no leakage)."""
+    functions = DEFAULT_REGISTRY._functions
+    saved = dict(functions)
+    yield DEFAULT_REGISTRY
+    functions.clear()
+    functions.update(saved)
+
+
+def test_workflow_function_bare_registers_under_own_name(pristine_default_registry):
+    """@workflow_function registers the function under its own name in DEFAULT_REGISTRY."""
+
+    @workflow_function
+    def my_task(**kwargs):
+        return "done"
+
+    assert pristine_default_registry.names() == ["my_task"]
+    assert pristine_default_registry.get("my_task") is my_task
+    # The function is returned unchanged and stays directly callable.
+    assert my_task() == "done"
+
+
+def test_workflow_function_name_and_registry_kwargs():
+    """name= and registry= steer the registry name and the target registry."""
+    registry = FunctionRegistry()
+
+    @workflow_function(name="task", registry=registry)
+    def _my_task(**kwargs):
+        return "done"
+
+    assert registry.names() == ["task"]
+    assert registry.get("task") is _my_task
+    assert "my_task" not in registry
+    assert DEFAULT_REGISTRY.names() == []
+
+
+def test_workflow_function_rejects_empty_name():
+    """An empty name raises the same ValueError as FunctionRegistry.register."""
+    with pytest.raises(ValueError, match="non-empty"):
+        workflow_function(name="")(lambda **kwargs: None)
+
+
+def test_workflow_function_reregister_replaces(pristine_default_registry):
+    """Decorating twice under one name replaces the earlier registration."""
+
+    @workflow_function
+    def first_version(**kwargs):
+        return 1
+
+    @workflow_function(name="first_version")
+    def second_version(**kwargs):
+        return 2
+
+    assert pristine_default_registry.names() == ["first_version"]
+    assert pristine_default_registry.get("first_version")() == 2
+
+
+def test_registry_function_decorator_registers_in_that_registry():
+    """registry.function() registers in that registry (parenthesized and bare)."""
+    registry = FunctionRegistry()
+
+    @registry.function()
+    def stub_a(**kwargs):
+        return "a"
+
+    @registry.function(name="b")
+    def _stub_b(**kwargs):
+        return "b"
+
+    @registry.function
+    def stub_c(**kwargs):
+        return "c"
+
+    # Without name=, the registry name is the function's own __name__.
+    assert registry.names() == ["stub_a", "b", "stub_c"]
+    assert registry.get("stub_a") is stub_a
+    assert registry.get("b") is _stub_b
+    assert registry.get("stub_c") is stub_c
+    assert DEFAULT_REGISTRY.names() == []
+
+
+def test_decorated_function_is_addressable_via_workflow_schema(pristine_default_registry):
+    """A decorator-registered function runs from workflow XML and the Python API."""
+
+    @workflow_function
+    def add_one(value="0", **kwargs):
+        return int(value) + 1
+
+    xml = '<sequential><action function="add_one"><value value="41"/></action></sequential>'
+    assert run_workflow(xml) == 42
+    assert Test_Framework(seq=Sequential(Action("add_one", value="41"))) == 42
+
+
+def test_registry_function_end_to_end_via_xml():
+    """A function registered via registry.function() runs through run_workflow."""
+    registry = FunctionRegistry()
+
+    @registry.function()
+    def double(value="0", **kwargs):
+        return int(value) * 2
+
+    xml = '<sequential><action function="double"><value value="21"/></action></sequential>'
+    assert run_workflow(xml, registry=registry) == 42
 
 
 # --------------------------------------------------------------------------- #

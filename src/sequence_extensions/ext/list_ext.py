@@ -11,7 +11,7 @@ from statistics import mean
 from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar, Union
 
 if TYPE_CHECKING:
-    from sequence_extensions import dict_ext
+    from . import dict_ext
 
 T = TypeVar("T")
 U = TypeVar("U")
@@ -248,7 +248,7 @@ class list_ext(list):
 
         Raises ValueError if len(keys) != len(self).
         """
-        from sequence_extensions import dict_ext
+        from .dict_ext import dict_ext
 
         keys = list(keys)
         if len(keys) != len(self):
@@ -261,7 +261,7 @@ class list_ext(list):
 
         Raises ValueError if len(values) != len(self).
         """
-        from sequence_extensions import dict_ext
+        from .dict_ext import dict_ext
 
         values = list(values)
         if len(values) != len(self):
@@ -282,7 +282,7 @@ class list_ext(list):
         If key_func is None the identity is used as the key; if value_func is
         None the identity is used as the value.
         """
-        from sequence_extensions import dict_ext
+        from .dict_ext import dict_ext
 
         def f(i):
             k = key_func(i) if key_func else i
@@ -372,7 +372,7 @@ class list_ext(list):
         Later dicts' overlapping keys are ignored (first dict wins).
         Returns a dict_ext of the chained dicts.
         """
-        from sequence_extensions import dict_ext
+        from .dict_ext import dict_ext
 
         return dict_ext(ChainMap(*self))
 

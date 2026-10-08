@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Package structure**: restructured the package into three subpackages for
+  easier navigation — `ext/` (the `list_ext` / `dict_ext` / `gen_ext`
+  helpers), `graph/` (the dependency-graph future substrate), and `workflow/`
+  (the V&V workflow layer).  The former `workflow_engine` module is split
+  into `workflow/schema.py`, `workflow/registry.py`, `workflow/params.py`,
+  and `workflow/engine.py`; the paper's stub functions are test resources
+  (`tests/resources/workflow_stubs.py`), not package modules.  The
+  top-level public API (`from sequence_extensions import ...`) is unchanged;
+  only the internal module paths moved.
+
 ## [0.2.0] - 2026-09-10
 
 ### Changed

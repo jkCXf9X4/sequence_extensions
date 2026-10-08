@@ -6,7 +6,7 @@ dict_ext: an extended dict class with functional-style helpers
 from functools import reduce
 from typing import Any, Callable, NamedTuple, Optional
 
-from sequence_extensions.list_ext import list_ext
+from .list_ext import list_ext
 
 
 class KeyValueTuple(NamedTuple):

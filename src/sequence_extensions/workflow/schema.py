@@ -1,5 +1,5 @@
 """
-workflow_schema — node classes and XML parser for the V&V workflow schema.
+Node classes and XML parser for the V&V workflow schema.
 
 The schema is specified by the paper "Automation Nation: Taming Complex V&V
 Workflows" (16th International Modelica & FMI Conference, September 2025,

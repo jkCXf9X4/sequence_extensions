@@ -1,7 +1,7 @@
 import pytest
 
 from sequence_extensions import list_ext
-from sequence_extensions.dict_ext import dict_ext
+from sequence_extensions.ext.dict_ext import dict_ext
 
 
 @pytest.fixture

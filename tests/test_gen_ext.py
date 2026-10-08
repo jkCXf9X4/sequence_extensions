@@ -3,7 +3,7 @@ import itertools
 import pytest
 
 from sequence_extensions import list_ext
-from sequence_extensions.gen_ext import gen_ext
+from sequence_extensions.ext.gen_ext import gen_ext
 
 
 @pytest.fixture

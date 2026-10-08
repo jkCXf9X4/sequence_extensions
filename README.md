@@ -4,14 +4,22 @@
 
 Higher-order function extensions for Python lists, dicts, generators, and dependency-graph futures.
 
-The package provides four modules:
+The package is organized into three subpackages:
 
-- `list_ext` — an extended `list` class with functional helpers (`map`, `filter`, `reduce`, `window`, ...)
-- `dict_ext` — an extended `dict` class with functional helpers (`map`, `filter`, `reduce`, ...)
-- `gen_ext` — static helpers for generators (`to_list`, `recursive_gen`)
-- `graph_future` — dependency-graph futures (`GraphFuture`, `GraphPool`)
+```
+sequence_extensions/
+├── ext/        # functional helpers for built-in sequences
+├── graph/      # dependency-graph execution substrate
+└── workflow/   # V&V workflow layer (schema, registry, engine)
+```
 
-See [docs/API.md](docs/API.md) for the full API reference.
+- `ext.list_ext` — an extended `list` class with functional helpers (`map`, `filter`, `reduce`, `window`, ...)
+- `ext.dict_ext` — an extended `dict` class with functional helpers (`map`, `filter`, `reduce`, ...)
+- `ext.gen_ext` — static helpers for generators (`to_list`, `recursive_gen`)
+- `graph.graph_future` — dependency-graph futures (`GraphFuture`, `GraphPool`)
+- `workflow` — the V&V workflow layer: `Action` / `Sequential` / `Parallel` nodes, XML parsing, a function registry, and the execution engine (`run_workflow`, `Test_Framework`)
+
+Everything is also re-exported from the package root (`from sequence_extensions import list_ext, ...`). See [docs/API.md](docs/API.md) for the full API reference.
 
 ## Installation
 
