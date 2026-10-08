@@ -1,0 +1,8 @@
+<VerificationWorkflow>
+  <sequential>
+    <action function="a"/>
+  </sequential>
+  <parallel>
+    <action function="b"/>
+  </parallel>
+</VerificationWorkflow>

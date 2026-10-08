@@ -1,0 +1,19 @@
+<VerificationWorkflow>
+  <model value="./model_1"/>
+  <sequential>
+    <action function="find_test_cases">
+      <path value="./test"/>
+    </action>
+    <sequential>
+      <action function="parameter_sweep">
+        <parameter_name value="parameter_1"/>
+        <values value="5, 10, 15"/>
+      </action>
+      <sequential>
+        <action function="simulate"/>
+      </sequential>
+      <action function="compare_parameter_sweep"/>
+    </sequential>
+    <action function="compare_results"/>
+  </sequential>
+</VerificationWorkflow>

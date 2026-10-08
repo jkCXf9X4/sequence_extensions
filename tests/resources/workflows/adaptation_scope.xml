@@ -1,0 +1,8 @@
+<sequential>
+  <action function="outer_action_1"/>
+  <sequential>
+    <action function="inner_action_1"/>
+    <action function="inner_action_2"/>
+  </sequential>
+  <action function="outer_action_2"/>
+</sequential>

@@ -1,0 +1,9 @@
+<sequential>
+  <action function="find_files">
+    <path value="file_storage/"/>
+  </action>
+  <sequential>
+    <action function="simulate"/>
+    <action function="evaluate_results"/>
+  </sequential>
+</sequential>

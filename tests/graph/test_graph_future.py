@@ -345,3 +345,18 @@ def test_has_result_false_after_exception():
             p.result(gf)
     assert gf.done() is True
     assert gf.has_result() is False
+
+
+def test_graph_future_pool_smoke():
+    """Chaining two GraphFutures through a GraphPool returns the final value."""
+
+    def double(x):
+        return x * 2
+
+    def add(x, y):
+        return x + y
+
+    with GraphPool(max_workers=4) as pool:
+        a = GraphFuture(double, 5)
+        b = GraphFuture(add, a, 1)
+        assert pool.result(b) == 11

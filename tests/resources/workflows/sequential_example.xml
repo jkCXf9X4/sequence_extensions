@@ -1,0 +1,4 @@
+<sequential>
+  <action function="action_1"/>
+  <!-- potential additional actions -->
+</sequential>
