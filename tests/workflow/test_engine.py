@@ -30,7 +30,7 @@ def test_listing_10_python_api_returns_final_result():
     common_parameters = {"model": "./model_1"}
     simulate_seq = Sequential(Action("simulate"))
     sweep_seq = Sequential(
-        Action("parameter_sweep", parameter="parameter_1", values=[5, 10, 15]),
+        Action("parameter_sweep", parameter_name="parameter_1", values=[5, 10, 15]),
         simulate_seq,
         Action("compare_parameter_sweep"),
     )
@@ -50,7 +50,7 @@ def test_parameter_sweep_normalizes_string_to_list():
     """The string "5, 10, 15" is normalized to [5, 10, 15] before the stub runs."""
     received = {}
 
-    def sweep(parameter_name=None, parameter=None, values=None, **kwargs):
+    def sweep(parameter_name=None, values=None, **kwargs):
         received["values"] = values
         return values
 
@@ -59,8 +59,8 @@ def test_parameter_sweep_normalizes_string_to_list():
     xml = (
         "<sequential>"
         '<action function="parameter_sweep">'
-        '<parameter_name value="parameter_1"/>'
-        '<values value="5, 10, 15"/>'
+        '<argument key="parameter_name" value="parameter_1"/>'
+        '<argument key="values" value="5, 10, 15"/>'
         "</action>"
         "</sequential>"
     )
@@ -164,10 +164,10 @@ def test_global_parameters_propagate_and_override():
     registry.register("b", record)
     xml = (
         "<VerificationWorkflow>"
-        '<model value="global_model"/>'
+        '<argument key="model" value="global_model"/>'
         "<sequential>"
         '<action function="a"/>'
-        '<action function="b"><model value="own_model"/></action>'
+        '<action function="b"><argument key="model" value="own_model"/></action>'
         "</sequential>"
         "</VerificationWorkflow>"
     )
@@ -219,7 +219,7 @@ def test_dynamic_adaptation_splices_per_file(tmp_path):
 
     xml = (
         "<sequential>"
-        f'<action function="find_files"><path value="{storage}"/></action>'
+        f'<action function="find_files"><argument key="path" value="{storage}"/></action>'
         "<sequential>"
         '<action function="simulate"/>'
         '<action function="evaluate_results"/>'

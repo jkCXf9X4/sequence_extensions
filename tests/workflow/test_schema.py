@@ -26,7 +26,7 @@ def test_parse_listing_9_structure():
     root = parse_workflow(LISTING_9)
     assert isinstance(root, Sequential)
 
-    # Global parameter <model value="./model_1"/> is captured on the root.
+    # Global parameter <argument key="model" value="./model_1"/> is captured on the root.
     assert _globals(root).get("model") == "./model_1"
 
     top = _children(root)
@@ -130,7 +130,38 @@ def test_parse_rejects_unknown_nesting_element():
         parse_workflow(workflows.load("invalid/unknown_element.xml"))
 
 
-def test_parse_rejects_param_without_value():
-    """An action param child missing its value attribute is rejected."""
+def test_parse_rejects_argument_without_value():
+    """An <argument> element missing its value attribute is rejected."""
     with pytest.raises(ValueError):
-        parse_workflow(workflows.load("invalid/param_without_value.xml"))
+        parse_workflow(workflows.load("invalid/argument_without_value.xml"))
+
+
+def test_parse_rejects_argument_without_key():
+    """An <argument> element missing its key attribute is rejected."""
+    with pytest.raises(ValueError):
+        parse_workflow(workflows.load("invalid/argument_without_key.xml"))
+
+
+def test_parse_rejects_non_argument_inside_action():
+    """A non-<argument> child element of an <action> is rejected (the
+    element-name-as-parameter form is no longer part of the schema)."""
+    with pytest.raises(ValueError):
+        parse_workflow(workflows.load("invalid/action_unknown_element.xml"))
+
+
+def test_parse_rejects_non_argument_inside_wrapper():
+    """A non-<argument>, non-grouping child of <VerificationWorkflow> is rejected."""
+    with pytest.raises(ValueError):
+        parse_workflow(workflows.load("invalid/wrapper_unknown_element.xml"))
+
+
+def test_parse_rejects_duplicate_argument():
+    """Two <argument> elements with the same key on one action are rejected."""
+    with pytest.raises(ValueError):
+        parse_workflow(workflows.load("invalid/duplicate_argument.xml"))
+
+
+def test_parse_rejects_argument_with_children():
+    """An <argument> element containing child elements is rejected."""
+    with pytest.raises(ValueError):
+        parse_workflow(workflows.load("invalid/argument_with_children.xml"))

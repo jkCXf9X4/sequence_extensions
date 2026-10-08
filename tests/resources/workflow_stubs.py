@@ -120,7 +120,6 @@ def find_test_cases(path: str | Path, **kwargs: object) -> list[str]:
 @workflow_function
 def parameter_sweep(
     parameter_name: str | None = None,
-    parameter: str | None = None,
     values: str | list | tuple | None = None,
     **kwargs: object,
 ) -> list[Action]:
@@ -131,21 +130,18 @@ def parameter_sweep(
     returned actions are spliced into the workflow in place of the
     downstream group, so each sweep value gets its own ``simulate`` action.
 
-    The parameter name is accepted under either spelling: ``parameter_name``
-    (the XML form) or ``parameter`` (the Python API form).  ``values`` is
+    ``parameter_name`` is the name of the parameter to sweep.  ``values`` is
     accepted either as a comma-separated string (``"5, 10, 15"``) or as a
     list (``[5, 10, 15]``); string items are stripped, empty items are
     dropped, and numeric strings are converted to ``int`` (or ``float``).
 
     Returns one ``Action("simulate", <name>=<value>)`` per value, in order.
 
-    Raises ``ValueError`` if neither ``parameter_name`` nor ``parameter``
-    is given.
+    Raises ``ValueError`` if ``parameter_name`` is not given.
     """
-    name = parameter_name if parameter_name is not None else parameter
-    if name is None:
-        raise ValueError("parameter_sweep requires 'parameter_name' or 'parameter'")
-    return [Action("simulate", **{name: v}) for v in _normalize_values(values)]
+    if parameter_name is None:
+        raise ValueError("parameter_sweep requires 'parameter_name'")
+    return [Action("simulate", **{parameter_name: v}) for v in _normalize_values(values)]
 
 
 @workflow_function

@@ -1,0 +1,7 @@
+<sequential>
+  <action function="a">
+    <argument key="p" value="x">
+      <child/>
+    </argument>
+  </action>
+</sequential>

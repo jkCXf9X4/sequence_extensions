@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Workflow XML schema**: parameters are now written as
+  `<argument key="name" value="..."/>` elements, both as `<action>`
+  parameters and as global parameters inside `<VerificationWorkflow>`
+  (e.g. `<argument key="model" value="./model_1"/>`).  The previous
+  element-name-as-parameter form (`<param_name value="..."/>`) is no
+  longer accepted and is rejected as an unknown element, so parameter
+  names can no longer clash with the structural element names
+  (`<action>`, `<sequential>`, `<parallel>`) and the schema is uniform:
+  an element's name is never a parameter name, the `key` attribute
+  carries it.  The parser additionally rejects an `<argument>` missing
+  its `key` or `value` attribute, a duplicate `key` on one action, an
+  `<argument>` containing child elements, and non-`<argument>` children
+  of `<action>` / `<VerificationWorkflow>`.
+- **`parameter_sweep` test stub**: the `parameter` spelling alias for
+  `parameter_name` is removed; both the XML form
+  (`<argument key="parameter_name" ...>`) and the Python API form
+  (`Action("parameter_sweep", parameter_name=...)`) use `parameter_name`.
 - **Package structure**: restructured the package into three subpackages for
   easier navigation — `ext/` (the `list_ext` / `dict_ext` / `gen_ext`
   helpers), `graph/` (the dependency-graph future substrate), and `workflow/`

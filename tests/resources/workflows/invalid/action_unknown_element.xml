@@ -1,5 +1,5 @@
 <sequential>
   <action function="a">
-    <path/>
+    <path value="x"/>
   </action>
 </sequential>

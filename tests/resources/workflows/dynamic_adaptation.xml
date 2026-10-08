@@ -1,6 +1,6 @@
 <sequential>
   <action function="find_files">
-    <path value="file_storage/"/>
+    <argument key="path" value="file_storage/"/>
   </action>
   <sequential>
     <action function="simulate"/>

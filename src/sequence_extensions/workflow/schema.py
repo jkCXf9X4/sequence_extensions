@@ -16,25 +16,34 @@ A workflow is a tree of three node types:
 Groups nest arbitrarily.  ``parse_workflow`` turns the paper's XML into
 these nodes:
 
-* ``<VerificationWorkflow>`` wraps any number of GLOBAL PARAMETER elements
-  (e.g. ``<model value="./model_1"/>``) followed by exactly ONE top-level
-  grouping.  The globals are exposed on the returned root group as the
-  ``.globals`` dict (e.g. ``{"model": "./model_1"}``); the group itself is
-  returned as-is, so the engine reads ``root.globals`` separately.
+* ``<VerificationWorkflow>`` wraps any number of GLOBAL PARAMETER
+  ``<argument>`` elements (e.g.
+  ``<argument key="model" value="./model_1"/>``) followed by exactly ONE
+  top-level grouping.  The globals are exposed on the returned root group
+  as the ``.globals`` dict (e.g. ``{"model": "./model_1"}``); the group
+  itself is returned as-is, so the engine reads ``root.globals``
+  separately.
 * A bare ``<sequential>`` or ``<parallel>`` root (no wrapper) is also
   accepted; its ``.globals`` is an empty dict.
-* ``<action function="name">`` takes custom parameters as child elements,
-  one per parameter: ``<param_name value="..."/>`` (element name = parameter
-  name, ``value`` attribute = parameter value).
+* ``<action function="name">`` takes custom parameters as ``<argument>``
+  child elements, one per parameter:
+  ``<argument key="name" value="..."/>`` (``key`` attribute = parameter
+  name, ``value`` attribute = parameter value).  ``<argument>`` is the only
+  child element allowed inside an ``<action>`` (or anywhere for global
+  parameters); the ``key`` attribute carries the parameter name, so a
+  parameter can be any name without clashing with the structural element
+  names.
 
 Invalid structure raises ``ValueError`` with a message naming the problem:
 a root element that is not ``<VerificationWorkflow>`` / ``<sequential>`` /
 ``<parallel>``, zero or multiple top-level groupings inside
-``<VerificationWorkflow>``, an unknown element name anywhere, an
-``<action>`` without a ``function`` attribute, a parameter element without a
-``value`` attribute, a duplicate parameter name on one action, or a
-parameter element containing child elements.  Malformed (non-well-formed)
-XML is also reported as ``ValueError``.
+``<VerificationWorkflow>``, an unknown element name anywhere (including a
+non-``<argument>`` child of an ``<action>`` or of the
+``<VerificationWorkflow>`` wrapper), an ``<action>`` without a ``function``
+attribute, an ``<argument>`` without a ``key`` or ``value`` attribute, a
+duplicate parameter key on one action, or an ``<argument>`` containing
+child elements.  Malformed (non-well-formed) XML is also reported as
+``ValueError``.
 """
 
 from __future__ import annotations
@@ -45,6 +54,9 @@ __all__ = ["Action", "Parallel", "Sequential", "parse_workflow"]
 
 # Element names that denote a grouping node.
 _GROUP_TAGS = ("sequential", "parallel")
+# The element name that denotes a parameter (key/value pair), anywhere it
+# appears (action parameters, global parameters).
+_ARGUMENT_TAG = "argument"
 
 
 class Action:
@@ -139,8 +151,14 @@ def _parse_wrapped(root: ET.Element) -> Sequential | Parallel:
                     f"grouping, found <{child.tag}> after an earlier one"
                 )
             group = _parse_group(child)
+        elif child.tag == _ARGUMENT_TAG:
+            key, value = _argument(child)
+            globals_[key] = value
         else:
-            globals_[child.tag] = _param_value(child)
+            raise ValueError(
+                f"unknown element <{child.tag}> inside <VerificationWorkflow>; "
+                "global parameters must be <argument> elements"
+            )
     if group is None:
         raise ValueError(
             "<VerificationWorkflow> must contain exactly one top-level "
@@ -168,26 +186,43 @@ def _parse_child(element: ET.Element) -> Action | Sequential | Parallel:
 
 
 def _parse_action(element: ET.Element) -> Action:
-    """Parse an ``<action>`` element: function attribute + param child elements."""
+    """Parse an ``<action>`` element: function attribute + ``<argument>`` children."""
     function = element.attrib.get("function")
     if not function:
         raise ValueError("<action> element is missing its 'function' attribute")
     params: dict[str, str] = {}
     for child in element:
-        if child.tag in params:
-            raise ValueError(f"duplicate parameter <{child.tag}> in <action function={function!r}>")
-        params[child.tag] = _param_value(child)
+        if child.tag != _ARGUMENT_TAG:
+            raise ValueError(
+                f"unknown element <{child.tag}> inside <action function={function!r}>; "
+                "action parameters must be <argument> elements"
+            )
+        key, value = _argument(child)
+        if key in params:
+            raise ValueError(
+                f"duplicate parameter <argument key={key!r}> in <action function={function!r}>"
+            )
+        params[key] = value
     action = Action(function)
-    # Assign directly so XML parameter names that are Python keywords
-    # (e.g. <class value="..."/>) cannot break a ``**params`` call.
+    # Assign directly so parameter names that are Python keywords
+    # (e.g. <argument key="class" value="..."/>) cannot break a ``**params``
+    # call.
     action.params = params
     return action
 
 
-def _param_value(element: ET.Element) -> str:
-    """Return a parameter element's value; it must carry a ``value`` attribute."""
+def _argument(element: ET.Element) -> tuple[str, str]:
+    """Return the (key, value) of an ``<argument>`` element.
+
+    The element must carry a ``key`` attribute (the parameter name) and a
+    ``value`` attribute (the parameter value), and must not contain child
+    elements.
+    """
     if len(element):
-        raise ValueError(f"parameter element <{element.tag}> must not contain child elements")
+        raise ValueError("<argument> element must not contain child elements")
+    key = element.attrib.get("key")
+    if not key:
+        raise ValueError("<argument> element is missing its 'key' attribute")
     if "value" not in element.attrib:
-        raise ValueError(f"parameter element <{element.tag}> is missing its 'value' attribute")
-    return element.attrib["value"]
+        raise ValueError("<argument> element is missing its 'value' attribute")
+    return key, element.attrib["value"]

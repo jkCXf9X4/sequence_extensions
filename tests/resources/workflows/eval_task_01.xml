@@ -1,13 +1,13 @@
 <VerificationWorkflow>
-  <model value="./model_1"/>
+  <argument key="model" value="./model_1"/>
   <sequential>
     <action function="find_test_cases">
-      <path value="./test"/>
+      <argument key="path" value="./test"/>
     </action>
     <sequential>
       <action function="parameter_sweep">
-        <parameter_name value="parameter_1"/>
-        <values value="5, 10, 15"/>
+        <argument key="parameter_name" value="parameter_1"/>
+        <argument key="values" value="5, 10, 15"/>
       </action>
       <sequential>
         <action function="simulate"/>

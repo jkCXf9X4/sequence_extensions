@@ -172,7 +172,11 @@ def test_decorated_function_is_addressable_via_workflow_schema(pristine_default_
     def add_one(value="0", **kwargs):
         return int(value) + 1
 
-    xml = '<sequential><action function="add_one"><value value="41"/></action></sequential>'
+    xml = (
+        "<sequential>"
+        '<action function="add_one"><argument key="value" value="41"/></action>'
+        "</sequential>"
+    )
     assert run_workflow(xml) == 42
     assert Test_Framework(seq=Sequential(Action("add_one", value="41"))) == 42
 
@@ -185,7 +189,11 @@ def test_registry_function_end_to_end_via_xml():
     def double(value="0", **kwargs):
         return int(value) * 2
 
-    xml = '<sequential><action function="double"><value value="21"/></action></sequential>'
+    xml = (
+        "<sequential>"
+        '<action function="double"><argument key="value" value="21"/></action>'
+        "</sequential>"
+    )
     assert run_workflow(xml, registry=registry) == 42
 
 
