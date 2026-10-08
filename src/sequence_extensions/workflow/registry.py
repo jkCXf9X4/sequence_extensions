@@ -10,10 +10,13 @@ parameters as kwargs).
 :func:`workflow_function` is the decorator form of
 :meth:`FunctionRegistry.register`: it marks a function for the workflow
 schema so it can be addressed by name from XML and the Python API.
+Re-registering an existing name with a different function emits a
+``UserWarning`` (the earlier registration is replaced).
 """
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Callable
 
 __all__ = [
@@ -40,11 +43,25 @@ class FunctionRegistry:
         Register ``fn`` under ``name`` (replacing any earlier registration).
 
         Raises ``ValueError`` if ``name`` is empty or ``fn`` is not callable.
+
+        Emits a ``UserWarning`` if ``name`` is already registered with a
+        different function — the earlier registration is then replaced.
+        Re-registering the same function object is a silent no-op
+        (idempotent, e.g. a decorator applied more than once).
         """
         if not name:
             raise ValueError("function name must be a non-empty string")
         if not callable(fn):
             raise ValueError(f"function {name!r} must be callable")
+        existing = self._functions.get(name)
+        if existing is not None and existing is not fn:
+            warnings.warn(
+                f"function name {name!r} is already registered; "
+                f"replacing {getattr(existing, '__name__', repr(existing))!r} "
+                f"with {getattr(fn, '__name__', repr(fn))!r}",
+                UserWarning,
+                stacklevel=2,
+            )
         self._functions[name] = fn
 
     def get(self, name: str) -> Callable[..., Any]:
@@ -85,7 +102,9 @@ class FunctionRegistry:
 
         The decorated function is returned unchanged; see
         :func:`workflow_function` for the module-level equivalent that
-        targets ``DEFAULT_REGISTRY`` by default.
+        targets ``DEFAULT_REGISTRY`` by default.  Registering a name that
+        already holds a different function emits a ``UserWarning`` (see
+        :meth:`register`).
         """
 
         def decorator(f: Callable[..., Any]) -> Callable[..., Any]:
@@ -147,6 +166,8 @@ def workflow_function(
 
     Raises ``ValueError`` if the resolved name is empty or ``fn`` is not
     callable (the same checks :meth:`FunctionRegistry.register` applies).
+    Emits a ``UserWarning`` when the name already holds a different
+    function, which is then replaced.
     """
 
     def decorator(f: Callable[..., Any]) -> Callable[..., Any]:

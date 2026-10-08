@@ -12,12 +12,18 @@ fixtures below are the paper's Listing 5 (dynamic adaptation), Listing 9
 The suite is written against the pinned public contract and is fully
 deterministic: no network, no sleeps, no order dependence.  The paper's
 library functions come from the test resources
-(``tests/resources/workflow_stubs.py``) and are registered into a
-``FunctionRegistry`` explicitly; file-backed stubs (``find_files`` /
-``find_test_cases``) are driven with real files created under ``tmp_path``.
+(``tests/resources/workflow_stubs.py``), where they take the same path as
+real library functions: the bare ``@workflow_function`` decorator
+registers them in ``DEFAULT_REGISTRY`` at import time, and the paper's
+workflows run through the engine's default registry path; file-backed
+stubs (``find_files`` / ``find_test_cases``) are driven with real files
+created under ``tmp_path``.
 """
 
+import subprocess
+import sys
 import threading
+import warnings
 from pathlib import Path
 
 import pytest
@@ -85,36 +91,6 @@ LISTING_7 = """<sequential>
   <action function="outer_action_2"/>
 </sequential>
 """
-
-PAPER_FUNCTION_NAMES = [
-    "find_files",
-    "simulate",
-    "evaluate_results",
-    "find_test_cases",
-    "parameter_sweep",
-    "compare_parameter_sweep",
-    "compare_results",
-]
-
-#: The paper's stub functions (test resources) keyed by their registry name.
-PAPER_STUBS = {
-    "find_files": workflow_stubs.find_files,
-    "simulate": workflow_stubs.simulate,
-    "evaluate_results": workflow_stubs.evaluate_results,
-    "find_test_cases": workflow_stubs.find_test_cases,
-    "parameter_sweep": workflow_stubs.parameter_sweep,
-    "compare_parameter_sweep": workflow_stubs.compare_parameter_sweep,
-    "compare_results": workflow_stubs.compare_results,
-}
-
-
-def _paper_registry() -> FunctionRegistry:
-    """A fresh registry preloaded with the paper's seven stub functions."""
-    registry = FunctionRegistry()
-    for name in PAPER_FUNCTION_NAMES:
-        registry.register(name, PAPER_STUBS[name])
-    return registry
-
 
 # --------------------------------------------------------------------------- #
 # Introspection helpers (robust to the exact attribute names the engine uses)
@@ -327,8 +303,24 @@ def test_parse_rejects_param_without_value():
 
 
 def test_default_registry_is_empty_by_default():
-    """DEFAULT_REGISTRY is empty; workflow functions are registered explicitly."""
-    assert DEFAULT_REGISTRY.names() == []
+    """A fresh interpreter (no user registrations) sees an empty DEFAULT_REGISTRY.
+
+    Checked in a subprocess because the test process itself registers the
+    paper's stubs in DEFAULT_REGISTRY (via the decorator, like real
+    library functions would).
+    """
+    code = (
+        "import sequence_extensions as se\n"
+        "names = se.DEFAULT_REGISTRY.names()\n"
+        "assert names == [], names\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_registry_register_get_names():
@@ -370,7 +362,8 @@ def test_workflow_function_bare_registers_under_own_name(pristine_default_regist
     def my_task(**kwargs):
         return "done"
 
-    assert pristine_default_registry.names() == ["my_task"]
+    # Registered under its own name (after the paper stubs imported earlier).
+    assert pristine_default_registry.names()[-1] == "my_task"
     assert pristine_default_registry.get("my_task") is my_task
     # The function is returned unchanged and stays directly callable.
     assert my_task() == "done"
@@ -387,7 +380,8 @@ def test_workflow_function_name_and_registry_kwargs():
     assert registry.names() == ["task"]
     assert registry.get("task") is _my_task
     assert "my_task" not in registry
-    assert DEFAULT_REGISTRY.names() == []
+    # Nothing landed in DEFAULT_REGISTRY.
+    assert "task" not in DEFAULT_REGISTRY
 
 
 def test_workflow_function_rejects_empty_name():
@@ -396,19 +390,43 @@ def test_workflow_function_rejects_empty_name():
         workflow_function(name="")(lambda **kwargs: None)
 
 
-def test_workflow_function_reregister_replaces(pristine_default_registry):
-    """Decorating twice under one name replaces the earlier registration."""
+def test_workflow_function_reregister_replaces_and_warns(pristine_default_registry):
+    """Decorating twice under one name warns and replaces the earlier registration."""
 
     @workflow_function
     def first_version(**kwargs):
         return 1
 
-    @workflow_function(name="first_version")
     def second_version(**kwargs):
         return 2
 
-    assert pristine_default_registry.names() == ["first_version"]
+    with pytest.warns(UserWarning, match="already registered"):
+        workflow_function(name="first_version")(second_version)
+
+    assert pristine_default_registry.names()[-1] == "first_version"
     assert pristine_default_registry.get("first_version")() == 2
+
+
+def test_register_warns_on_replacement_but_not_on_same_function():
+    """register warns when replacing a different function; same object is silent."""
+
+    def first(**kwargs):
+        return 1
+
+    def second(**kwargs):
+        return 2
+
+    registry = FunctionRegistry()
+    registry.register("dup", first)
+    with pytest.warns(UserWarning, match="already registered"):
+        registry.register("dup", second)
+    assert registry.get("dup") is second
+
+    # Re-registering the same function object is a silent no-op.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        registry.register("dup", second)
+    assert registry.get("dup") is second
 
 
 def test_registry_function_decorator_registers_in_that_registry():
@@ -432,7 +450,9 @@ def test_registry_function_decorator_registers_in_that_registry():
     assert registry.get("stub_a") is stub_a
     assert registry.get("b") is _stub_b
     assert registry.get("stub_c") is stub_c
-    assert DEFAULT_REGISTRY.names() == []
+    # The custom registry got the functions, not DEFAULT_REGISTRY.
+    for name in ("stub_a", "b", "stub_c"):
+        assert name not in DEFAULT_REGISTRY
 
 
 def test_decorated_function_is_addressable_via_workflow_schema(pristine_default_registry):
@@ -459,6 +479,22 @@ def test_registry_function_end_to_end_via_xml():
     assert run_workflow(xml, registry=registry) == 42
 
 
+def test_paper_stubs_registered_in_default_registry():
+    """The paper's seven stubs are registered in DEFAULT_REGISTRY under their paper names."""
+    assert DEFAULT_REGISTRY.names() == [
+        "find_files",
+        "simulate",
+        "evaluate_results",
+        "find_test_cases",
+        "parameter_sweep",
+        "compare_parameter_sweep",
+        "compare_results",
+    ]
+    # The registered callables are the stub functions themselves.
+    assert DEFAULT_REGISTRY.get("find_files") is workflow_stubs.find_files
+    assert DEFAULT_REGISTRY.get("simulate") is workflow_stubs.simulate
+
+
 # --------------------------------------------------------------------------- #
 # 5. PYTHON API — Listing 10
 # --------------------------------------------------------------------------- #
@@ -478,7 +514,9 @@ def test_listing_10_python_api_returns_final_result():
         sweep_seq,
         Action("compare_results"),
     )
-    result = Test_Framework(parameters=common_parameters, seq=top_seq, registry=_paper_registry())
+    # The paper stubs self-register in DEFAULT_REGISTRY, so the engine's
+    # default registry path is used (no explicit registry=).
+    result = Test_Framework(parameters=common_parameters, seq=top_seq)
     # The final result is the return value of the last action (compare_results).
     assert result is not None
 
@@ -795,10 +833,9 @@ def test_run_workflow_listing_9_end_to_end(tmp_path):
     test_dir.mkdir()
     (test_dir / "case_1.csv").write_text("x,y\n1,2\n")
 
-    # Build a registry from the paper stubs (test resources).
-    registry = _paper_registry()
-
     # Rewrite the path in Listing 9 to the tmp_path so the stub finds the file.
+    # The paper stubs (test resources) self-register in DEFAULT_REGISTRY, so
+    # the engine's default registry path is used (no explicit registry=).
     xml = LISTING_9.replace("./test", str(test_dir))
-    result = run_workflow(xml, registry=registry, parameters={"model": "./model_1"})
+    result = run_workflow(xml, parameters={"model": "./model_1"})
     assert result is not None

@@ -25,14 +25,18 @@ Every function tolerates extra keyword arguments: the engine passes global
 parameters (e.g. ``model``) and upstream results alongside each action's
 own parameters, and the stubs ignore what they do not need.
 
-The test suite registers these stubs into a ``FunctionRegistry`` (the
-package's ``DEFAULT_REGISTRY`` is empty by default).
+The stubs take the same path as real library functions: the bare
+``@workflow_function`` decorator registers them in ``DEFAULT_REGISTRY``
+at import time, so the paper's workflows run through the engine's default
+registry path (no explicit ``registry=``).  This is test-process state
+only; the installed package still ships an empty ``DEFAULT_REGISTRY``.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from sequence_extensions import workflow_function
 from sequence_extensions.workflow.schema import Action, Sequential
 
 __all__ = [
@@ -51,6 +55,7 @@ __all__ = [
 # --------------------------------------------------------------------------- #
 
 
+@workflow_function
 def find_files(path: str | Path, pattern: str = "*.csv", **kwargs: object) -> list[Sequential]:
     """
     Find files under ``path`` matching ``pattern`` and drive one
@@ -75,6 +80,7 @@ def find_files(path: str | Path, pattern: str = "*.csv", **kwargs: object) -> li
     ]
 
 
+@workflow_function
 def simulate(**params: object) -> dict[str, object]:
     """
     Run a placeholder simulation.
@@ -87,6 +93,7 @@ def simulate(**params: object) -> dict[str, object]:
     return {"simulate": dict(params)}
 
 
+@workflow_function
 def evaluate_results(**params: object) -> dict[str, dict[str, int]]:
     """
     Summarize the upstream results of one simulation.
@@ -99,6 +106,7 @@ def evaluate_results(**params: object) -> dict[str, dict[str, int]]:
     return {"evaluate_results": _summary(_upstream_results(params))}
 
 
+@workflow_function
 def find_test_cases(path: str | Path, **kwargs: object) -> list[str]:
     """
     Find the test-case files (``*.csv``) directly under ``path``.
@@ -109,6 +117,7 @@ def find_test_cases(path: str | Path, **kwargs: object) -> list[str]:
     return sorted(str(p) for p in Path(path).glob("*.csv"))
 
 
+@workflow_function
 def parameter_sweep(
     parameter_name: str | None = None,
     parameter: str | None = None,
@@ -139,6 +148,7 @@ def parameter_sweep(
     return [Action("simulate", **{name: v}) for v in _normalize_values(values)]
 
 
+@workflow_function
 def compare_parameter_sweep(**params: object) -> dict[str, dict[str, int]]:
     """
     Summarize the results of a parameter sweep.
@@ -150,6 +160,7 @@ def compare_parameter_sweep(**params: object) -> dict[str, dict[str, int]]:
     return {"compare_parameter_sweep": _summary(_upstream_results(params))}
 
 
+@workflow_function
 def compare_results(**params: object) -> dict[str, dict[str, int]]:
     """
     Summarize the final results of a workflow.
