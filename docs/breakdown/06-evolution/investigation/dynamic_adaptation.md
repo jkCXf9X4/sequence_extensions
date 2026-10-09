@@ -1,7 +1,9 @@
 # 06-evolution — Investigation: Adopting the paper's dynamic adaptation
 
 **Date:** 2026-10-09
-**Status:** design agreed in review; implementation not started (see [§6 work plan](#6-work-plan))
+**Status:** design agreed in review; architecture decided — the lazy tree-walking engine, per
+[implementation_plan.md](implementation_plan.md) (which amends §5.1 below); implementation not
+started (see [§6 work plan](#6-work-plan))
 **Scope:** design principle 2 of [00-intent/vision.md](../../00-intent/vision.md):
 
 > **Dynamic adaptation** — actions may adjust downstream actions at runtime
