@@ -75,7 +75,9 @@ of `graph.graph_future` (`GraphFuture`/`GraphPool`):
 
 Explicitly out of scope here (framework-level concerns from the paper): Git-in-archive version
 control, STMD/SRMD traceability metadata, FMI/SSP packaging, and HPC distribution. See
-[06-evolution](../06-evolution/undeveloped_sugestins.md) for ideas on evolving the schema.
+[06-evolution](../06-evolution/undeveloped_sugestins.md) for ideas on evolving the schema, and the
+[dynamic-adaptation investigation](../06-evolution/investigation/dynamic_adaptation.md) for the
+design study of principle 2 (gap analysis, rejected and adopted designs, work plan).
 
 ## Success criteria
 

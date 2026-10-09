@@ -1,0 +1,14 @@
+<VerificationWorkflow>
+  <template name="t">
+    <sequential>
+      <action function="a">
+        <argument key="file" value="{file}"/>
+      </action>
+    </sequential>
+  </template>
+  <sequential>
+    <use-template name="t">
+      <argument key="wrong" value="x"/>
+    </use-template>
+  </sequential>
+</VerificationWorkflow>

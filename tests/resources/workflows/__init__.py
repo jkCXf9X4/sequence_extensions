@@ -15,6 +15,10 @@ September 2025, Lucerne, Switzerland; DOI 10.3384/ecp12076741):
   (nested groups).
 * ``sequential_example.xml`` — Listing 2: minimal ``<sequential>`` chain.
 * ``parallel_example.xml``   — Listing 3: minimal ``<parallel>`` group.
+* ``template_reuse.xml``     — templates (design principle 4): a
+  ``<template>`` defined once, used twice with different parameters.
+* ``template_parallel.xml``  — templates inside a ``<parallel>`` group,
+  with a default parameter overridden at one use site.
 
 ``invalid/`` holds well-formed XML documents that the schema parser must
 reject, one file per rejection rule (see the ``README.md`` table).

@@ -1,0 +1,5 @@
+<VerificationWorkflow>
+  <sequential>
+    <use-template name="nope"/>
+  </sequential>
+</VerificationWorkflow>

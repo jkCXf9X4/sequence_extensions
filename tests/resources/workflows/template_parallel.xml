@@ -1,0 +1,28 @@
+<VerificationWorkflow>
+  <!-- A template used inside a parallel group, with a default parameter
+       (tolerance) overridden at one use site and a global parameter
+       (model) resolved through the template body. -->
+  <argument key="model" value="./model_1"/>
+  <template name="file_check">
+    <argument key="tolerance" value="0.01"/>
+    <sequential>
+      <action function="simulate">
+        <argument key="file" value="{file}"/>
+        <argument key="model" value="{model}"/>
+      </action>
+      <action function="evaluate_results">
+        <argument key="file" value="{file}"/>
+        <argument key="tolerance" value="{tolerance}"/>
+      </action>
+    </sequential>
+  </template>
+  <parallel>
+    <use-template name="file_check">
+      <argument key="file" value="case_1.csv"/>
+    </use-template>
+    <use-template name="file_check">
+      <argument key="file" value="case_2.csv"/>
+      <argument key="tolerance" value="0.05"/>
+    </use-template>
+  </parallel>
+</VerificationWorkflow>

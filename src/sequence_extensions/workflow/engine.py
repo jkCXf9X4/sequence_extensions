@@ -30,14 +30,24 @@ DOI 10.3384/ecp12076741), section 4.2:
 
 Public surface (pinned): :func:`run_workflow`, :func:`Test_Framework`.
 Internal but unit-testable: :func:`check_splice_scope`.
+
+Opt-in execution history: pass ``history=RunHistory()`` (see
+:mod:`sequence_extensions.workflow.history`) to ``run_workflow`` /
+``Test_Framework`` to record per-action evidence — including actions
+spliced in at runtime by dynamic adaptation, in true completion order —
+and replay it deterministically with
+:func:`sequence_extensions.workflow.history.replay`.  Without a
+``history`` argument the engine behaves exactly as before.
 """
 
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any, Callable, Union
 
 from ..graph import GraphFuture, GraphPool
+from .history import ExecutionRecord, RunHistory, recordable_result, resolve_group_path
 from .params import normalize_params
 from .registry import DEFAULT_REGISTRY, FunctionRegistry
 from .schema import Action, Parallel, Sequential, parse_workflow
@@ -103,6 +113,21 @@ def check_splice_scope(
         )
 
 
+def _mark_dynamic(node: _Node) -> None:
+    """
+    Mark ``node`` and its whole subtree as spliced in by dynamic adaptation.
+
+    The flag is read by the history recording (an action's record carries
+    ``dynamic=True`` when the action was not in the parsed workflow but was
+    returned by an upstream function at runtime).  It is a plain attribute
+    set, so it is inert when no history is requested.
+    """
+    node._engine_dynamic = True
+    if isinstance(node, (Sequential, Parallel)):
+        for child in node.children:
+            _mark_dynamic(child)
+
+
 def _as_node_list(returned: Any) -> list[_Node] | None:
     """
     Normalize a function's return value to a list of workflow nodes.
@@ -142,6 +167,7 @@ class _Engine:
         root: _Group,
         registry: FunctionRegistry,
         parameters: dict[str, Any] | None = None,
+        history: RunHistory | None = None,
     ) -> None:
         """Create an engine for ``root``; ``parameters`` override XML globals."""
         self._registry = registry
@@ -152,6 +178,9 @@ class _Engine:
         self._lock = threading.Lock()
         self._cancelled: set[GraphFuture] = set()
         self._pool: GraphPool | None = None
+        # Opt-in execution history (None = record nothing; the engine then
+        # behaves exactly as if this feature did not exist).
+        self._history = history
 
     # ------------------------------------------------------------ #
     # Public entry point
@@ -176,7 +205,10 @@ class _Engine:
             final_future = self._find_final_future(self._root)
             if final_future is None:
                 return None
-            return final_future.result()
+            result = final_future.result()
+            if self._history is not None:
+                self._mark_final(final_future)
+            return result
 
     # ------------------------------------------------------------ #
     # Graph construction
@@ -313,7 +345,10 @@ class _Engine:
                 key = name
             kwargs[key] = result
         kwargs.update(params)
-        result = fn(**kwargs)
+        if engine._history is None:
+            result = fn(**kwargs)
+        else:
+            result = engine._record_call(action, fn, kwargs)
         nodes = _as_node_list(result)
         if nodes is None:
             return result
@@ -322,6 +357,8 @@ class _Engine:
         engine._cancel(next_sibling)
         with engine._lock:
             parent.children[index + 1 : index + 2] = nodes
+        for node in nodes:
+            _mark_dynamic(node)
         spliced = engine._build_sequential(Sequential(*nodes), list(upstream_futures))
         return engine._pool.result(spliced)
 
@@ -334,6 +371,79 @@ class _Engine:
         if engine._skip(group._engine_future):
             return _SENTINEL
         return list(results)
+
+    # ------------------------------------------------------------ #
+    # Execution history (opt-in)
+    # ------------------------------------------------------------ #
+    def _record_call(
+        self,
+        action: Action,
+        fn: Callable[..., Any],
+        kwargs: dict[str, Any],
+    ) -> Any:
+        """
+        Call ``fn(**kwargs)`` and record the call as an ExecutionRecord.
+
+        The record captures what ACTUALLY executed: the action's registry
+        name, the resolved function's name, the resolved parameters (the
+        exact ``kwargs`` the function received), the result (a dynamic-
+        adaptation return normalized by ``recordable_result``) or the
+        exception, timestamps taken around the call, the group path at
+        call time, and whether the action was spliced in at runtime.  The
+        record is appended to the history when the call completes, so the
+        history is in true completion order.  An exception is re-raised
+        after being recorded.
+        """
+        record = ExecutionRecord(
+            name=action.function,
+            function=getattr(fn, "__name__", type(fn).__name__),
+            params=dict(kwargs),
+            group_path=self._path_of(action),
+            dynamic=getattr(action, "_engine_dynamic", False),
+        )
+        # Identity-keyed link so the final action's record can be found
+        # exactly, even if a later splice shifts tree positions.
+        action._engine_record = record
+        record.started_at = time.time()
+        try:
+            result = fn(**kwargs)
+        except BaseException as exc:
+            record.ended_at = time.time()
+            record.exception = exc
+            self._history.add(record)
+            raise
+        record.ended_at = time.time()
+        record.result = recordable_result(result)
+        self._history.add(record)
+        return result
+
+    def _path_of(self, action: Action) -> str:
+        """
+        The action's group path, read under the engine lock.
+
+        Splices mutate ``children`` lists under the same lock, so taking it
+        here guarantees the walk sees a consistent tree (the path as it
+        stood at call time).
+        """
+        with self._lock:
+            return resolve_group_path(self._root, action)
+
+    def _mark_final(self, final_future: GraphFuture) -> None:
+        """
+        Mark the run's final action on the history (for ``replay``).
+
+        ``replay`` returns the replayed value of the run's final action —
+        the action whose result ``run_workflow`` / ``Test_Framework``
+        returned — so the engine records that action's completion-order
+        index on the history after a successful run.  The record is found
+        by identity (``action._engine_record``, set in ``_record_call``),
+        which stays exact even when a late splice shifts tree positions
+        after the action recorded its group path.
+        """
+        action = getattr(final_future, "_action", None)
+        record = getattr(action, "_engine_record", None) if action is not None else None
+        if record is not None:
+            self._history.final_order = record.order
 
     # ------------------------------------------------------------ #
     # Splice support
@@ -397,6 +507,7 @@ def run_workflow(
     xml_source: str | bytes,
     registry: FunctionRegistry | None = None,
     parameters: dict[str, Any] | None = None,
+    history: RunHistory | None = None,
 ) -> Any:
     """
     Parse a workflow XML document and execute it; return the final result.
@@ -409,11 +520,24 @@ def run_workflow(
     with ``parameters`` winning on a name clash.  The final result is the
     return value of the last action in the root group's execution order.
 
+    ``history`` is OPT-IN execution recording (default ``None`` = record
+    nothing, zero behavior change): pass a
+    :class:`sequence_extensions.workflow.history.RunHistory` to capture
+    per-action evidence — including actions spliced in at runtime by
+    dynamic adaptation, in true completion order — which can then be
+    replayed deterministically with
+    :func:`sequence_extensions.workflow.history.replay`.
+
     Raises ``ValueError`` for invalid XML, an unknown function name (naming
     the function), or an out-of-scope dynamic-adaptation splice attempt.
     """
     root = parse_workflow(xml_source)
-    engine = _Engine(root, registry if registry is not None else DEFAULT_REGISTRY, parameters)
+    engine = _Engine(
+        root,
+        registry if registry is not None else DEFAULT_REGISTRY,
+        parameters,
+        history,
+    )
     return engine.run()
 
 
@@ -421,6 +545,7 @@ def Test_Framework(
     seq: _Group,
     parameters: dict[str, Any] | None = None,
     registry: FunctionRegistry | None = None,
+    history: RunHistory | None = None,
 ) -> Any:
     """
     Execute a workflow built via the Python API (the paper's Listing 10).
@@ -431,8 +556,16 @@ def Test_Framework(
     ``DEFAULT_REGISTRY``).  Returns the final result: the return value of
     the last action in the root group's execution order.
 
+    ``history`` is OPT-IN execution recording (default ``None`` = record
+    nothing, zero behavior change); see :func:`run_workflow`.
+
     The paper's call form ``Test_Framework(parameters=common_parameters,
     seq=top_seq)`` executes the workflow and returns its final result.
     """
-    engine = _Engine(seq, registry if registry is not None else DEFAULT_REGISTRY, parameters)
+    engine = _Engine(
+        seq,
+        registry if registry is not None else DEFAULT_REGISTRY,
+        parameters,
+        history,
+    )
     return engine.run()

@@ -1,0 +1,26 @@
+<VerificationWorkflow>
+  <!-- Listing 9's use-case-1 pattern, factored into a reusable template:
+       the per-file simulate + evaluate_results chain (paper principle 4:
+       actions with parameters form templates for common verification
+       scenarios, limiting duplication between workflows). -->
+  <argument key="model" value="./model_1"/>
+  <template name="file_check">
+    <sequential>
+      <action function="simulate">
+        <argument key="file" value="{file}"/>
+        <argument key="model" value="{model}"/>
+      </action>
+      <action function="evaluate_results">
+        <argument key="file" value="{file}"/>
+      </action>
+    </sequential>
+  </template>
+  <sequential>
+    <use-template name="file_check">
+      <argument key="file" value="case_1.csv"/>
+    </use-template>
+    <use-template name="file_check">
+      <argument key="file" value="case_2.csv"/>
+    </use-template>
+  </sequential>
+</VerificationWorkflow>

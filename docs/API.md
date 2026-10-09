@@ -11,7 +11,7 @@ sequence_extensions/
 ├── ext/        # list_ext / dict_ext / gen_ext (functional sequence helpers)
 ├── graph/      # graph_future (GraphFuture / GraphPool execution substrate)
 └── workflow/   # V&V workflow layer
-    ├── schema.py    # Action / Sequential / Parallel + parse_workflow
+    ├── schema.py    # Action / Sequential / Parallel / Template + parse_workflow
     ├── registry.py  # FunctionRegistry + DEFAULT_REGISTRY
     ├── params.py    # parameter normalization (XML form -> Python form)
     └── engine.py    # run_workflow / Test_Framework execution engine
@@ -33,6 +33,7 @@ from sequence_extensions import (
     Action,
     Sequential,
     Parallel,
+    Template,
     parse_workflow,
     run_workflow,
     Test_Framework,
@@ -55,6 +56,7 @@ __version__ = "0.2.0"
 | `Action` | Workflow node: one function call |
 | `Sequential` | Workflow group: children execute in strict order |
 | `Parallel` | Workflow group: independent, concurrent children |
+| `Template` | Named, parameterized subtree; `instantiate(**params)` returns a fresh bound copy |
 | `parse_workflow` | Parse a workflow XML document into a root group |
 | `run_workflow` | Parse and execute a workflow XML document |
 | `Test_Framework` | Execute a workflow built via the Python API |

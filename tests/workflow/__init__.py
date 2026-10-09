@@ -9,6 +9,9 @@ Tests for the V&V workflow layer (``Action`` / ``Sequential`` / ``Parallel`` /
   ``workflow_function`` / ``registry.function`` decorators.
 * ``test_engine.py``   — ``run_workflow`` / ``Test_Framework`` and execution
   semantics (ordering, concurrency, globals, splicing, scope).
+* ``test_templates.py`` — the template mechanism (``Template`` /
+  ``instantiate``, ``<template>`` / ``<use-template>`` XML, expansion
+  equivalence, execution, history).
 
 The workflow layer is specified by the paper "Automation Nation: Taming
 Complex V&V Workflows" (16th International Modelica & FMI Conference,

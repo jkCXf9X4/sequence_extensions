@@ -9,7 +9,8 @@ Switzerland; DOI 10.3384/ecp12076741).
 Modules:
 
 * :mod:`~sequence_extensions.workflow.schema` — ``Action`` / ``Sequential``
-  / ``Parallel`` node classes and the XML parser (``parse_workflow``).
+  / ``Parallel`` node classes, the ``Template`` reuse mechanism, and the XML
+  parser (``parse_workflow``).
 * :mod:`~sequence_extensions.workflow.registry` — ``FunctionRegistry`` and
   the empty ``DEFAULT_REGISTRY``, plus the ``workflow_function``
   registration decorator.
@@ -30,7 +31,13 @@ from sequence_extensions.workflow.registry import (
     FunctionRegistry,
     workflow_function,
 )
-from sequence_extensions.workflow.schema import Action, Parallel, Sequential, parse_workflow
+from sequence_extensions.workflow.schema import (
+    Action,
+    Parallel,
+    Sequential,
+    Template,
+    parse_workflow,
+)
 
 __all__ = [
     "DEFAULT_REGISTRY",
@@ -38,6 +45,7 @@ __all__ = [
     "FunctionRegistry",
     "Parallel",
     "Sequential",
+    "Template",
     "Test_Framework",
     "check_splice_scope",
     "parse_workflow",

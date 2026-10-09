@@ -23,3 +23,10 @@ def parameter_sweep(
 ) -> list[Action]:
 
 this is to make the schema clearer regarding what it actually does
+
+---
+
+<scope type="parallel"> # or sequence
+
+
+</scope>

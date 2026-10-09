@@ -1,0 +1,11 @@
+<VerificationWorkflow>
+  <template name="t">
+    <sequential>
+      <action function="a"/>
+    </sequential>
+    <bogus/>
+  </template>
+  <sequential>
+    <action function="b"/>
+  </sequential>
+</VerificationWorkflow>

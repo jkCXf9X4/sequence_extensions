@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Workflow templates** (design principle 4, reuse): a named,
+  parameterized subtree can be defined once and instantiated wherever its
+  verification scenario is needed, limiting duplication between workflows.
+  - Python API: ``Template(name, body, **defaults)`` holds the reusable
+    subtree (a ``Sequential`` / ``Parallel`` group or a single ``Action``,
+    wrapped in a ``Sequential``); ``Template.instantiate(**params)``
+    returns a NEW node tree with every ``{placeholder}`` in an action
+    parameter value bound, so instantiating the same template with
+    different parameters yields distinct, independent trees.  A
+    placeholder that fills a whole value is replaced by the bound value
+    itself (type preserved); one embedded in a longer string is replaced
+    by its string form.  Resolution is strict: every placeholder must
+    resolve to a binding, a default or a same-named global parameter.
+  - XML: a ``<template name="...">`` element defines a template (one body
+    group plus ``<argument>`` default values) directly inside the
+    ``<VerificationWorkflow>`` wrapper; a ``<use-template name="...">``
+    element uses it (with ``<argument>`` bindings) anywhere a group may
+    appear, including inside other template bodies.  Expansion happens at
+    PARSE time — ``parse_workflow`` returns a tree of plain ``Action`` /
+    ``Sequential`` / ``Parallel`` nodes, exactly what the equivalent
+    inline workflow produces — so the engine, history recording and
+    dynamic adaptation are unchanged.  Binding precedence: use-site
+    binding > template default > same-named workflow global.
+  - ``Template`` is exported from ``sequence_extensions`` and
+    ``sequence_extensions.workflow``.
+  - New rejection rules (``ValueError``, same style as the existing
+    schema errors): ``<template>`` without a name / body, with more than
+    one body, with a duplicate default key or an unknown child element;
+    duplicate template names; ``<template>`` inside a grouping;
+    ``<use-template>`` without a name, naming an unknown template, with
+    an unknown or duplicate child element, binding an undeclared
+    parameter, or leaving a required parameter unbound.
+  - New example documents ``tests/resources/workflows/template_reuse.xml``
+    and ``template_parallel.xml`` plus 13 invalid fixtures under
+    ``tests/resources/workflows/invalid/`` (indexed in that directory's
+    README).
+
 ### Changed
 - **Workflow XML schema**: parameters are now written as
   `<argument key="name" value="..."/>` elements, both as `<action>`

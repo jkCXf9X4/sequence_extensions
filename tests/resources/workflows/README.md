@@ -19,6 +19,8 @@ The paper's library functions used below are the test stubs in
 | `adaptation_scope.xml` | Listing 7 | Dynamic-adaptation scope: an outer action may splice anywhere downstream, an inner action only within its own grouping scope. |
 | `sequential_example.xml` | Listing 2 | Minimal `<sequential>` dependency chain (strict execution order). |
 | `parallel_example.xml` | Listing 3 | Minimal `<parallel>` group (children are independent). |
+| `template_reuse.xml` | — | Templates (design principle 4): a `<template name="file_check">` defined once in the wrapper and used twice with different `file` bindings; the body also resolves the `model` global parameter. |
+| `template_parallel.xml` | — | Templates inside a `<parallel>` group, with a default parameter (`tolerance`) overridden at one use site and the `model` global resolved through the body. |
 
 Every file in this table parses with `parse_workflow` and runs with
 `run_workflow` (the stub functions self-register in `DEFAULT_REGISTRY` on
@@ -47,6 +49,19 @@ parameter name.
 | `invalid/argument_without_value.xml` | `<argument>` is missing its `value` attribute |
 | `invalid/duplicate_argument.xml` | two `<argument>` elements with the same key on one action |
 | `invalid/argument_with_children.xml` | `<argument>` contains child elements |
+| `invalid/template_without_name.xml` | `<template>` is missing its `name` attribute |
+| `invalid/template_without_body.xml` | `<template>` contains no body group |
+| `invalid/template_multiple_bodies.xml` | `<template>` contains two body groups |
+| `invalid/template_unknown_element.xml` | unknown element inside a `<template>` |
+| `invalid/template_duplicate_argument.xml` | two `<argument>` elements with the same key on one `<template>` |
+| `invalid/duplicate_template_name.xml` | two `<template>` definitions with the same name |
+| `invalid/template_inside_grouping.xml` | `<template>` definition nested inside a grouping |
+| `invalid/use_template_without_name.xml` | `<use-template>` is missing its `name` attribute |
+| `invalid/use_template_unknown_name.xml` | `<use-template>` names a template that was never defined |
+| `invalid/use_template_unknown_element.xml` | non-`<argument>` element inside a `<use-template>` |
+| `invalid/use_template_undeclared_argument.xml` | `<use-template>` binds a parameter the template does not declare |
+| `invalid/use_template_duplicate_argument.xml` | two `<argument>` elements with the same key on one `<use-template>` |
+| `invalid/use_template_missing_argument.xml` | `<use-template>` leaves a required parameter unbound (no default, no same-named global) |
 
 ## Notes
 
