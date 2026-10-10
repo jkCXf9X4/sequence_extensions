@@ -26,6 +26,8 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+.agents/
+
 .dynamic-harness/
 harness.json
 .ruff_cache/
