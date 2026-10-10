@@ -44,6 +44,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and ``template_parallel.xml`` plus 13 invalid fixtures under
     ``tests/resources/workflows/invalid/`` (indexed in that directory's
     README).
+- **Dynamic adaptation** (design principle 2): actions may now adjust
+  downstream actions at runtime, restricted to their own grouping scope,
+  with execution strictly downstream (DAG, no loops) to stay deterministic.
+  - **Scoped DAG handle** (``workflow/adaptation.py``): a function that
+    declares a ``dag`` parameter receives a scoped ``DAGHandle`` exposing
+    its own grouping scope — ``following()`` / ``preceding()`` /
+    ``following_group()`` reads, and ``replace`` / ``adjust`` / ``copy`` /
+    ``append`` / ``adjusted`` write ops. Writes are validated eagerly and
+    applied transactionally at function return (one engine-lock
+    acquisition; if the function raised, nothing is applied). Children of a
+    ``Parallel`` scope get a read-only handle (every write raises
+    ``ValueError``). ``DAGHandle`` / ``AdaptationOp`` / ``ADAPTATION_BOUND``
+    are exported from ``sequence_extensions.workflow``.
+  - **Bounded adaptation** (decision D5): the engine counts dynamic nodes
+    added; exceeding ``ADAPTATION_BOUND`` (default 10 000) raises a
+    deterministic ``ValueError`` so a runaway adaptation terminates instead
+    of hanging.
+  - **Lazy tree-walking engine** (``workflow/engine.py``): the engine is
+    rewritten from "eagerly build all futures" to a lazy interpreter that
+    walks the live node tree, re-reading each group's children every step so
+    runtime splices are seen immediately. Every action still runs on a pool
+    worker via a ``GraphFuture`` leaf; a ``Parallel`` group wires all of its
+    action futures at once through a join node and waits with one
+    ``pool.result`` (wire-then-wait), so a group's children start
+    concurrently. The return-nodes protocol is kept as a backward-compatible
+    shortcut (a splice may now replace a next-sibling *action*, not only a
+    group); a function that declares ``dag`` **and** returns nodes raises
+    ``ValueError`` (one mechanism per action).
+  - **Schema** (``workflow/schema.py``): a new ``<scope
+    type="sequential|parallel">`` element (``type`` required and validated,
+    optional ``name``) that names each action's grouping scope;
+    ``<sequential>`` / ``<parallel>`` remain aliases (no deprecation
+    warnings). ``name`` is a keyword on ``_Group.__init__``.
+  - **Library** (``workflow/library.py``): ``find_files`` /
+    ``parameter_sweep`` are re-expressed via the handle (they clone the
+    declared downstream scope per file / per value instead of building
+    nodes; their own return value is their result). Two new objective-2
+    drivers: ``evaluate_goal`` (branch to the named alternative of the
+    declared downstream alternatives scope based on an upstream result field;
+    unknown alternative → ``ValueError``; optional default) and
+    ``check_convergence`` (copy-to-end iteration until an upstream field
+    converges; returns a summary; runaway → the dynamic-node bound).
+    ``register_library()`` now registers 9 functions (still opt-in).
+  - **History & replay** (``workflow/history.py``): ``ExecutionRecord``
+    gains ``adaptations`` (the committed op descriptors, plain data) and
+    ``scope`` (a snapshot of the acting action's sibling list + index,
+    recorded at injection). ``replay`` strips the recorded ``dag`` kwarg and
+    re-injects a ``ReplayHandle`` (reads served from a fake tree materialized
+    from the snapshot; writes are no-ops), so replaying an adapting run is
+    deterministic and never mutates the live tree.
+  - **Docs** (closes the investigation's F3): ``docs/API.md`` gains a full
+    ``workflow`` section (schema, engine, registry, library, history, the
+    adaptation contract table, and the non-Turing-completeness statement);
+    ``README.md`` gains a ``<scope>`` example.
 
 ### Changed
 - **Workflow XML schema**: parameters are now written as

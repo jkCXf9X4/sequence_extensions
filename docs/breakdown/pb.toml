@@ -1,0 +1,19 @@
+# pb.toml — overrides only; everything else matches the built-in defaults
+# (skill templates/pb.toml; pbstd/config.py is authoritative on disagreement).
+
+[layout]
+# Cold-storage decision archive (ZIP): records at the zip root, tombstones
+# under its deprecated/ namespace, reached only via `pb archive`.
+archive = "../archive/archive.zip"
+# The breakdown root is docs/breakdown/, two levels below the repo root, so
+# record `artifacts:` paths (src/..., tests/...) resolve from the repo root.
+repo_root = "../.."
+
+[registers]
+# Archive mode resolves these relative to the archive's parent (docs/archive/).
+# Flat names: a "decisions/README.md" index would create docs/archive/decisions/,
+# which hijacks pb root discovery from the repo root (find_root probes for a
+# decisions/ dir before docs/breakdown/pb.toml).
+index = "README.md"
+log = "design-choice-log.md"
+traceability = "traceability-map.md"

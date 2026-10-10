@@ -19,8 +19,12 @@ Modules:
 * :mod:`~sequence_extensions.workflow.engine` — the execution engine
   (``run_workflow`` / ``Test_Framework``) and the dynamic-adaptation scope
   check (``check_splice_scope``).
+* :mod:`~sequence_extensions.workflow.adaptation` — the scoped DAG handle
+  (``DAGHandle``) handed to functions that declare a ``dag`` parameter:
+  scoped reads, validated write ops and the transactional commit protocol.
 """
 
+from sequence_extensions.workflow.adaptation import ADAPTATION_BOUND, AdaptationOp, DAGHandle
 from sequence_extensions.workflow.engine import (
     Test_Framework,
     check_splice_scope,
@@ -40,8 +44,11 @@ from sequence_extensions.workflow.schema import (
 )
 
 __all__ = [
+    "ADAPTATION_BOUND",
     "DEFAULT_REGISTRY",
     "Action",
+    "AdaptationOp",
+    "DAGHandle",
     "FunctionRegistry",
     "Parallel",
     "Sequential",

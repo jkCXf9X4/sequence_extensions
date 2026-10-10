@@ -8,8 +8,6 @@ dynamic adaptation (splicing), scope restriction, and single execution.
 import threading
 from pathlib import Path
 
-import pytest
-
 from sequence_extensions import (
     Action,
     FunctionRegistry,
@@ -239,28 +237,37 @@ def test_dynamic_adaptation_splices_per_file(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def test_scope_restriction_inner_cannot_affect_outer_siblings():
-    """An inner action may only splice within its own grouping scope (Listing 7).
+def test_scope_restriction_inner_may_replace_next_action_sibling():
+    """An inner action may splice its next ACTION sibling (Listing 7, F1 fix).
 
-    inner_action_1 returns a node that would add an action to the outer scope
-    (a sibling of the inner group).  That out-of-scope splice must be rejected
-    with a ValueError.
+    inner_action_1 returns a node that replaces its next sibling
+    inner_action_2 — an ACTION, not a group.  The paper explicitly allows
+    this ("inner_action_1 can only alter actions downstream within its
+    grouping scope, more specifically inner_action_2"), so the splice
+    succeeds: injected_outer runs in inner_action_2's place (which never
+    runs), and the outer scope is untouched.
     """
+    calls = []
 
     def inner_action_1(**kwargs):
-        # Attempt to inject an action into the outer scope (out of scope).
+        # Replace the next sibling (inner_action_2, an action) in-scope.
+        calls.append("inner_action_1")
         return Action("injected_outer")
 
     def inner_action_2(**kwargs):
+        calls.append("inner_action_2")
         return "inner2"
 
     def outer_action_1(**kwargs):
+        calls.append("outer_action_1")
         return "outer1"
 
     def outer_action_2(**kwargs):
+        calls.append("outer_action_2")
         return "outer2"
 
     def injected_outer(**kwargs):
+        calls.append("injected_outer")
         return "injected"
 
     registry = FunctionRegistry()
@@ -270,38 +277,59 @@ def test_scope_restriction_inner_cannot_affect_outer_siblings():
     registry.register("inner_action_2", inner_action_2)
     registry.register("injected_outer", injected_outer)
 
-    with pytest.raises(ValueError):
-        run_workflow(LISTING_7, registry=registry)
+    result = run_workflow(LISTING_7, registry=registry)
+
+    # The spliced action ran in inner_action_2's place; inner_action_2 never
+    # ran; the outer scope (outer_action_2) still runs after the inner one.
+    assert "injected_outer" in calls
+    assert "inner_action_2" not in calls
+    # The outer scope is untouched: both outer actions ran, in order.
+    assert "outer_action_1" in calls and "outer_action_2" in calls
+    assert calls.index("outer_action_1") < calls.index("outer_action_2")
+    assert result == "outer2"
 
 
 def test_scope_restriction_outer_may_affect_inner():
-    """An outer action may splice downstream, including into inner groups (Listing 7)."""
+    """An outer action may adapt a following group's subtree (Listing 7).
 
-    def outer_action_1(**kwargs):
-        # Add an action downstream within the outer scope (allowed).
-        return Action("extra")
+    The paper: "outer_action_1 can alter everything downstream, including
+    the inner actions."  Here outer_action_1 (a handle driver) reaches into
+    the FOLLOWING inner group's subtree and adjusts an inner action's
+    parameter — the outer case of Listing 7.  The inner action runs with the
+    adjusted value, proving the outer action's write landed inside the
+    following group's subtree (in scope for the outer action).
+    """
+    received = {}
+
+    def outer_action_1(dag, **kwargs):
+        # The following sibling is the inner group; reach into its subtree
+        # and adjust the second inner action's parameter (in scope: an outer
+        # action may alter everything downstream, including inner actions).
+        inner_group = dag.following_group()
+        dag.adjust(inner_group.children[1], level="retuned")
+        return "outer1"
 
     def inner_action_1(**kwargs):
         return "inner1"
 
-    def inner_action_2(**kwargs):
+    def inner_action_2(level=None, **kwargs):
+        received["level"] = level
         return "inner2"
 
     def outer_action_2(**kwargs):
         return "outer2"
-
-    def extra(**kwargs):
-        return "extra"
 
     registry = FunctionRegistry()
     registry.register("outer_action_1", outer_action_1)
     registry.register("outer_action_2", outer_action_2)
     registry.register("inner_action_1", inner_action_1)
     registry.register("inner_action_2", inner_action_2)
-    registry.register("extra", extra)
 
-    # Must run without raising: the outer action's splice is in scope.
+    # Must run without raising: the outer action's write into the following
+    # group's subtree is in scope.
     run_workflow(LISTING_7, registry=registry)
+    # The inner action ran with the outer action's adjustment.
+    assert received["level"] == "retuned"
 
 
 # --------------------------------------------------------------------------- #

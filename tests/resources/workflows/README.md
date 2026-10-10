@@ -21,6 +21,7 @@ The paper's library functions used below are the test stubs in
 | `parallel_example.xml` | Listing 3 | Minimal `<parallel>` group (children are independent). |
 | `template_reuse.xml` | — | Templates (design principle 4): a `<template name="file_check">` defined once in the wrapper and used twice with different `file` bindings; the body also resolves the `model` global parameter. |
 | `template_parallel.xml` | — | Templates inside a `<parallel>` group, with a default parameter (`tolerance`) overridden at one use site and the `model` global resolved through the body. |
+| `scope_integration.xml` | — | Phase-7 integration: a `<scope type="sequential">` root, a `<template>` whose body is a `<scope>` (expanded at one `<use-template>` site), the `find_files` handle driver (per-file adaptation through the engine), and history recording of the spliced (dynamic) actions. |
 
 Every file in this table parses with `parse_workflow` and runs with
 `run_workflow` (the stub functions self-register in `DEFAULT_REGISTRY` on

@@ -162,7 +162,7 @@ the vision:
 | Vision item | Status | Evidence |
 | --- | --- | --- |
 | P1 — hierarchical grouping | ✅ Met (unchanged, still covered) | `workflow/schema.py`, `workflow/engine.py`, existing suite |
-| P2 — dynamic adaptation | ✅ Met (unchanged, still covered) | `workflow/engine.py`; spliced actions now also visible in history (`history.py`, `test_history.py`) |
+| P2 — dynamic adaptation | ✅ Met (F1/F2 now addressed) | `workflow/engine.py` (lazy tree-walking walker) + `workflow/adaptation.py` (scoped `DAGHandle`: read / adjust / copy-to-end within the action's own scope); branching + iteration in `workflow/library.py` (`evaluate_goal`, `check_convergence`); spliced actions visible in history (`history.py`, `test_history.py`) |
 | P3 — complexity in the library, not the schema | ✅ Met | `workflow/library.py` (7 paper functions, opt-in `register_library()`), `test_library.py` |
 | P4 — reuse via templates | ✅ Met | `workflow/schema.py` (`Template`, `.instantiate()`, `<template>`/`<use-template>`), `test_templates.py`, 15 fixtures |
 | C1 — traceable, reproducible, replayable | ✅ Met | `workflow/history.py` (`ExecutionRecord`, `RunHistory`, `replay`), `test_history.py`, `test_integration_alignment.py` |

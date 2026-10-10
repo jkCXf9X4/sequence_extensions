@@ -22,11 +22,22 @@ DOI 10.3384/ecp12076741), section 4.2:
 * **Dynamic adaptation** — a registered function may return an
   ``Action`` / ``Sequential`` / ``Parallel`` node (or a list of them); the
   returned node(s) are spliced into the workflow in place of the action's
-  next sibling, which must be a group (the paper's Listings 5 and 7).  The
-  replaced group's subtree is cancelled (its actions do not run).  A splice
-  attempt that is out of scope raises ``ValueError``.
+  next sibling — a group (the paper's Listing 5) or an action (the
+  paper's Listing 7 inner case).  The replaced subtree is cancelled (its
+  actions do not run).  A splice attempt that is out of scope, or from
+  inside a ``Parallel`` parent, raises ``ValueError``.  A function may
+  instead declare a ``dag`` parameter and receive a scoped
+  :class:`~.adaptation.DAGHandle` (validated write ops, transactional
+  commit at function return) — but not both (one mechanism per action).
 * **At most once** — every action executes at most once; the engine never
   re-runs a function (no feedback loops).
+
+The engine is a lazy tree-walking interpreter: it walks the live node tree
+as it executes (re-reading each group's children every step, so runtime
+splices are seen immediately) instead of pre-building a future graph.  Every
+action still runs on a pool worker thread via a :class:`GraphFuture` leaf;
+parallel groups wire all their action futures at once through a join node
+and wait on it with a single ``pool.result`` call.
 
 Public surface (pinned): :func:`run_workflow`, :func:`Test_Framework`.
 Internal but unit-testable: :func:`check_splice_scope`.
@@ -42,11 +53,13 @@ and replay it deterministically with
 
 from __future__ import annotations
 
+import concurrent.futures
 import threading
 import time
 from typing import Any, Callable, Union
 
 from ..graph import GraphFuture, GraphPool
+from .adaptation import ADAPTATION_BOUND, AdaptationOp, DAGHandle
 from .history import ExecutionRecord, RunHistory, recordable_result, resolve_group_path
 from .params import normalize_params
 from .registry import DEFAULT_REGISTRY, FunctionRegistry
@@ -60,8 +73,6 @@ __all__ = [
 
 _Node = Union[Action, Sequential, Parallel]
 _Group = Union[Sequential, Parallel]
-# Result placeholder for a node cancelled by a splice (its actions do not run).
-_SENTINEL = object()
 
 
 # --------------------------------------------------------------------------- #
@@ -80,36 +91,37 @@ def check_splice_scope(
 
     A function may return an ``Action`` / ``Sequential`` / ``Parallel`` node
     (or a list of them); the node(s) are spliced into the workflow in place
-    of the action's NEXT SIBLING, which must therefore be a group (the
-    paper's Listings 5 and 7: the driver action is followed by the group it
-    adapts).  The splice stays within the returning action's own grouping
-    scope: an action may only alter what is downstream of it inside the
-    group it belongs to, never siblings of that group.
+    of the action's NEXT SIBLING — a group (the paper's Listing 5) or an
+    action (the paper's Listing 7 inner case: ``inner_action_1`` may alter
+    ``inner_action_2``, which is an action).  The splice stays within the
+    returning action's own grouping scope: an action may only alter what is
+    downstream of it inside the group it belongs to, never siblings of that
+    group.
 
     ``parent`` is the group containing the returning action, ``index`` is
     the action's position in ``parent.children``, and ``returned`` is the
     function's return value.
 
     Raises ``ValueError`` when the return value is a node (or list of nodes)
-    but the action has no next sibling, or the next sibling is not a group
-    (out-of-scope splice attempt).  A plain (non-node) return value is
-    always allowed.
+    but the action has no next sibling, or the parent is a ``Parallel``
+    group (read-only parallel scopes: siblings may already be executing, so
+    a splice there has no defined effect).  A plain (non-node) return value
+    is always allowed.
     """
     nodes = _as_node_list(returned)
     if nodes is None:
         return
+    if isinstance(parent, Parallel):
+        raise ValueError(
+            "dynamic adaptation: action returned workflow node(s) but runs "
+            "inside a parallel scope, which is read-only; parallel siblings "
+            "may already be executing, so the tree cannot be adapted here"
+        )
     if parent is None or index + 1 >= len(parent.children):
         raise ValueError(
             "dynamic adaptation: action returned workflow node(s) but has no "
             "next sibling to splice them into; a splicing action must be "
-            "followed by the group it adapts"
-        )
-    next_sibling = parent.children[index + 1]
-    if not isinstance(next_sibling, (Sequential, Parallel)):
-        raise ValueError(
-            "dynamic adaptation: action returned workflow node(s) but its "
-            "next sibling is not a group; a splice may only replace a group "
-            "within the action's own grouping scope"
+            "followed by the group (or action) it adapts"
         )
 
 
@@ -151,15 +163,16 @@ def _as_node_list(returned: Any) -> list[_Node] | None:
 
 class _Engine:
     """
-    Build and run a workflow node tree on a :class:`GraphPool`.
+    Walk and run a workflow node tree on a :class:`GraphPool`.
 
-    The engine walks the tree once, creating one :class:`GraphFuture` per
-    action (each action executes at most once) and one per group (the group's
-    result is the ordered list of its children's results).  A function that
+    The engine is a lazy tree-walking interpreter: it does NOT pre-build a
+    future graph.  Instead it walks the live tree — re-reading each group's
+    ``children`` list every step, so nodes spliced in at runtime by dynamic
+    adaptation are seen immediately — and executes each action on a pool
+    worker thread through a :class:`GraphFuture` leaf.  A function that
     returns workflow node(s) has them spliced in place of the action's next
-    sibling (a group); the replaced group's subtree is cancelled so its
-    actions do not run, and the spliced group's result becomes the action's
-    result.
+    sibling (a group); the replaced group is marked executed (its actions
+    do not run), and the spliced group's results become the action's result.
     """
 
     def __init__(
@@ -176,8 +189,12 @@ class _Engine:
             self._globals.update(parameters)
         self._root = root
         self._lock = threading.Lock()
-        self._cancelled: set[GraphFuture] = set()
         self._pool: GraphPool | None = None
+        # Bounded adaptation (decision D5): the engine counts dynamic nodes
+        # added by handle commits; exceeding the bound raises a
+        # deterministic ValueError (a runaway adaptation terminates).
+        self._dynamic_count = 0
+        self._adaptation_bound = ADAPTATION_BOUND
         # Opt-in execution history (None = record nothing; the engine then
         # behaves exactly as if this feature did not exist).
         self._history = history
@@ -197,115 +214,289 @@ class _Engine:
         """
         with GraphPool() as pool:
             self._pool = pool
-            root_future = self._build(self._root, [])
-            pool.result(root_future)
+            # Eager validation: every action's function name must resolve
+            # BEFORE any execution starts (parity with the old build pass).
+            self._validate_node(self._root)
+            self._walk_group(self._root, [])
             # The tree may have been spliced during execution, so the final
             # action is resolved AFTER the run (the last child of the root,
             # resolved recursively into groups).
-            final_future = self._find_final_future(self._root)
-            if final_future is None:
+            final_action = self._final_action(self._root)
+            if final_action is None:
                 return None
-            result = final_future.result()
+            result = final_action._engine_result
             if self._history is not None:
-                self._mark_final(final_future)
+                self._mark_final(final_action)
             return result
 
     # ------------------------------------------------------------ #
-    # Graph construction
+    # Pre-validation (eager unknown-function errors)
     # ------------------------------------------------------------ #
-    def _build(self, node: _Node, upstream: list[GraphFuture]) -> GraphFuture:
-        """
-        Build the :class:`GraphFuture` for ``node``.
-
-        ``upstream`` are the futures whose results are passed to the node's
-        functions as keyword arguments (the results of the actions that
-        precede it in execution order).  Returns the node's future.
-        """
+    def _validate_node(self, node: _Node) -> None:
+        """Resolve every action's function name in ``node``'s subtree."""
         if isinstance(node, Action):
-            return self._build_action(node, upstream)
-        if isinstance(node, Sequential):
-            return self._build_sequential(node, upstream)
-        return self._build_parallel(node, upstream)
+            self._registry.get(node.function)
+            return
+        for child in node.children:
+            self._validate_node(child)
 
-    def _build_action(self, action: Action, upstream: list[GraphFuture]) -> GraphFuture:
+    # ------------------------------------------------------------ #
+    # Tree walking (the lazy interpreter core)
+    # ------------------------------------------------------------ #
+    def _walk_group(self, group: _Group, pairs: list) -> tuple[Any, list]:
         """
-        Build the future for one action.
+        Walk ``group`` (sequential or parallel) seeded with ``pairs``.
 
-        The upstream futures are passed as positional arguments so
-        :class:`GraphFuture` registers them as dependencies (ordering); the
-        corresponding actions are passed separately for result keying.
+        Returns ``(group result, direct pairs)`` where ``direct pairs`` are
+        the ``(action, result)`` pairs of the group's DIRECT action children
+        (one-level flattening, matching the old engine's fan-in chain: a
+        group contributes its direct children's futures to the chain, and
+        only action futures carry results into keyword arguments).
         """
-        parent, index = self._locate(action)
+        if isinstance(group, Sequential):
+            return self._walk_sequential(group, pairs)
+        return self._walk_parallel(group, pairs)
+
+    def _walk_sequential(self, group: Sequential, pairs: list) -> tuple[Any, list]:
+        """
+        Walk a ``Sequential`` group: strict child order.
+
+        The live ``children`` list is RE-READ every step (``while i < len``),
+        so nodes spliced in at runtime are picked up immediately.  Each
+        action contributes its own ``(action, result)`` pair to the local
+        chain; a group child contributes its direct action children's pairs
+        (one-level flattening).  Children already executed (replaced by a
+        splice) are skipped without adding pairs.
+        """
+        chain: list = list(pairs)
+        direct: list = []
+        i = 0
+        while i < len(group.children):
+            child = group.children[i]
+            if getattr(child, "_engine_executed", False):
+                # Replaced by a runtime splice: its actions already ran (or
+                # never will); it contributes neither a result nor a pair.
+                i += 1
+                continue
+            if isinstance(child, Action):
+                future = self._submit_action(child, chain)
+                raw = self._pool.result(future)
+                result = self._handle_result(child, group, i, raw, chain)
+                chain.append((child, result))
+                direct.append((child, result))
+            else:
+                _, child_direct = self._walk_group(child, chain)
+                chain.extend(child_direct)
+            i += 1
+        return self._group_result(group), direct
+
+    def _walk_parallel(self, group: Parallel, pairs: list) -> tuple[Any, list]:
+        """
+        Walk a ``Parallel`` group: independent, concurrent children.
+
+        The children are SNAPSHOTTED once (a parallel group's children are
+        independent, so the walk does not re-read the list).  ACTION children
+        are submitted as :class:`GraphFuture` leaves on the pool; GROUP
+        children run on plain ``threading.Thread``s (never on pool workers —
+        a walk task occupying a worker could starve the pool and deadlock).
+        All action futures are wired at once through a single join future
+        (``pool.result`` on the join — the wire-then-wait pattern), the
+        threads are joined, and the first exception in child order is raised
+        after every child has settled.
+        """
+        children = list(group.children)
+        upstream = list(pairs)
+        submitted: list[tuple[int, Action, GraphFuture]] = []
+        threads: list[tuple[int, threading.Thread, dict]] = []
+        # Wire every action leaf FIRST (in child order, matching the old
+        # engine's build order), then start the group-child threads: the
+        # pool's FIFO then runs the actions in the same order the old
+        # engine submitted them.
+        for position, child in enumerate(children):
+            if getattr(child, "_engine_executed", False):
+                continue
+            if isinstance(child, Action):
+                submitted.append((position, child, self._submit_action(child, upstream)))
+        if submitted:
+            # Wire-then-wait: bind the whole graph (submitting every leaf)
+            # with a zero-timeout probe that never blocks on a result.
+            probe = GraphFuture(_join_results, *[f for _, _, f in submitted])
+            try:
+                self._pool.result(probe, timeout=0)
+            except concurrent.futures.TimeoutError:
+                pass
+        for position, child in enumerate(children):
+            if getattr(child, "_engine_executed", False) or isinstance(child, Action):
+                continue
+            holder: dict = {}
+            thread = threading.Thread(
+                target=self._walk_child_thread,
+                args=(child, upstream, holder),
+                daemon=True,
+            )
+            threads.append((position, thread, holder))
+            thread.start()
+        results: list[Any] = [None] * len(children)
+        errors: list[tuple[int, BaseException]] = []
+        if submitted:
+            join = GraphFuture(_join_results, *[f for _, _, f in submitted])
+            try:
+                self._pool.result(join)
+            except Exception:
+                # The join only runs once every dependency has settled, so
+                # the per-future result() calls below are non-blocking; the
+                # first in-order failure is re-raised after all children
+                # (threads included) have settled.
+                pass
+            for position, action, future in submitted:
+                try:
+                    raw = future.result()
+                    results[position] = self._handle_result(
+                        action, group, position, raw, upstream
+                    )
+                except Exception as exc:
+                    errors.append((position, exc))
+        for _, thread, _ in threads:
+            thread.join()
+        for position, _thread, holder in threads:
+            if "error" in holder:
+                errors.append((position, holder["error"]))
+            else:
+                results[position] = holder.get("result")
+        for _, exc in sorted(errors, key=lambda item: item[0]):
+            raise exc
+        direct = [
+            (child, child._engine_result)
+            for child in children
+            if isinstance(child, Action) and not getattr(child, "_engine_executed", False)
+        ]
+        return results, direct
+
+    def _walk_child_thread(self, child: _Group, upstream: list, holder: dict) -> None:
+        """Run a parallel group child on a plain thread; capture its outcome."""
+        try:
+            holder["result"], _ = self._walk_group(child, list(upstream))
+        except BaseException as exc:  # re-raised in child order by the walker
+            holder["error"] = exc
+
+    def _walk_spliced(self, parent: _Group, nodes: list, upstream: list) -> list:
+        """
+        Walk nodes spliced in by dynamic adaptation (the nested walk).
+
+        Mirrors the old engine's temporary ``Sequential(*nodes)`` group: the
+        nodes are walked in order with a local chain seeded from the actor's
+        upstream pairs (a group node contributes its direct action children's
+        pairs to that chain), and the actor's runtime result is the ordered
+        list of the nodes' results.  Nodes replaced by a NESTED splice are
+        skipped (they were marked executed by the nested surgery).
+        """
+        chain: list = list(upstream)
+        results: list = []
+        for node in nodes:
+            if getattr(node, "_engine_executed", False):
+                results.append(None)
+                continue
+            position = self._position_of(parent, node)
+            if position < 0:
+                # No longer in the live tree (replaced by a nested splice).
+                results.append(None)
+                continue
+            if isinstance(node, Action):
+                future = self._submit_action(node, chain)
+                raw = self._pool.result(future)
+                result = self._handle_result(node, parent, position, raw, chain)
+                chain.append((node, result))
+                results.append(result)
+            else:
+                result, child_direct = self._walk_group(node, chain)
+                chain.extend(child_direct)
+                results.append(result)
+        return results
+
+    def _group_result(self, group: _Group) -> Any:
+        """A sequential group's result: the ordered list of its children's results."""
+        return [self._child_result(child) for child in group.children
+                if not getattr(child, "_engine_executed", False)]
+
+    def _child_result(self, child: _Node) -> Any:
+        """A child's contribution to its group's result list (recursive)."""
+        if isinstance(child, Action):
+            return child._engine_result
+        return self._group_result(child)
+
+    def _position_of(self, parent: _Group, node: _Node) -> int:
+        """The live index of ``node`` in ``parent.children`` (-1 if absent)."""
+        for i, child in enumerate(parent.children):
+            if child is node:
+                return i
+        return -1
+
+    # ------------------------------------------------------------ #
+    # Action execution (every action runs on a pool worker)
+    # ------------------------------------------------------------ #
+    def _submit_action(self, action: Action, upstream: list) -> GraphFuture:
+        """
+        Submit one action's function call as a :class:`GraphFuture` leaf.
+
+        The upstream pairs are passed as positional arguments so the future
+        registers them as dependencies (strict ordering); the corresponding
+        actions are passed separately for result keying.  The function call
+        itself runs on a pool worker thread.
+        """
         fn = self._registry.get(action.function)
         params = normalize_params(action.params)
-        actions = [getattr(f, "_action", None) for f in upstream]
-        future = GraphFuture(
+        actions = [act for act, _ in upstream]
+        return GraphFuture(
             self._run_action,
-            *upstream,
+            *[result for _, result in upstream],
             fn=fn,
             params=params,
             actions=actions,
             action=action,
-            parent=parent,
-            index=index,
-            engine=self,
-            upstream_futures=upstream,
         )
-        action._engine_future = future
-        future._action = action
-        return future
 
-    def _build_sequential(self, group: Sequential, upstream: list[GraphFuture]) -> GraphFuture:
+    def _handle_result(
+        self,
+        action: Action,
+        parent: _Group,
+        index: int,
+        raw: Any,
+        upstream: list,
+    ) -> Any:
         """
-        Build a :class:`Sequential` group: strict child order.
+        Settle an action's raw result on the WALKER thread.
 
-        Child ``i + 1`` depends on child ``i``; the next child's upstream is
-        the previous children's fan-in futures (an action contributes its
-        own future; a group contributes its direct children's futures).
+        A plain result is stored and returned.  A node-list result is a
+        dynamic-adaptation splice: the scope is checked, the replaced group
+        is marked executed, the returned nodes are spliced into the live
+        tree and walked (nested sequential walk seeded with the actor's
+        upstream pairs), and the actor's runtime result becomes the ordered
+        list of the spliced nodes' results.  Splice handling runs on the
+        walker thread (never inside a pool worker) so a nested walk can
+        submit to the pool without starving it.
         """
-        futures: list[GraphFuture] = []
-        chain: list[GraphFuture] = list(upstream)
-        for child in group.children:
-            child_f = self._build(child, chain)
-            futures.append(child_f)
-            if isinstance(child, Action):
-                chain = chain + [child_f]
-            else:
-                chain = chain + child._engine_fan_in
-        return self._group_future(group, futures)
+        nodes = _as_node_list(raw)
+        if nodes is None:
+            action._engine_result = raw
+            return raw
+        check_splice_scope(parent, index, raw)
+        next_sibling = parent.children[index + 1]
+        next_sibling._engine_executed = True
+        with self._lock:
+            parent.children[index + 1 : index + 2] = nodes
+        for node in nodes:
+            _mark_dynamic(node)
+        # Eager validation of the spliced nodes (parity with the old
+        # engine's upfront build pass: unknown functions raise before the
+        # spliced actions execute).
+        for node in nodes:
+            self._validate_node(node)
+        results = self._walk_spliced(parent, nodes, list(upstream))
+        for node in nodes:
+            node._engine_executed = True
+        action._engine_result = results
+        return results
 
-    def _build_parallel(self, group: Parallel, upstream: list[GraphFuture]) -> GraphFuture:
-        """
-        Build a :class:`Parallel` group: independent, concurrent children.
-
-        All children depend only on the actions before the group, so the
-        ``GraphPool`` runs them concurrently.
-        """
-        futures = [self._build(child, list(upstream)) for child in group.children]
-        return self._group_future(group, futures)
-
-    def _group_future(self, group: _Group, futures: list[GraphFuture]) -> GraphFuture:
-        """
-        Build the future for a group: the ordered list of its children's
-        results.  Records the group's fan-in futures (its direct children's
-        futures, passed to the next sibling) and its internal futures (the
-        group's future + all internal action futures, for splice cancellation).
-        """
-        group._engine_fan_in = futures
-        future = GraphFuture(self._collect, *futures, group=group, engine=self)
-        group._engine_future = future
-        internal: set[GraphFuture] = {future}
-        for child, f in zip(group.children, futures):
-            if isinstance(child, Action):
-                internal.add(f)
-            else:
-                internal |= child._engine_internal
-        group._engine_internal = internal
-        return future
-
-    # ------------------------------------------------------------ #
-    # Execution helpers (run on pool worker threads)
-    # ------------------------------------------------------------ #
     def _run_action(
         self,
         *upstream_results: Any,
@@ -313,28 +504,30 @@ class _Engine:
         params: dict[str, Any],
         actions: list[Action | None],
         action: Action,
-        parent: _Group | None,
-        index: int,
-        engine: _Engine,
-        upstream_futures: list[GraphFuture],
     ) -> Any:
         """
-        Execute one action's function and splice in any returned nodes.
+        Execute one action's function (runs on a pool worker thread).
 
         The call kwargs are, in precedence order (own parameters win): the
         action's own parameters, the upstream results (keyed by the
         producing action's function name, with collision suffixes), and the
-        global parameters.  If the function returns workflow node(s), they
-        are spliced in place of the action's next sibling (a group); the
-        replaced group's subtree is cancelled and the spliced group's result
-        becomes this action's result.
+        global parameters.  The raw return value is passed back to the
+        walker thread, which handles any returned-node splice.
+
+        When the function's signature declares a ``dag`` parameter (the
+        registry's cached ``wants_dag`` flag), a scoped
+        :class:`~.adaptation.DAGHandle` is injected for the call and its op
+        log is committed at function return — on this same thread, under
+        one engine-lock acquisition (the commit protocol, plan section 4).
+        ``dag`` is a reserved kwarg name: the injected handle wins over any
+        same-named parameter.  A function that declares ``dag`` AND returns
+        workflow node(s) raises ``ValueError`` (one adaptation mechanism
+        per action).
         """
-        if engine._skip(action._engine_future):
-            return _SENTINEL
-        kwargs: dict[str, Any] = dict(engine._globals)
+        kwargs: dict[str, Any] = dict(self._globals)
         used: dict[str, int] = {}
         for result, act in zip(upstream_results, actions):
-            if act is None or result is _SENTINEL:
+            if act is None:
                 continue
             name = act.function
             if name in used:
@@ -345,32 +538,161 @@ class _Engine:
                 key = name
             kwargs[key] = result
         kwargs.update(params)
-        if engine._history is None:
+        handle = self._make_handle(action)
+        if handle is not None:
+            # Reserved kwarg name: the injected handle wins over any
+            # same-named parameter (globals, upstream results, own params).
+            kwargs["dag"] = handle
+        if self._history is None:
             result = fn(**kwargs)
         else:
-            result = engine._record_call(action, fn, kwargs)
-        nodes = _as_node_list(result)
-        if nodes is None:
-            return result
-        check_splice_scope(parent, index, result)
-        next_sibling = parent.children[index + 1]
-        engine._cancel(next_sibling)
-        with engine._lock:
-            parent.children[index + 1 : index + 2] = nodes
-        for node in nodes:
-            _mark_dynamic(node)
-        spliced = engine._build_sequential(Sequential(*nodes), list(upstream_futures))
-        return engine._pool.result(spliced)
+            result = self._record_call(action, fn, kwargs)
+            if handle is not None:
+                # Snapshot of the acting action's sibling list + index,
+                # recorded at injection (plan section 9; replay
+                # materializes a fake tree from it — Phase 6).
+                record = getattr(action, "_engine_record", None)
+                if record is not None:
+                    record.scope = {
+                        "index": handle.index,
+                        "siblings": [
+                            _describe_sibling(child) for child in handle.scope.children
+                        ],
+                    }
+        if handle is not None:
+            if _as_node_list(result) is not None:
+                raise ValueError(
+                    "dynamic adaptation: a function that declares a 'dag' "
+                    "parameter must not also return workflow node(s); use "
+                    "either the handle or the return-nodes protocol, not both"
+                )
+            self._commit(handle, action)
+        return result
 
-    def _collect(self, *results: Any, group: _Group, engine: _Engine) -> Any:
+    # ------------------------------------------------------------ #
+    # Dynamic adaptation: handle injection and the commit protocol
+    # ------------------------------------------------------------ #
+    def _make_handle(self, action: Action) -> DAGHandle | None:
         """
-        A group's result: the ordered list of its children's results.
+        Build the scoped handle for ``action``'s call, or ``None``.
 
-        Returns ``_SENTINEL`` if the group was cancelled by a splice.
+        Returns ``None`` when the action's function does not declare a
+        ``dag`` parameter (the registry's cached flag) or when the action's
+        parent is not known (a detached node).  Children of a ``Parallel``
+        scope get a READ-ONLY handle (finding F4): every write op raises.
         """
-        if engine._skip(group._engine_future):
-            return _SENTINEL
-        return list(results)
+        if not self._registry.adapts(action.function):
+            return None
+        parent, index = self._locate_action(action)
+        if parent is None:
+            return None
+        return DAGHandle(
+            parent,
+            index,
+            read_only=isinstance(parent, Parallel),
+            bound=self._adaptation_bound - self._dynamic_count,
+        )
+
+    def _locate_action(self, action: Action) -> tuple[_Group | None, int]:
+        """Return ``(parent, index)`` of ``action`` in the live tree."""
+        with self._lock:
+            return self._find_in_tree(self._root, action)
+
+    def _find_in_tree(
+        self, group: _Group, action: Action
+    ) -> tuple[_Group | None, int]:
+        """Depth-first search for ``action``; returns its parent and index."""
+        for index, child in enumerate(group.children):
+            if child is action:
+                return group, index
+            if isinstance(child, (Sequential, Parallel)):
+                found = self._find_in_tree(child, action)
+                if found[0] is not None:
+                    return found
+        return None, -1
+
+    def _commit(self, handle: DAGHandle, action: Action) -> None:
+        """
+        Apply a handle's recorded ops (the commit protocol, plan section 4).
+
+        Runs at function return, on the same thread the function ran on,
+        under ONE engine-lock acquisition: re-validate every op against the
+        live tree, apply the tree surgery (children-list edits, in-place
+        ``params.update`` for adjust, appends at the scope end), check the
+        dynamic-node bound, record the ``adaptations`` on the action's
+        ``ExecutionRecord`` and mark the inserted nodes dynamic.  An empty
+        op log is a no-op.  Re-validation failures raise before any op is
+        applied (the ops of one commit are atomic).
+        """
+        ops = handle.ops
+        if not ops:
+            return
+        with self._lock:
+            for op in ops:
+                self._revalidate(op)
+            for op in ops:
+                self._apply(op)
+            self._dynamic_count += sum(len(op.nodes) for op in ops)
+            if self._dynamic_count > self._adaptation_bound:
+                raise ValueError(
+                    f"dynamic adaptation: the dynamic-node bound "
+                    f"({self._adaptation_bound}) was exceeded; a runaway "
+                    f"adaptation is terminated deterministically instead "
+                    f"of hanging"
+                )
+            for node in (n for op in ops for n in op.nodes):
+                _mark_dynamic(node)
+        # Eager validation of the inserted nodes (parity with the
+        # return-nodes splice path: an unknown function raises before the
+        # inserted actions execute).
+        for op in ops:
+            for node in op.nodes:
+                self._validate_node(node)
+        record = getattr(action, "_engine_record", None)
+        if record is not None:
+            record.adaptations = [op.describe() for op in ops]
+
+    def _revalidate(self, op: AdaptationOp) -> None:
+        """
+        Re-check one op against the live tree (under the engine lock).
+
+        The op's target must still be in the tree and must not have started
+        (``_engine_executed``).  The parallel-scope rule (finding F4) is
+        enforced on the ACTOR side — a child of a ``Parallel`` scope gets a
+        read-only handle, so no ops can exist for it — not on the target
+        side: an action in a sequential scope may adapt the subtree of a
+        FOLLOWING parallel group, because every position after the actor
+        is unwalked while its function runs (the paper's Listing 7 outer
+        case).
+        """
+        if op.kind == "append":
+            return
+        parent, _index = self._find_in_tree(self._root, op.target)
+        if parent is None:
+            raise ValueError(
+                "dynamic adaptation: the op's target is no longer in the "
+                "workflow tree; the tree changed after the op was recorded"
+            )
+        if getattr(op.target, "_engine_executed", False):
+            raise ValueError(
+                "dynamic adaptation: the op's target has already executed; "
+                "only nodes that have not started may be adapted"
+            )
+
+    def _apply(self, op: AdaptationOp) -> None:
+        """Apply one op's tree surgery (under the engine lock)."""
+        if op.kind == "append":
+            group = op.scope if op.scope is not None else self._root
+            group.children.extend(op.nodes)
+            return
+        if op.kind == "adjust":
+            _apply_params(op.target, op.params)
+            return
+        if op.kind == "replace":
+            parent, index = self._find_in_tree(self._root, op.target)
+            parent.children[index : index + 1] = list(op.nodes)
+            return
+        raise ValueError(f"dynamic adaptation: unknown op kind {op.kind!r}")
 
     # ------------------------------------------------------------ #
     # Execution history (opt-in)
@@ -428,7 +750,7 @@ class _Engine:
         with self._lock:
             return resolve_group_path(self._root, action)
 
-    def _mark_final(self, final_future: GraphFuture) -> None:
+    def _mark_final(self, final_action: Action) -> None:
         """
         Mark the run's final action on the history (for ``replay``).
 
@@ -440,62 +762,57 @@ class _Engine:
         which stays exact even when a late splice shifts tree positions
         after the action recorded its group path.
         """
-        action = getattr(final_future, "_action", None)
-        record = getattr(action, "_engine_record", None) if action is not None else None
+        record = getattr(final_action, "_engine_record", None)
         if record is not None:
             self._history.final_order = record.order
 
     # ------------------------------------------------------------ #
-    # Splice support
+    # Final-result resolution
     # ------------------------------------------------------------ #
-    def _cancel(self, group: _Group) -> None:
-        """Cancel a group's subtree (its future + all internal action futures)."""
-        with self._lock:
-            self._cancelled.add(group._engine_future)
-            self._cancelled |= group._engine_internal
-
-    def _skip(self, future: GraphFuture) -> bool:
-        """True if ``future`` was cancelled by a splice (its function is skipped)."""
-        with self._lock:
-            return future in self._cancelled
-
-    # ------------------------------------------------------------ #
-    # Introspection helpers
-    # ------------------------------------------------------------ #
-    def _locate(self, action: Action) -> tuple[_Group | None, int]:
+    def _final_action(self, group: _Group) -> Action | None:
         """
-        Find the group containing ``action`` and the action's index in it.
+        Return the last action in ``group``'s execution order.
 
-        Returns ``(None, -1)`` when the action is the root (which is always
-        a group, so this only happens for a malformed tree).
-        """
-        if action is self._root:
-            return None, -1
-        stack: list[_Group] = [self._root]
-        while stack:
-            group = stack.pop()
-            for i, child in enumerate(group.children):
-                if child is action:
-                    return group, i
-                if isinstance(child, (Sequential, Parallel)):
-                    stack.append(child)
-        return None, -1
-
-    def _find_final_future(self, group: _Group) -> GraphFuture | None:
-        """
-        Return the future of the last action in ``group``'s execution order.
-
-        Resolves the last child recursively: if it is an action, its future;
-        if it is a group, recurse into it.  Returns ``None`` for an empty
-        group.
+        Resolves the last child recursively: if it is an action, it is the
+        final action; if it is a group, recurse into it.  Returns ``None``
+        for an empty group (the run's result is then ``None``).
         """
         children = group.children
         if not children:
             return None
         last = children[-1]
         if isinstance(last, Action):
-            return last._engine_future
-        return self._find_final_future(last)
+            return last
+        return self._final_action(last)
+
+
+def _join_results(*_results: Any) -> None:
+    """A join node: it runs once every dependency has settled (value unused)."""
+    return None
+
+
+def _apply_params(target: _Node, params: dict[str, Any]) -> None:
+    """
+    Apply an ``adjust`` op's parameter overrides to ``target`` in place.
+
+    An ``Action`` gets its ``params`` dict updated (existing keys
+    overwritten, missing keys added); a group applies the overrides to
+    every action in its subtree (the "retune the declared downstream scope"
+    form).
+    """
+    if isinstance(target, Action):
+        target.params.update(params)
+        return
+    for child in target.children:
+        _apply_params(child, params)
+
+
+def _describe_sibling(node: _Node) -> dict[str, Any]:
+    """A plain descriptor of a scope snapshot's sibling (for history)."""
+    if isinstance(node, Action):
+        return {"kind": "action", "function": node.function}
+    kind = "sequential" if isinstance(node, Sequential) else "parallel"
+    return {"kind": kind, "children": len(node.children)}
 
 
 # --------------------------------------------------------------------------- #

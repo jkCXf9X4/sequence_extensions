@@ -1,0 +1,22 @@
+<VerificationWorkflow>
+  <argument key="model" value="./model_1"/>
+  <template name="file_check">
+    <scope type="sequential">
+      <action function="simulate">
+        <argument key="file" value="{file}"/>
+      </action>
+      <action function="evaluate_results">
+        <argument key="file" value="{file}"/>
+      </action>
+    </scope>
+  </template>
+  <scope type="sequential">
+    <action function="find_files">
+      <argument key="path" value="file_storage/"/>
+    </action>
+    <use-template name="file_check">
+      <argument key="file" value="case_0.csv"/>
+    </use-template>
+    <action function="compare_results"/>
+  </scope>
+</VerificationWorkflow>

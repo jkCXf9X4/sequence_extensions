@@ -25,6 +25,15 @@ these nodes:
   separately.
 * A bare ``<sequential>`` or ``<parallel>`` root (no wrapper) is also
   accepted; its ``.globals`` is an empty dict.
+* ``<scope type="sequential|parallel">`` is the explicit form of a
+  grouping: ``type`` is required and must be ``sequential`` or
+  ``parallel``; an optional ``name`` attribute labels the group (it does
+  not appear in history path labels, which are derived from the group
+  type).  ``<sequential>`` / ``<parallel>`` are aliases for
+  ``<scope type="...">`` and parse exactly as before.  ``<scope>`` is
+  allowed everywhere a group is allowed: as the root, as the
+  ``<VerificationWorkflow>`` top-level grouping, nested inside other
+  groups, and as a template body.
 * ``<action function="name">`` takes custom parameters as ``<argument>``
   child elements, one per parameter:
   ``<argument key="name" value="..."/>`` (``key`` attribute = parameter
@@ -75,7 +84,9 @@ limiting duplication between workflows):
 
 Invalid structure raises ``ValueError`` with a message naming the problem:
 a root element that is not ``<VerificationWorkflow>`` / ``<sequential>``
-/ ``<parallel>``, zero or multiple top-level groupings inside
+/ ``<parallel>`` / ``<scope>``, a ``<scope>`` missing its ``type``
+attribute or carrying a ``type`` other than ``sequential`` / ``parallel``,
+zero or multiple top-level groupings inside
 ``<VerificationWorkflow>``, an unknown element name anywhere (including a
 non-``<argument>`` child of an ``<action>`` or of the
 ``<VerificationWorkflow>`` wrapper), an ``<action>`` without a ``function``
@@ -101,6 +112,10 @@ __all__ = ["Action", "Parallel", "Sequential", "Template", "parse_workflow"]
 
 # Element names that denote a grouping node.
 _GROUP_TAGS = ("sequential", "parallel")
+# The element name that denotes a grouping node with an explicit, validated
+# ``type`` attribute (``sequential`` / ``parallel``); ``<sequential>`` and
+# ``<parallel>`` are aliases for ``<scope type="...">``.
+_SCOPE_TAG = "scope"
 # The element name that denotes a parameter (key/value pair), anywhere it
 # appears (action parameters, global parameters, template defaults and
 # template use-site bindings).
@@ -140,13 +155,21 @@ class _Group:
     ``children`` is the ordered list of child nodes (Action / Sequential /
     Parallel); ``globals`` holds the global parameters declared in the
     enclosing ``<VerificationWorkflow>`` (empty for bare group roots and for
-    groups built via the Python API).
+    groups built via the Python API); ``name`` is an optional label (``None``
+    unless set from a ``<scope name=...>`` attribute) that does not affect
+    history path labels, which are derived from the group type.
     """
 
-    def __init__(self, *children: Action | Sequential | Parallel) -> None:
-        """Create a group with the given child nodes, in order."""
+    def __init__(self, *children: Action | Sequential | Parallel, name: str | None = None) -> None:
+        """Create a group with the given child nodes, in order.
+
+        ``name`` is an optional label (set from a ``<scope name=...>``
+        attribute); it is not part of history path labels, which are derived
+        from the group type.
+        """
         self.children = list(children)
         self.globals: dict[str, str] = {}
+        self.name = name
 
     def __repr__(self) -> str:
         """One-liner with the group type and its children."""
@@ -292,6 +315,7 @@ def _substitute(
         return copy
     copy = type(node)()
     copy.children = [_substitute(child, values) for child in node.children]
+    copy.name = node.name
     return copy
 
 
@@ -323,7 +347,7 @@ def parse_workflow(xml_source: str | bytes) -> Sequential | Parallel:
     ``xml_source`` is the XML as a string (or bytes).  The document is
     either a ``<VerificationWorkflow>`` wrapper (global parameters, optional
     ``<template>`` definitions and exactly one top-level grouping) or a bare
-    ``<sequential>`` / ``<parallel>`` root.  Global parameters are stored on
+    ``<sequential>`` / ``<parallel>`` / ``<scope>`` root.  Global parameters are stored on
     the returned group's ``.globals`` dict (empty for bare roots).  Every
     ``<use-template>`` is expanded at parse time into the instantiated
     template body, so the returned tree contains only ``Action`` /
@@ -340,11 +364,11 @@ def parse_workflow(xml_source: str | bytes) -> Sequential | Parallel:
 
     if root.tag == "VerificationWorkflow":
         return _parse_wrapped(root)
-    if root.tag in _GROUP_TAGS:
+    if root.tag in _GROUP_TAGS or root.tag == _SCOPE_TAG:
         return _parse_group(root, {}, {})
     raise ValueError(
-        f"workflow root must be <VerificationWorkflow>, <sequential> or "
-        f"<parallel>, got <{root.tag}>"
+        f"workflow root must be <VerificationWorkflow>, <sequential>, "
+        f"<parallel> or <scope>, got <{root.tag}>"
     )
 
 
@@ -373,7 +397,7 @@ def _parse_wrapped(root: ET.Element) -> Sequential | Parallel:
             templates[template.name] = template
     group: Sequential | Parallel | None = None
     for child in root:
-        if child.tag in _GROUP_TAGS:
+        if child.tag in _GROUP_TAGS or child.tag == _SCOPE_TAG:
             if group is not None:
                 raise ValueError(
                     "<VerificationWorkflow> must contain exactly one top-level "
@@ -389,7 +413,7 @@ def _parse_wrapped(root: ET.Element) -> Sequential | Parallel:
     if group is None:
         raise ValueError(
             "<VerificationWorkflow> must contain exactly one top-level "
-            "grouping (<sequential> or <parallel>), found none"
+            "grouping (<sequential>, <parallel> or <scope>), found none"
         )
     group.globals = globals_
     return group
@@ -398,11 +422,31 @@ def _parse_wrapped(root: ET.Element) -> Sequential | Parallel:
 def _parse_group(
     element: ET.Element, templates: dict[str, Template], globals_: dict[str, str]
 ) -> Sequential | Parallel:
-    """Parse a ``<sequential>`` or ``<parallel>`` element into its group node."""
+    """
+    Parse a grouping element into its group node.
+
+    ``<sequential>`` / ``<parallel>`` are aliases for
+    ``<scope type="sequential">`` / ``<scope type="parallel">``: the
+    ``type`` attribute is required on ``<scope>`` and validated, and an
+    optional ``name`` attribute labels the group (history path labels stay
+    derived from the group type).
+    """
+    if element.tag == _SCOPE_TAG:
+        scope_type = element.attrib.get("type")
+        if not scope_type:
+            raise ValueError("<scope> element is missing its 'type' attribute")
+        if scope_type not in _GROUP_TAGS:
+            raise ValueError(
+                f"<scope> element has invalid 'type' attribute {scope_type!r}; "
+                "must be 'sequential' or 'parallel'"
+            )
+    else:
+        scope_type = element.tag
+    name = element.attrib.get("name")
     children = [_parse_child(child, templates, globals_) for child in element]
-    if element.tag == "sequential":
-        return Sequential(*children)
-    return Parallel(*children)
+    if scope_type == "sequential":
+        return Sequential(*children, name=name)
+    return Parallel(*children, name=name)
 
 
 def _parse_child(
@@ -411,7 +455,7 @@ def _parse_child(
     """Parse one child of a grouping: an action, a nested group, or a template use."""
     if element.tag == "action":
         return _parse_action(element)
-    if element.tag in _GROUP_TAGS:
+    if element.tag in _GROUP_TAGS or element.tag == _SCOPE_TAG:
         return _parse_group(element, templates, globals_)
     if element.tag == _USE_TEMPLATE_TAG:
         return _parse_use_template(element, templates, globals_)
@@ -468,12 +512,12 @@ def _parse_template(
     body: Action | Sequential | Parallel | None = None
     defaults: dict[str, str] = {}
     for child in element:
-        if child.tag in _GROUP_TAGS or child.tag == "action":
+        if child.tag in _GROUP_TAGS or child.tag == _SCOPE_TAG or child.tag == "action":
             if body is not None:
                 raise ValueError(
                     f"<template name={name!r}> must contain exactly one body "
-                    f"(<sequential>, <parallel> or <action>), found <{child.tag}> "
-                    "after an earlier one"
+                    f"(<sequential>, <parallel>, <scope> or <action>), "
+                    f"found <{child.tag}> after an earlier one"
                 )
             body = _parse_child(child, templates, globals_)
         elif child.tag == _ARGUMENT_TAG:
@@ -488,7 +532,7 @@ def _parse_template(
     if body is None:
         raise ValueError(
             f"<template name={name!r}> must contain exactly one body "
-            "(<sequential>, <parallel> or <action>), found none"
+            "(<sequential>, <parallel>, <scope> or <action>), found none"
         )
     return Template(name, body, **defaults)
 

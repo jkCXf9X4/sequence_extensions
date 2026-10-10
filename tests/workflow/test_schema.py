@@ -165,3 +165,136 @@ def test_parse_rejects_argument_with_children():
     """An <argument> element containing child elements is rejected."""
     with pytest.raises(ValueError):
         parse_workflow(workflows.load("invalid/argument_with_children.xml"))
+
+
+# --------------------------------------------------------------------------- #
+# 4. PARSING — <scope type="..."> + alias equivalence (Phase 7, plan §7)
+# --------------------------------------------------------------------------- #
+
+
+def test_parse_scope_sequential_root():
+    """A <scope type="sequential"> root parses to a Sequential node."""
+    root = parse_workflow(
+        '<scope type="sequential"><action function="a"/><action function="b"/></scope>'
+    )
+    assert isinstance(root, Sequential)
+    children = _children(root)
+    assert [_function(c) for c in children] == ["a", "b"]
+
+
+def test_parse_scope_parallel_root():
+    """A <scope type="parallel"> root parses to a Parallel node."""
+    root = parse_workflow(
+        '<scope type="parallel"><action function="a"/><action function="b"/></scope>'
+    )
+    assert isinstance(root, Parallel)
+    children = _children(root)
+    assert [_function(c) for c in children] == ["a", "b"]
+
+
+def test_parse_scope_alias_equivalent_to_sequential():
+    """<scope type="sequential"> and <sequential> parse to the same structure."""
+    via_scope = parse_workflow(
+        '<scope type="sequential"><action function="a"/><action function="b"/></scope>'
+    )
+    via_alias = parse_workflow(
+        "<sequential><action function='a'/><action function='b'/></sequential>"
+    )
+    assert type(via_scope) is type(via_alias) is Sequential
+    assert [_function(c) for c in _children(via_scope)] == [
+        _function(c) for c in _children(via_alias)
+    ]
+
+
+def test_parse_scope_alias_equivalent_to_parallel():
+    """<scope type="parallel"> and <parallel> parse to the same structure."""
+    via_scope = parse_workflow(
+        '<scope type="parallel"><action function="a"/><action function="b"/></scope>'
+    )
+    via_alias = parse_workflow(
+        "<parallel><action function='a'/><action function='b'/></parallel>"
+    )
+    assert type(via_scope) is type(via_alias) is Parallel
+    assert [_function(c) for c in _children(via_scope)] == [
+        _function(c) for c in _children(via_alias)
+    ]
+
+
+def test_parse_scope_as_wrapper_top_level_grouping():
+    """A <scope> may be the single top-level grouping of a <VerificationWorkflow>."""
+    root = parse_workflow(
+        '<VerificationWorkflow><argument key="model" value="m"/>'
+        '<scope type="sequential"><action function="a"/></scope>'
+        "</VerificationWorkflow>"
+    )
+    assert isinstance(root, Sequential)
+    assert _globals(root).get("model") == "m"
+    assert [_function(c) for c in _children(root)] == ["a"]
+
+
+def test_parse_scope_nested_inside_group():
+    """A <scope> may be nested inside another group (mixed with the aliases)."""
+    root = parse_workflow(
+        "<sequential>"
+        '<action function="a"/>'
+        '<scope type="parallel"><action function="b"/><action function="c"/></scope>'
+        "</sequential>"
+    )
+    assert isinstance(root, Sequential)
+    children = _children(root)
+    assert isinstance(children[1], Parallel)
+    assert [_function(c) for c in _children(children[1])] == ["b", "c"]
+
+
+def test_parse_scope_in_template_body():
+    """A <scope> may be the body of a <template> (expanded at parse time)."""
+    root = parse_workflow(
+        '<VerificationWorkflow>'
+        '<template name="t"><scope type="sequential">'
+        '<action function="a"><argument key="file" value="{file}"/></action>'
+        "</scope></template>"
+        '<sequential><use-template name="t"><argument key="file" value="f1"/></use-template>'
+        "</sequential>"
+        "</VerificationWorkflow>"
+    )
+    assert isinstance(root, Sequential)
+    inner = _children(root)[0]
+    assert isinstance(inner, Sequential)
+    assert _function(_children(inner)[0]) == "a"
+    assert _params(_children(inner)[0]).get("file") == "f1"
+
+
+def test_parse_scope_name_attribute_labels_group():
+    """An optional name attribute on <scope> labels the group (does not affect type)."""
+    root = parse_workflow(
+        '<scope type="sequential" name="retry"><action function="a"/></scope>'
+    )
+    assert isinstance(root, Sequential)
+    assert root.name == "retry"
+    # The alias form carries no name (None) by default.
+    alias_root = parse_workflow("<sequential><action function='a'/></sequential>")
+    assert alias_root.name is None
+
+
+def test_parse_scope_missing_type_rejected():
+    """A <scope> missing its type attribute is rejected with ValueError."""
+    with pytest.raises(ValueError, match="type"):
+        parse_workflow('<scope><action function="a"/></scope>')
+
+
+def test_parse_scope_invalid_type_rejected():
+    """A <scope> with a type other than sequential/parallel is rejected."""
+    with pytest.raises(ValueError, match="type"):
+        parse_workflow('<scope type="loop"><action function="a"/></scope>')
+
+
+def test_parse_scope_alias_emits_no_warning():
+    """The <sequential>/<parallel> aliases parse with no deprecation warning (D1)."""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any warning becomes an error
+        parse_workflow("<sequential><action function='a'/></sequential>")
+        parse_workflow("<parallel><action function='a'/></parallel>")
+        # The explicit <scope> form is also warning-free.
+        parse_workflow('<scope type="sequential"><action function="a"/></scope>')

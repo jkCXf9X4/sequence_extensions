@@ -232,6 +232,36 @@ Pool lifecycle:
 - Re-entering the same pool (`with pool:` twice) raises `RuntimeError`.
 - Lazy use without `with` is safe — the executor is created on first use and shut down at interpreter exit (atexit).
 
+## workflow
+
+The V&V workflow layer: a small XML/Python schema of `Action` / `Sequential` / `Parallel` nodes, a named function registry, and a lazy tree-walking execution engine. A `<scope type="sequential|parallel">` element names each action's grouping scope (the `<sequential>` / `<parallel>` spellings are aliases); an action may declare a `dag` parameter to adapt its downstream scope at runtime.
+
+```python
+from sequence_extensions import run_workflow
+from sequence_extensions.workflow import register_library
+
+register_library()  # opt in to the paper's library functions
+
+xml = """
+<VerificationWorkflow>
+  <argument key="model" value="./model_1"/>
+  <scope type="sequential">
+    <action function="find_files">
+      <argument key="path" value="file_storage/"/>
+    </action>
+    <scope type="parallel">
+      <action function="simulate"/>
+      <action function="evaluate_results"/>
+    </scope>
+  </scope>
+</VerificationWorkflow>
+"""
+
+result = run_workflow(xml)  # the last action's result
+```
+
+`find_files` declares a `dag` parameter, so the engine hands it a scoped handle: it clones the declared downstream `<scope type="parallel">` once per found file and splices the clones in, so each file gets its own `simulate` + `evaluate_results`. See [docs/API.md](docs/API.md) for the full workflow reference (schema, engine, registry, library, history, and the adaptation contract).
+
 ## Development
 
 For development install:

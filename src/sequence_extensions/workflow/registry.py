@@ -16,14 +16,37 @@ Re-registering an existing name with a different function emits a
 
 from __future__ import annotations
 
+import inspect
 import warnings
 from typing import Any, Callable
 
 __all__ = [
     "DEFAULT_REGISTRY",
     "FunctionRegistry",
+    "wants_dag",
     "workflow_function",
 ]
+
+
+def wants_dag(fn: Callable[..., Any]) -> bool:
+    """
+    True when ``fn``'s signature declares an explicit ``dag`` parameter.
+
+    The engine injects the scoped :class:`~.adaptation.DAGHandle` only into
+    functions that ask for it (decision D4: signature inspection, cached at
+    registration time).  ``dag`` is a reserved kwarg name for adapting
+    functions — the injected handle wins over any same-named parameter.
+
+    A bare ``**kwargs`` does NOT count: it would silently swallow the
+    handle (and every legacy ``def fn(**kwargs)`` stub would suddenly
+    receive one, changing recorded parameters).  Adaptation is opt-in by
+    naming the parameter.
+    """
+    try:
+        parameters = inspect.signature(fn).parameters
+    except (TypeError, ValueError):  # non-introspectable callable: never inject
+        return False
+    return "dag" in parameters
 
 
 class FunctionRegistry:
@@ -37,10 +60,18 @@ class FunctionRegistry:
     def __init__(self) -> None:
         """Create an empty registry."""
         self._functions: dict[str, Callable[..., Any]] = {}
+        # Cached per-function adaptation flag (decision D4): True when the
+        # registered function's signature declares a ``dag`` parameter, so
+        # the engine injects the scoped DAGHandle into its calls.
+        self._wants_dag: dict[str, bool] = {}
 
     def register(self, name: str, fn: Callable[..., Any]) -> None:
         """
         Register ``fn`` under ``name`` (replacing any earlier registration).
+
+        The function's ``wants_dag`` flag (whether its signature declares a
+        ``dag`` parameter) is cached here, at registration time, so the
+        engine never inspects a signature on the hot path.
 
         Raises ``ValueError`` if ``name`` is empty or ``fn`` is not callable.
 
@@ -63,6 +94,7 @@ class FunctionRegistry:
                 stacklevel=2,
             )
         self._functions[name] = fn
+        self._wants_dag[name] = wants_dag(fn)
 
     def get(self, name: str) -> Callable[..., Any]:
         """
@@ -74,6 +106,15 @@ class FunctionRegistry:
             return self._functions[name]
         except KeyError:
             raise ValueError(f"unknown function: {name!r}") from None
+
+    def adapts(self, name: str) -> bool:
+        """
+        True when the function registered under ``name`` wants a ``dag`` handle.
+
+        Raises ``ValueError`` (via :meth:`get`) for an unknown name.
+        """
+        self.get(name)  # unknown-name parity with get()
+        return self._wants_dag.get(name, False)
 
     def names(self) -> list[str]:
         """Return the registered function names in registration order."""

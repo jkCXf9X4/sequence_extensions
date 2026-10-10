@@ -22,7 +22,12 @@ final result; this module supplies the missing evidence layer:
   recorded order.  :func:`replay` returns the same final result as the
   original run (the replayed value of the run's final action, which the
   engine marks on the history), proving reproducibility rather than
-  echoing stored results.
+  echoing stored results.  A function that adapted through a ``dag``
+  handle is re-invoked with the recorded ``dag`` kwarg stripped and a
+  :class:`ReplayHandle` re-injected: reads are served from a fake tree
+  materialized from the record's ``scope`` snapshot and write ops are
+  no-ops, so replaying an adapting run is deterministic and never mutates
+  the live tree.
 
 Recording is opt-in: ``run_workflow`` / ``Test_Framework`` accept a
 ``history`` argument (default ``None``); when no history is requested the
@@ -56,6 +61,7 @@ from .schema import Action, Parallel, Sequential
 
 __all__ = [
     "ExecutionRecord",
+    "ReplayHandle",
     "RunHistory",
     "recordable_result",
     "replay",
@@ -98,6 +104,10 @@ class ExecutionRecord:
       completion, e.g. ``"root/parallel[1]/action[0]"``.
     * ``dynamic`` — ``True`` when the action was spliced into the workflow
       at runtime by dynamic adaptation.
+    * ``adaptations`` — the committed dynamic-adaptation ops (plain
+      descriptors; empty when the function adapted nothing).
+    * ``scope`` — snapshot of the acting action's sibling list and index,
+      recorded at handle injection (``None`` for non-adapting actions).
     """
 
     name: str
@@ -110,6 +120,8 @@ class ExecutionRecord:
     order: int = -1
     group_path: str = ""
     dynamic: bool = False
+    adaptations: list[dict] = field(default_factory=list)
+    scope: dict | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -263,6 +275,160 @@ def _describe(value: Any) -> Any:
 
 
 # --------------------------------------------------------------------------- #
+# Replay handle (deterministic re-execution of adapting runs)
+# --------------------------------------------------------------------------- #
+
+#: Sentinel function name for placeholder children of a materialized fake
+#: group sibling.  The scope snapshot records a group sibling's child COUNT
+#: but not the children's identities, so the fake group is filled with
+#: placeholders that preserve the count (and are clearly not real actions).
+_REPLAY_PLACEHOLDER = "__replay_placeholder__"
+
+
+def _materialize_sibling(descriptor: dict[str, Any]) -> _Node:
+    """
+    Materialize one fake sibling node from a scope-snapshot descriptor.
+
+    An action descriptor becomes an ``Action`` with the recorded function
+    name (no parameters — the snapshot does not record them).  A group
+    descriptor becomes a ``Sequential`` / ``Parallel`` with the recorded
+    number of placeholder children, so the child COUNT is preserved even
+    though the snapshot does not record the children's identities.
+    """
+    kind = descriptor.get("kind")
+    if kind == "action":
+        return Action(descriptor.get("function", ""))
+    count = int(descriptor.get("children", 0))
+    placeholders = [Action(_REPLAY_PLACEHOLDER) for _ in range(count)]
+    if kind == "parallel":
+        return Parallel(*placeholders)
+    return Sequential(*placeholders)
+
+
+def _clone_node(node: _Node, overrides: dict[str, Any]) -> _Node:
+    """
+    Deep-clone a (fake) node, applying parameter overrides to its actions.
+
+    Mirrors the engine's clone: every ``Action`` gets a fresh ``params``
+    dict with ``overrides`` merged in; groups are rebuilt with cloned
+    children.  Used by :meth:`ReplayHandle.copy` so an adapting function's
+    clone-based logic runs against the materialized fake tree.
+    """
+    if isinstance(node, Action):
+        params = dict(node.params)
+        params.update(overrides)
+        return Action(node.function, **params)
+    children = [_clone_node(child, overrides) for child in node.children]
+    clone = Sequential(*children) if isinstance(node, Sequential) else Parallel(*children)
+    clone.globals = dict(node.globals)
+    return clone
+
+
+class ReplayHandle:
+    """
+    A read-only, no-op stand-in for :class:`~.adaptation.DAGHandle` in replay.
+
+    When a recorded run's function declared a ``dag`` parameter, replay
+    re-injects a :class:`ReplayHandle` (instead of a live handle) so the
+    function re-executes deterministically:
+
+    * **Reads** (``following`` / ``preceding`` / ``following_group`` and
+      node traversal) are served from a FAKE tree materialized from the
+      record's ``scope`` snapshot — the acting action's sibling list and
+      index as they stood at injection.
+    * **Write ops** (``replace`` / ``adjust`` / ``append``) are NO-OPS:
+      they are recorded nowhere and applied nowhere, so replay never
+      mutates the live tree and never diverges from the original run's
+      committed structure.
+    * **Clone ops** (``copy`` / ``adjusted``) are functional: they clone
+      the materialized fake target, so an adapting function's clone-based
+      logic runs (the clone is of the fake tree — the closest the snapshot
+      allows).
+
+    The handle is constructed per replayed record and holds no reference
+    to the live workflow tree.
+    """
+
+    def __init__(self, scope: dict | None) -> None:
+        """Materialize the fake parent group from ``scope`` (or empty)."""
+        siblings: list[_Node] = []
+        index = 0
+        if scope is not None:
+            index = int(scope.get("index", 0))
+            siblings = [_materialize_sibling(s) for s in scope.get("siblings", [])]
+        self._parent = Sequential(*siblings)
+        self._index = index
+
+    # ------------------------------------------------------------ #
+    # Reads (served from the materialized fake tree)
+    # ------------------------------------------------------------ #
+    @property
+    def scope(self) -> _Group:
+        """The materialized fake grouping scope (the acting action's parent)."""
+        return self._parent
+
+    @property
+    def index(self) -> int:
+        """The acting action's recorded position in its parent's children."""
+        return self._index
+
+    @property
+    def read_only(self) -> bool:
+        """Always ``True`` in replay: writes are no-ops, never applied."""
+        return True
+
+    def following(self) -> list[_Node]:
+        """The fake siblings after the acting action, in order."""
+        return list(self._parent.children[self._index + 1 :])
+
+    def preceding(self) -> list[_Node]:
+        """The fake siblings before the acting action, in order."""
+        return list(self._parent.children[: self._index])
+
+    def following_group(self) -> _Group:
+        """The first following fake sibling, which must be a group."""
+        following = self.following()
+        if not following:
+            raise ValueError(
+                "dynamic adaptation: no following sibling in this scope to adapt"
+            )
+        first = following[0]
+        if not isinstance(first, (Sequential, Parallel)):
+            raise ValueError(
+                "dynamic adaptation: the first following sibling is an action, "
+                "not a group; use dag.following() to read it or dag.replace() "
+                "to substitute nodes for it"
+            )
+        return first
+
+    # ------------------------------------------------------------ #
+    # Clone ops (functional: clone the materialized fake target)
+    # ------------------------------------------------------------ #
+    def copy(self, target: _Node, **param_overrides: Any) -> _Node:
+        """Clone the (fake) ``target`` subtree with parameter overrides."""
+        return _clone_node(target, param_overrides)
+
+    def adjusted(self, **param_overrides: Any) -> _Node:
+        """Clone the first following fake sibling with parameter overrides."""
+        return self.copy(self.following()[0], **param_overrides)
+
+    # ------------------------------------------------------------ #
+    # Write ops (NO-OPS: recorded nowhere, applied nowhere)
+    # ------------------------------------------------------------ #
+    def replace(self, target: _Node, nodes: Any) -> None:
+        """No-op in replay: the replacement is not applied to any tree."""
+        return None
+
+    def adjust(self, target: _Node, **params: Any) -> None:
+        """No-op in replay: the parameter overrides are not applied."""
+        return None
+
+    def append(self, nodes: Any) -> None:
+        """No-op in replay: the nodes are not appended to any tree."""
+        return None
+
+
+# --------------------------------------------------------------------------- #
 # Deterministic replay
 # --------------------------------------------------------------------------- #
 
@@ -282,9 +448,23 @@ def replay_records(
     is normalized with :func:`recordable_result` so it compares equal to
     the stored descriptor.  A recorded failure re-raises at the same point
     in the sequence.
+
+    Adapting functions (whose recorded ``params`` contain the injected
+    ``dag`` kwarg) are re-invoked with the ``dag`` kwarg STRIPPED and a
+    :class:`ReplayHandle` re-injected instead: reads are served from a
+    fake tree materialized from the record's ``scope`` snapshot and write
+    ops are no-ops, so replay is deterministic and never mutates the live
+    tree.  Non-adapting records are replayed byte-for-byte as before.
     """
     reg = registry if registry is not None else DEFAULT_REGISTRY
-    return [recordable_result(reg.get(record.name)(**record.params)) for record in history.records]
+    replayed: list[Any] = []
+    for record in history.records:
+        params = dict(record.params)
+        if "dag" in params:
+            params.pop("dag")
+            params["dag"] = ReplayHandle(record.scope)
+        replayed.append(recordable_result(reg.get(record.name)(**params)))
+    return replayed
 
 
 def replay(history: RunHistory, registry: FunctionRegistry | None = None) -> Any:
