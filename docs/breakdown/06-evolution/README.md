@@ -29,7 +29,11 @@ Idea to IMP to decision to task, per the change pipeline:
 
 ## Open IMPs
 
-None. `selected/` is empty. No open investigations.
+- `IMP-007` — Decouple artifact store from engine — structural
+  derivation. Engine sheds all store knowledge; a walk context (own node
+  plus ancestry) is the only injection; the store derives address,
+  causal past and branches structurally at call time via registry
+  wrapping.
 
 ## Implemented (not tracked)
 
