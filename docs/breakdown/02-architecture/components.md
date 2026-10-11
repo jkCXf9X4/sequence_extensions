@@ -17,20 +17,22 @@ The package decomposes into three subpackages with a strict dependency order: `w
 - **`dict_ext`** — a `dict` subclass; helpers operate on `(key, value)` pairs.
 - **`gen_ext`** — static methods for generators and iterables.
 
-## `graph` — execution substrate
+## `graph` — nodes, manipulation, and the execution substrate
 
-- **`GraphFuture`** — one DAG node: a function, its arguments, and its dependencies.
+- **`node`** — the generic tree nodes: `Node` (ordered children + optional name; identity-based `contains`, depth-first `locate`, deep `clone` with a per-class `_copy` hook) and `Group` (the container specialization). Domain trees subclass these.
+- **`handle`** — `TreeHandle`: a scoped, read-mostly view over a node tree with the intent-level manipulation patterns (map / branch / skip / skip-rest / iterate). Never mutates; a domain supplies validation, op recording and empty-group policy through hooks.
+- **`graph_future`** — `GraphFuture`: one DAG node — a function, its arguments, and its dependencies.
   - Arguments may be other `GraphFuture` nodes; they resolve to results at run time.
-- **`GraphPool`** — owns a bounded `ThreadPoolExecutor`; wires, schedules, and evaluates a graph.
+  - `GraphPool` — owns a bounded `ThreadPoolExecutor`; wires, schedules, and evaluates a graph.
   - Context manager; `result(gf, timeout)` blocks on one node.
 
 ## `workflow` — V&V workflow layer
 
-- **`schema`** — node classes `Action`, `Sequential`, `Parallel`, `Template`; `parse_workflow` turns XML into a node tree.
+- **`schema`** — node classes `Action`, `Sequential`, `Parallel` (specializing `graph.Node` / `graph.Group`), `Template`; `parse_workflow` turns XML into a node tree.
 - **`registry`** — `FunctionRegistry` maps names to callables; `workflow_function` registers; `DEFAULT_REGISTRY` is the default.
 - **`params`** — normalizes XML string parameters to Python values.
 - **`engine`** — walks the node tree, submits each `Action` as a `GraphFuture`, and returns the final result; enforces splice scope.
-- **`adaptation`** — `DAGHandle` gives a function a scoped view of the tree; writes are recorded as `AdaptationOp` and committed transactionally.
+- **`adaptation`** — `DAGHandle` (a `TreeHandle` specialization) gives a function a scoped view of the tree; writes are recorded as `AdaptationOp` and committed transactionally.
 - **`history`** — opt-in `RunHistory` records per-action evidence; `replay` re-runs it deterministically.
 
 ## Data flow

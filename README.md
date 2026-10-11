@@ -9,15 +9,17 @@ The package is organized into three subpackages:
 ```
 sequence_extensions/
 ├── ext/        # functional helpers for built-in sequences
-├── graph/      # dependency-graph execution substrate
+├── graph/      # generic nodes, scoped manipulation, and the execution substrate
 └── workflow/   # V&V workflow layer (schema, registry, engine)
 ```
 
 - `ext.list_ext` — an extended `list` class with functional helpers (`map`, `filter`, `reduce`, `window`, ...)
 - `ext.dict_ext` — an extended `dict` class with functional helpers (`map`, `filter`, `reduce`, ...)
 - `ext.gen_ext` — static helpers for generators (`to_list`, `recursive_gen`)
+- `graph.node` — generic tree nodes (`Node`, `Group`) with containment, location and deep-clone operations
+- `graph.handle` — `TreeHandle`: a scoped handle over a node tree with the intent-level manipulation patterns (map / branch / skip / skip-rest / iterate)
 - `graph.graph_future` — dependency-graph futures (`GraphFuture`, `GraphPool`)
-- `workflow` — the V&V workflow layer: `Action` / `Sequential` / `Parallel` nodes, XML parsing, a function registry, and the execution engine (`run_workflow`, `Test_Framework`)
+- `workflow` — the V&V workflow layer: `Action` / `Sequential` / `Parallel` nodes (specializing `graph.Node` / `graph.Group`), XML parsing, a function registry, and the execution engine (`run_workflow`, `Test_Framework`)
 
 Everything is also re-exported from the package root (`from sequence_extensions import list_ext, ...`). See [docs/API.md](docs/API.md) for the full API reference.
 

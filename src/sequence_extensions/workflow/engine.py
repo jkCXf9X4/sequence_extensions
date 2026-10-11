@@ -865,20 +865,7 @@ class _Engine:
     def _locate_action(self, action: Action) -> tuple[_Group | None, int]:
         """Return ``(parent, index)`` of ``action`` in the live tree."""
         with self._lock:
-            return self._find_in_tree(self._root, action)
-
-    def _find_in_tree(
-        self, group: _Group, action: Action
-    ) -> tuple[_Group | None, int]:
-        """Depth-first search for ``action``; returns its parent and index."""
-        for index, child in enumerate(group.children):
-            if child is action:
-                return group, index
-            if isinstance(child, (Sequential, Parallel)):
-                found = self._find_in_tree(child, action)
-                if found[0] is not None:
-                    return found
-        return None, -1
+            return self._root.locate(action)
 
     def _commit(self, handle: DAGHandle, action: Action) -> None:
         """
@@ -936,7 +923,7 @@ class _Engine:
         """
         if op.kind == "append":
             return
-        parent, _index = self._find_in_tree(self._root, op.target)
+        parent, _index = self._root.locate(op.target)
         if parent is None:
             raise ValueError(
                 "dynamic adaptation: the op's target is no longer in the "
@@ -958,7 +945,7 @@ class _Engine:
             _apply_params(op.target, op.params)
             return
         if op.kind == "replace":
-            parent, index = self._find_in_tree(self._root, op.target)
+            parent, index = self._root.locate(op.target)
             parent.children[index : index + 1] = list(op.nodes)
             return
         raise ValueError(f"dynamic adaptation: unknown op kind {op.kind!r}")

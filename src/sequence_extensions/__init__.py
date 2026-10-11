@@ -1,7 +1,14 @@
 """sequence_extensions: higher-order function extensions for sequences."""
 
 from sequence_extensions.ext import KeyValueTuple, dict_ext, gen_ext, list_ext
-from sequence_extensions.graph import GraphFuture, GraphPool, graph_future
+from sequence_extensions.graph import (
+    GraphFuture,
+    GraphPool,
+    Group,
+    Node,
+    TreeHandle,
+    graph_future,
+)
 from sequence_extensions.workflow import (
     DEFAULT_REGISTRY,
     Action,
@@ -27,11 +34,14 @@ __all__ = [
     "FunctionRegistry",
     "GraphFuture",
     "GraphPool",
+    "Group",
     "KeyValueTuple",
+    "Node",
     "Parallel",
     "Sequential",
     "Template",
     "Test_Framework",
+    "TreeHandle",
     "dict_ext",
     "gen_ext",
     "graph_future",

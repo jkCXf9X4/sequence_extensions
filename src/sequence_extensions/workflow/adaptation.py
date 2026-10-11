@@ -1,5 +1,6 @@
 """
-Dynamic adaptation: the scoped DAG handle and its commit protocol.
+Dynamic adaptation: the workflow's DAG handle policy over the generic
+tree handle.
 
 The paper (section 4.2) hands "the full DAG" to each action and merges the
 modified DAG back "when returned".  This module implements that mechanism
@@ -20,7 +21,7 @@ in a deterministic, scoped form (the investigation's option 2, section
   validated EAGERLY (scope rules, read-only parallel scopes, the
   dynamic-node bound) and recorded as plain data (:class:`AdaptationOp`).
   Functions never build nodes: ``dag.copy(target, **overrides)`` clones a
-  declared subtree with parameter overrides, and five intent-level
+  declared subtree with parameter overrides, and the intent-level
   combinators (``fan_out`` / ``select`` / ``skip`` / ``skip_following`` /
   ``repeat``) cover the recurring driver patterns — map, branch, skip,
   skip-rest, copy-to-end iteration — each recording the same primitive
@@ -30,6 +31,15 @@ in a deterministic, scoped form (the investigation's option 2, section
   surgery, bounded, recorded on the action's ``ExecutionRecord`` and the
   inserted nodes are marked dynamic.  If the function raised, the op log
   is discarded — nothing is applied (atomic).
+
+The manipulation flows themselves live in the generic
+:class:`~sequence_extensions.graph.handle.TreeHandle` (see
+:mod:`sequence_extensions.graph.handle`); this module supplies the
+workflow's POLICY on top of them: the validation rules (an adaptable
+target is a workflow node that has not started, inside the action's own
+scope), the op recording (:class:`AdaptationOp` plus the dynamic-node
+bound), the empty ``Sequential()`` skip sentinel, and ``adjust`` (the
+parameter-retuning op, which is workflow-specific).
 
 Parallel safety (finding F4): children of a ``Parallel`` scope get a
 READ-ONLY handle — every write op raises ``ValueError`` — because inside a
@@ -45,7 +55,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Union
 
-from .schema import Action, Parallel, Sequential, clone_node
+from sequence_extensions.graph.handle import TreeHandle
+
+from .schema import Action, Parallel, Sequential
 
 __all__ = [
     "ADAPTATION_BOUND",
@@ -119,11 +131,11 @@ def _describe_target(node: _Node | None) -> Any:
 
 
 # --------------------------------------------------------------------------- #
-# The scoped handle
+# The scoped handle (the workflow policy over the generic tree handle)
 # --------------------------------------------------------------------------- #
 
 
-class DAGHandle:
+class DAGHandle(TreeHandle):
     """
     A scoped, read-mostly view of the workflow tree handed to a function
     that declares a ``dag`` parameter.
@@ -140,15 +152,24 @@ class DAGHandle:
       siblings when the parent scope is sequential, the subtree of a
       following scope, and fresh appends at the scope end.
 
-    Children of a ``Parallel`` scope get a READ-ONLY handle: every write
-    op raises ``ValueError`` (finding F4 — inside a parallel scope the
-    sequential invariant does not hold, so writes are designed out rather
-    than negotiated).
+    The manipulation flows — scoped reads, the clone ops, the write
+    primitives and the intent-level combinators — are inherited from
+    :class:`~sequence_extensions.graph.handle.TreeHandle`; this class
+    supplies the workflow's policy:
 
-    Write ops are validated eagerly and recorded as :class:`AdaptationOp`
-    data; the engine applies them at commit time (function return).  The
-    handle is NOT thread-safe by itself: the engine serializes commits
-    under its lock.
+    * ``_check_writable`` — children of a ``Parallel`` scope get a
+      READ-ONLY handle: every write op raises ``ValueError`` (finding F4 —
+      inside a parallel scope the sequential invariant does not hold, so
+      writes are designed out rather than negotiated).
+    * ``_check_target`` — a target must be a workflow node that has not
+      started (``_engine_executed``), inside the action's own scope.
+    * ``_check_nodes`` — replacement nodes must be workflow nodes
+      (``Action`` / ``Sequential`` / ``Parallel``).
+    * ``_emit`` — writes are recorded as :class:`AdaptationOp` data and
+      checked against the dynamic-node bound; the engine applies them at
+      commit time (function return).  The handle is NOT thread-safe by
+      itself: the engine serializes commits under its lock.
+    * ``_empty_group`` — the skip sentinel is an empty ``Sequential()``.
     """
 
     def __init__(
@@ -166,61 +187,13 @@ class DAGHandle:
         ``bound`` is the remaining dynamic-node budget this handle's ops
         may consume; the engine applies the recorded ops at commit time.
         """
-        self._parent = parent
-        self._index = index
-        self._read_only = read_only
+        super().__init__(parent, index, read_only=read_only)
         self._bound = bound
         self._ops: list[AdaptationOp] = []
 
     # ------------------------------------------------------------ #
-    # Reads (served from the live tree)
+    # The workflow policy (hooks over the generic flows)
     # ------------------------------------------------------------ #
-    @property
-    def scope(self) -> _Group:
-        """The action's own grouping scope (its parent group)."""
-        return self._parent
-
-    @property
-    def index(self) -> int:
-        """The action's position in its parent's children list."""
-        return self._index
-
-    @property
-    def read_only(self) -> bool:
-        """True when the handle rejects writes (a parallel-scope child)."""
-        return self._read_only
-
-    def following(self) -> list[_Node]:
-        """The siblings after this action, in order (outermost first)."""
-        return list(self._parent.children[self._index + 1 :])
-
-    def preceding(self) -> list[_Node]:
-        """The siblings before this action, in order."""
-        return list(self._parent.children[: self._index])
-
-    def following_group(self) -> _Group:
-        """
-        The first following sibling, which must be a group.
-
-        This is the declared downstream scope a driver action adapts (the
-        paper's Listings 5 and 7: the driver is followed by the group it
-        clones per file / per value).
-        """
-        following = self.following()
-        if not following:
-            raise ValueError(
-                "dynamic adaptation: no following sibling in this scope to adapt"
-            )
-        first = following[0]
-        if not isinstance(first, (Sequential, Parallel)):
-            raise ValueError(
-                "dynamic adaptation: the first following sibling is an action, "
-                "not a group; use dag.following() to read it or dag.replace() "
-                "to substitute nodes for it"
-            )
-        return first
-
-
     def _check_writable(self) -> None:
         """Reject writes on a read-only (parallel-scope) handle (F4)."""
         if self._read_only:
@@ -252,18 +225,12 @@ class DAGHandle:
                 "dynamic adaptation: target has already executed; only "
                 "nodes that have not started may be adapted"
             )
-        for sibling in self._parent.children[self._index + 1 :]:
-            if _contains(sibling, target):
-                return
-        if allow_preceding:
-            for sibling in self._parent.children[: self._index]:
-                if _contains(sibling, target):
-                    return
-        raise ValueError(
-            "dynamic adaptation: target is outside this action's grouping "
-            "scope; an action may only adapt its following siblings and "
-            "their subtrees (or copy preceding siblings to the scope end)"
-        )
+        if not self._in_scope(target, allow_preceding=allow_preceding):
+            raise ValueError(
+                "dynamic adaptation: target is outside this action's grouping "
+                "scope; an action may only adapt its following siblings and "
+                "their subtrees (or copy preceding siblings to the scope end)"
+            )
 
     def _check_nodes(self, nodes: Any) -> tuple[_Node, ...]:
         """Normalize and validate replacement/appended nodes."""
@@ -282,8 +249,27 @@ class DAGHandle:
                 )
         return tuple(nodes)
 
-    def _record(self, op: AdaptationOp) -> None:
-        """Validate the running op count against the dynamic-node bound."""
+    def _empty_group(self) -> _Group:
+        """The skip sentinel: an empty ``Sequential``."""
+        return Sequential()
+
+    def _emit(
+        self,
+        *,
+        kind: str,
+        target: _Node | None = None,
+        nodes: tuple = (),
+        params: dict[str, Any] | None = None,
+        scope: _Group | None = None,
+    ) -> None:
+        """Record one write op as :class:`AdaptationOp` data."""
+        op = AdaptationOp(
+            kind,
+            target=target,
+            nodes=nodes,
+            params=params if params is not None else {},
+            scope=scope,
+        )
         self._ops.append(op)
         added = sum(len(op.nodes) for op in self._ops)
         if added > self._bound:
@@ -294,26 +280,8 @@ class DAGHandle:
             )
 
     # ------------------------------------------------------------ #
-    # Write ops (validated eagerly, applied at commit)
+    # The parameter op (workflow-specific)
     # ------------------------------------------------------------ #
-    def replace(self, target: _Node, nodes: Any) -> None:
-        """
-        Replace ``target`` with ``nodes`` in the live tree at commit time.
-
-        ``target`` must be a following sibling (or a node inside a following
-        sibling's subtree) that has not started.  The replaced subtree never
-        runs; the replacement nodes run in its place, and their results fan
-        in downstream keyed by their OWN action names.
-        """
-        self._check_writable()
-        self._check_target(target, allow_preceding=False)
-        replacement = self._check_nodes(nodes)
-        if not replacement:
-            raise ValueError(
-                "dynamic adaptation: replace() needs at least one node"
-            )
-        self._record(AdaptationOp("replace", target=target, nodes=replacement))
-
     def adjust(self, target: _Node, **params: Any) -> None:
         """
         Retune ``target``'s parameters in place at commit time.
@@ -327,183 +295,7 @@ class DAGHandle:
         self._check_target(target, allow_preceding=False)
         if not params:
             raise ValueError("dynamic adaptation: adjust() needs at least one parameter")
-        self._record(AdaptationOp("adjust", target=target, params=dict(params)))
-
-    def copy(self, target: _Node, **param_overrides: Any) -> _Node:
-        """
-        Clone ``target``'s subtree with parameter overrides.
-
-        Returns the cloned node(s) — the caller then ``append``s or
-        ``replace``s with them.  Functions never build nodes for iteration:
-        they clone the DECLARED downstream scope once per file / per value
-        (the paper's Listing 5).  ``param_overrides`` are applied to every
-        ``Action`` in the clone (existing keys overwritten).
-        """
-        self._check_writable()
-        self._check_target(target, allow_preceding=True)
-        return clone_node(target, param_overrides)
-
-    def adjusted(self, **param_overrides: Any) -> _Node:
-        """
-        Clone the first following sibling with parameter overrides.
-
-        Shorthand for ``dag.copy(dag.following()[0], **overrides)`` — the
-        common "clone the declared downstream scope" form.
-        """
-        self._check_writable()
-        return self.copy(self.following()[0], **param_overrides)
-
-    def copy_self(self, **param_overrides: Any) -> _Node:
-        """
-        Clone the ACTING ACTION itself with parameter overrides.
-
-        The copy-to-end iteration form needs a fresh copy of the check
-        action (the driver) alongside the body copies; before this
-        method, drivers rebuilt their own node by hand
-        (``Action(check.function, **check.params)``), breaking the
-        "functions never build nodes" rule.  The clone carries no engine
-        state, so it is a fresh, never-executed node.
-        """
-        self._check_writable()
-        return clone_node(self._parent.children[self._index], param_overrides)
-
-    def append(self, nodes: Any) -> None:
-        """
-        Append ``nodes`` at the END of this action's scope at commit time.
-
-        This is the paper's section 5 iteration workaround ("copy the
-        desired actions to the end when a condition is triggered"): each
-        appended copy is a fresh node, so at-most-once holds and the
-        workflow stays strictly downstream (a DAG).
-        """
-        self._check_writable()
-        appended = self._check_nodes(nodes)
-        if not appended:
-            raise ValueError("dynamic adaptation: append() needs at least one node")
-        self._record(
-            AdaptationOp("append", nodes=appended, scope=self._parent)
-        )
-
-    # ------------------------------------------------------------ #
-    # Intent-level combinators (sugar over the primitive ops)
-    # ------------------------------------------------------------ #
-    def fan_out(self, overrides: Any) -> None:
-        """
-        Clone the declared downstream scope once per override set and
-        replace it with the clones (the MAP pattern, the paper's
-        Listing 5).
-
-        ``overrides`` is a non-empty iterable of mappings; each mapping
-        is the parameter overrides for one clone
-        (``dag.fan_out([{"file": f} for f in files])``).  The clones run
-        in place of the declared scope, in iterable order.  An empty
-        iterable raises ``ValueError`` — "run nothing" is not a map; a
-        driver that wants the declared scope to run once when its
-        collection is empty keeps its own ``if`` guard.
-        """
-        self._check_writable()
-        items = list(overrides)
-        if not items:
-            raise ValueError(
-                "dynamic adaptation: fan_out() needs at least one "
-                "override set (an empty map is not a body)"
-            )
-        body = self.following_group()
-        clones = []
-        for item in items:
-            if not isinstance(item, dict):
-                raise ValueError(
-                    "dynamic adaptation: fan_out() overrides must be "
-                    f"mappings, got {type(item).__name__}"
-                )
-            clones.append(self.copy(body, **item))
-        self.replace(body, clones)
-
-    def select(self, name: Any, default: Any = None) -> _Node:
-        """
-        Pick the named child of the declared downstream group and replace
-        the group with it (the BRANCH pattern, the paper's objective 2).
-
-        The alternatives scope's children are the named branches (each a
-        NAMED group — the schema's optional ``name`` attribute; actions
-        have no name).  The child whose name equals ``name`` is moved
-        into place of the scope, so the unselected alternatives never
-        run.  When no child matches, the ``default`` child is used; when
-        there is no default (or it matches no child either), a
-        ``ValueError`` is raised.  Returns the chosen child.
-        """
-        self._check_writable()
-        group = self.following_group()
-        named = [
-            child for child in group.children if getattr(child, "name", None)
-        ]
-        names = [child.name for child in named]
-        if name in names:
-            chosen = next(child for child in named if child.name == name)
-        elif default is not None:
-            if default in names:
-                chosen = next(child for child in named if child.name == default)
-            else:
-                raise ValueError(
-                    f"dynamic adaptation: select() default {default!r} is "
-                    f"not a named child of the alternatives scope (named "
-                    f"alternatives: {names})"
-                )
-        else:
-            raise ValueError(
-                f"dynamic adaptation: no alternative named {name!r} in "
-                f"the alternatives scope (named alternatives: {names}) "
-                f"and no default alternative was given"
-            )
-        self.replace(group, [chosen])
-        return chosen
-
-    def skip(self) -> None:
-        """
-        Replace the declared downstream scope with an empty group (the
-        SKIP pattern): the body never runs, and the group's result is an
-        empty list.
-        """
-        self.replace(self.following_group(), [Sequential()])
-
-    def skip_following(self) -> None:
-        """
-        Replace every following sibling with an empty group (the
-        SKIP-REST pattern, first-success): the rest of the scope — the
-        remaining alternatives and their checks — never runs.
-        """
-        for node in self.following():
-            self.replace(node, Sequential())
-
-    def repeat(self, **param_overrides: Any) -> None:
-        """
-        Append a copy of the preceding body plus a fresh copy of the
-        acting action itself at the scope end (the ITERATE pattern, the
-        paper's section 5 copy-to-end workaround).
-
-        ``param_overrides`` are applied to every ``Action`` in the copies
-        (existing keys overwritten), so a refinement driver can re-run
-        the body with a parameter computed from the latest upstream
-        result.  Every appended copy is a fresh node, so at-most-once
-        holds and the workflow stays strictly downstream (a DAG).
-
-        Raises ``ValueError`` when the acting action has no preceding
-        siblings — it must be preceded by the iteration body in its
-        scope.
-        """
-        self._check_writable()
-        body = self.preceding()
-        if not body:
-            raise ValueError(
-                "dynamic adaptation: repeat() has no body to repeat; the "
-                "acting action must be preceded by the iteration body in "
-                "its scope"
-            )
-        copies = [self.copy(node, **param_overrides) for node in body]
-        copies.append(self.copy_self(**param_overrides))
-        self._record(
-            AdaptationOp("append", nodes=tuple(copies), scope=self._parent)
-        )
+        self._emit(kind="adjust", target=target, params=dict(params))
 
     # ------------------------------------------------------------ #
     # The op log (read by the engine at commit time)
@@ -512,12 +304,3 @@ class DAGHandle:
     def ops(self) -> list[AdaptationOp]:
         """The recorded ops, in issue order (empty when nothing was written)."""
         return list(self._ops)
-
-
-def _contains(root: _Node, target: _Node) -> bool:
-    """True when ``target`` is ``root`` itself or a node in its subtree."""
-    if root is target:
-        return True
-    if isinstance(root, (Sequential, Parallel)):
-        return any(_contains(child, target) for child in root.children)
-    return False

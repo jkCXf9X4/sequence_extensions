@@ -22,11 +22,12 @@ The workflow engine is a lazy tree-walking interpreter. It walks the node tree c
 ## The DAGHandle
 
 - A `DAGHandle` is a scoped read/write handle on the live tree, injected as the reserved kwarg `dag` when a function's signature declares it.
+- It is a specialization of the generic `graph.handle.TreeHandle` (IMP-008): the reads, clone ops, write primitives and the five combinators are inherited flows; the DAGHandle supplies the workflow policy — validation rules and messages, `AdaptationOp` recording plus the dynamic-node bound, the empty-`Sequential` skip sentinel, and `adjust`.
 - Reads (`following()`, `preceding()`, `copy()`) are served from the live tree.
 - Writes (`replace()`, `adjust()`, `append()`) are validated eagerly and recorded as `AdaptationOp` data, never applied directly.
 - `copy_self()` clones the acting action itself — the node a copy-to-end iteration driver re-appends.
 - Five combinators cover the recurring driver patterns, recording the same primitive ops a hand-written driver would: `fan_out()` (map), `select()` (branch), `skip()` (skip), `skip_following()` (skip-rest), `repeat()` (copy-to-end iteration, body plus a fresh copy of the check). The engine commit path is unchanged.
-- At function return, the engine commits the op log under one lock: re-validate, apply, bound-check, mark dynamic. If the function raised, the log is discarded (atomic).
+- At function return, the engine commits the op log under one lock: re-validate (targets are found via `Node.locate`), apply, bound-check, mark dynamic. If the function raised, the log is discarded (atomic).
 
 ## The invariants
 

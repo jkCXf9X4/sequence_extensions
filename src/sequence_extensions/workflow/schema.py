@@ -108,6 +108,8 @@ import re
 import xml.etree.ElementTree as ET
 from typing import Any
 
+from sequence_extensions.graph.node import Group, Node
+
 __all__ = ["Action", "Parallel", "Sequential", "Template", "parse_workflow"]
 
 # Element names that denote a grouping node.
@@ -129,17 +131,20 @@ _USE_TEMPLATE_TAG = "use-template"
 _PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
-class Action:
+class Action(Node):
     """
     The smallest unit of a workflow: one function call.
 
     ``function`` is the name of the registered function to call; ``params``
     are its custom keyword parameters (e.g. ``Action("simulate",
-    file="case_1.csv")``).
+    file="case_1.csv")``).  An action is a LEAF node: it inherits the
+    generic node's ``name`` (always ``None``) and keeps its ``children``
+    list empty.
     """
 
     def __init__(self, function: str, **params) -> None:
         """Create an action node; ``params`` are stored as a plain dict."""
+        super().__init__()
         self.function = function
         self.params = dict(params)
 
@@ -147,17 +152,25 @@ class Action:
         """One-liner with the function name and its parameters."""
         return f"Action({self.function!r}, {self.params!r})"
 
+    def _copy(self, children: list, overrides: dict) -> Node:
+        """Clone hook: a fresh action with ``overrides`` merged into ``params``."""
+        params = dict(self.params)
+        params.update(overrides)
+        return Action(self.function, **params)
 
-class _Group:
+
+class _Group(Group):
     """
     Base class for the two grouping nodes (``Sequential`` / ``Parallel``).
 
-    ``children`` is the ordered list of child nodes (Action / Sequential /
-    Parallel); ``globals`` holds the global parameters declared in the
-    enclosing ``<VerificationWorkflow>`` (empty for bare group roots and for
-    groups built via the Python API); ``name`` is an optional label (``None``
-    unless set from a ``<scope name=...>`` attribute) that does not affect
-    history path labels, which are derived from the group type.
+    A workflow group is a generic container node that additionally
+    carries the workflow's global parameters: ``globals`` holds the
+    global parameters declared in the enclosing
+    ``<VerificationWorkflow>`` (empty for bare group roots and for
+    groups built via the Python API).  ``name`` is an optional label
+    (``None`` unless set from a ``<scope name=...>`` attribute) that does
+    not affect history path labels, which are derived from the group
+    type.
     """
 
     def __init__(self, *children: Action | Sequential | Parallel, name: str | None = None) -> None:
@@ -167,13 +180,18 @@ class _Group:
         attribute); it is not part of history path labels, which are derived
         from the group type.
         """
-        self.children = list(children)
+        super().__init__(*children, name=name)
         self.globals: dict[str, str] = {}
-        self.name = name
 
     def __repr__(self) -> str:
         """One-liner with the group type and its children."""
         return f"{type(self).__name__}({self.children!r})"
+
+    def _copy(self, children: list, overrides: dict) -> Node:
+        """Clone hook: same group type, cloned children, copied ``globals``."""
+        clone = type(self)(*children, name=self.name)
+        clone.globals = dict(self.globals)
+        return clone
 
 
 class Sequential(_Group):
@@ -182,33 +200,6 @@ class Sequential(_Group):
 
 class Parallel(_Group):
     """A group whose children are independent (may run concurrently)."""
-
-
-def clone_node(
-    node: Action | Sequential | Parallel, overrides: dict
-) -> Action | Sequential | Parallel:
-    """
-    Deep-clone ``node``'s subtree, applying parameter overrides to actions.
-
-    Every :class:`Action` in the clone gets a fresh ``params`` dict with
-    ``overrides`` merged in (existing keys overwritten); groups are rebuilt
-    with cloned children.  The optional scope label is part of a group's
-    declared identity, so it is preserved.  The clone carries no engine
-    state, so it is a fresh, never-executed node.
-
-    One implementation shared by the adaptation handle (live-tree clones)
-    and the replay handle (fake-tree clones), so the two stay in parity
-    by construction.
-    """
-    if isinstance(node, Action):
-        params = dict(node.params)
-        params.update(overrides)
-        return Action(node.function, **params)
-    children = [clone_node(child, overrides) for child in node.children]
-    clone = Sequential(*children) if isinstance(node, Sequential) else Parallel(*children)
-    clone.globals = dict(node.globals)
-    clone.name = node.name
-    return clone
 
 
 # --------------------------------------------------------------------------- #

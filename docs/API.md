@@ -9,13 +9,16 @@ Hand-written API reference for the `sequence_extensions` package — higher-orde
 ```
 sequence_extensions/
 ├── ext/        # list_ext / dict_ext / gen_ext (functional sequence helpers)
-├── graph/      # graph_future (GraphFuture / GraphPool execution substrate)
-└── workflow/   # V&V workflow layer
+├── graph/      # the graph layer
+│   ├── node.py         # Node / Group: generic tree nodes + tree operations
+│   ├── handle.py       # TreeHandle: scoped manipulation patterns (generic)
+│   └── graph_future.py # GraphFuture / GraphPool execution substrate
+└── workflow/   # V&V workflow layer (specializes graph.Node / TreeHandle)
     ├── schema.py      # Action / Sequential / Parallel / Template + parse_workflow
     ├── registry.py    # FunctionRegistry + DEFAULT_REGISTRY
     ├── params.py      # parameter normalization (XML form -> Python form)
     ├── engine.py      # run_workflow / Test_Framework execution engine
-    ├── adaptation.py  # DAGHandle / AdaptationOp (dynamic adaptation)
+    ├── adaptation.py  # DAGHandle / AdaptationOp (dynamic adaptation policy)
     ├── library.py     # the paper's library functions + register_library
     └── history.py     # ExecutionRecord / RunHistory / replay
 ```
@@ -32,6 +35,9 @@ from sequence_extensions import (
     graph_future,
     GraphFuture,
     GraphPool,
+    Node,
+    Group,
+    TreeHandle,
     KeyValueTuple,
     Action,
     Sequential,
@@ -55,6 +61,9 @@ __version__ = "0.2.0"
 | `graph_future` | Module containing `GraphFuture` and `GraphPool` |
 | `GraphFuture` | Dependency-graph future node |
 | `GraphPool` | Thread pool that evaluates a `GraphFuture` graph |
+| `Node` | Generic tree node: ordered children + optional name; `contains` / `locate` / `clone` |
+| `Group` | Generic container node (the branch specialization of `Node`) |
+| `TreeHandle` | Generic scoped handle over a node tree, with the intent-level manipulation patterns |
 | `KeyValueTuple` | `NamedTuple` with `.key` and `.value` attributes |
 | `Action` | Workflow node: one function call |
 | `Sequential` | Workflow group: children execute in strict order |
@@ -883,6 +892,47 @@ def __exit__(self, exc_type, exc_val, exc_tb) -> None
 
 ---
 
+## `Node` / `Group`
+
+`graph.node` — the generic tree nodes: the structural substrate every domain tree (the workflow's `Action` / `Sequential` / `Parallel`) subclasses. The module knows nothing about any domain built on top of it.
+
+```python
+class Node(*children, name=None)      # children: list (a copy); name: str | None
+class Group(*children, name=None)     # the container specialization of Node
+```
+
+- **`Node.contains(target)`** — `True` when `target` is this node or a node in its subtree. Containment is by **identity** (`is`), not equality.
+- **`Node.locate(target)`** — depth-first search returning `(parent, index)` for `target`, or `(None, -1)` when it is not in this subtree. Children are visited in order, each subtree fully before the next sibling.
+- **`Node.clone(**overrides)`** — deep copy: every child is cloned recursively, then the per-class `_copy` hook rebuilds the node around the cloned children. No node object is shared with the original. `overrides` are **opaque** to the generic layer — they travel to every `_copy` call, and the domain decides what they mean (the workflow merges them into every copied `Action`'s parameters).
+- **`Node._copy(children, overrides)`** — the per-class copy hook. The default reconstructs the same type with the same name; a subclass whose constructor or payload differs overrides it (e.g. `Action._copy` merges the overrides into `params`, a workflow group's `_copy` copies `globals`).
+
+The workflow specializations: `Action(Node)` (a leaf — `children` stays empty, `name` is `None`), and `Sequential` / `Parallel` (subclasses of `Group` via a workflow group base that adds `.globals`). `isinstance(node, Group)` is therefore the generic "is a container" check.
+
+---
+
+## `TreeHandle`
+
+`graph.handle` — a scoped, read-mostly view over a node tree, with the intent-level manipulation patterns. Constructed for one position — the node at `parent.children[index]` (the *acting node*) — it offers:
+
+- **Reads** — `scope` (the parent group), `index`, `read_only`, `following()` (the siblings after the acting node), `preceding()` (the siblings before it), `following_group()` (the first following sibling, which must be a `Group` — the declared downstream scope a driver adapts).
+- **Clone ops** — `copy(target, **overrides)` (deep-clone a scoped target), `adjusted(**overrides)` (clone the first following sibling), `copy_self(**overrides)` (clone the acting node).
+- **Write primitives** — `replace(target, nodes)`, `append(nodes)`.
+- **Patterns** — the recurring manipulation intents: `fan_out(overrides)` (map: clone the declared scope once per override set, replace it), `select(name, default=None)` (branch: move the named child into the group's place, return it), `skip()` / `skip_following()` (replace the declared scope / every following sibling with an empty group), `repeat(**overrides)` (iterate: append copies of the preceding body plus a fresh copy of the acting node).
+
+The handle never mutates anything itself. A domain subclass supplies its policy through five hooks:
+
+| Hook | Purpose | Generic default |
+| --- | --- | --- |
+| `_emit(*, kind, target, nodes, params, scope)` | record one write op | abstract (`NotImplementedError`) |
+| `_check_writable()` | the write-permission rule | raise on a `read_only` handle |
+| `_check_target(target, allow_preceding)` | which nodes a write may act on | containment in the scope (identity-based) |
+| `_check_nodes(nodes)` | what counts as a valid node | `isinstance(node, Node)` |
+| `_empty_group()` | the empty group substituted for a skipped scope | a plain `Group()` |
+
+The workflow's `DAGHandle` (dynamic adaptation) and `ReplayHandle` (deterministic replay) are both subclasses: they share these manipulation flows **by construction**, so a combinator exists on both handles without hand-mirroring (see the adaptation contract below).
+
+---
+
 ## `workflow`
 
 The V&V workflow layer: a small XML/Python schema of `Action` / `Sequential` / `Parallel` nodes, a named function registry, and a lazy tree-walking execution engine built on the `graph` substrate. The semantics follow the paper "Automation Nation: Taming Complex V&V Workflows" (16th International Modelica & FMI Conference, September 2025, Lucerne, Switzerland; DOI 10.3384/ecp12076741).
@@ -891,11 +941,11 @@ The layer is split into modules:
 
 | Module | Contents |
 | --- | --- |
-| `workflow.schema` | `Action` / `Sequential` / `Parallel` node classes, `Template`, `parse_workflow` |
+| `workflow.schema` | `Action` / `Sequential` / `Parallel` node classes (specialize `graph.Node` / `graph.Group`), `Template`, `parse_workflow` |
 | `workflow.registry` | `FunctionRegistry`, `DEFAULT_REGISTRY`, `workflow_function`, `wants_dag` |
 | `workflow.params` | parameter normalization (XML string form → Python form) |
 | `workflow.engine` | `run_workflow` / `Test_Framework`, `check_splice_scope` |
-| `workflow.adaptation` | `DAGHandle`, `AdaptationOp`, `ADAPTATION_BOUND` |
+| `workflow.adaptation` | `DAGHandle`, `AdaptationOp`, `ADAPTATION_BOUND` (the adaptation policy over `graph.TreeHandle`) |
 | `workflow.library` | the paper's library functions + `register_library` |
 | `workflow.history` | `ExecutionRecord`, `RunHistory`, `replay`, `ReplayHandle` |
 | `workflow.artifacts` | `ArtifactStore`, `ArtifactHandle`, `ReplayArtifacts` |
@@ -1023,10 +1073,12 @@ A registered function may declare a `dag` parameter; the engine then injects a s
 #### `DAGHandle`
 
 ```python
-class DAGHandle
+class DAGHandle(TreeHandle)
 ```
 
-Reads:
+A specialization of the generic `TreeHandle`: the scoped reads, the clone ops, the write primitives and the five combinators are **inherited** from `graph.handle`; `DAGHandle` supplies the workflow's policy — the validation rules (an adaptable target is a workflow node that has not started, inside the action's own scope), the op recording (`AdaptationOp` plus the dynamic-node bound), the empty `Sequential()` skip sentinel, and `adjust` (parameter retuning).
+
+Reads (inherited):
 
 - **`scope`** — the action's own grouping scope (its parent group).
 - **`index`** — the action's position in its parent's children list.

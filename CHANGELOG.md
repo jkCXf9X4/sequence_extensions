@@ -8,6 +8,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Generic node layer in `graph`** (IMP-008): the node structure and
+  the DAG manipulation patterns move to a domain-free layer that the
+  workflow specializes. Op shapes, the commit protocol, `AdaptationOp`
+  and the history format are unchanged.
+  - `sequence_extensions.graph.node` — `Node` (ordered `children` +
+    optional `name`) with identity-based `contains`, depth-first
+    `locate` and deep `clone` (a per-class `_copy` hook receives the
+    opaque overrides), and `Group` (the container specialization).
+    `Action` is now a `Node` leaf; `Sequential` / `Parallel` are
+    `Group`s.
+  - `sequence_extensions.graph.handle` — `TreeHandle`: a scoped handle
+    over a node tree with the intent-level patterns
+    (`fan_out` / `select` / `skip` / `skip_following` / `repeat`),
+    the clone ops and the write primitives. It never mutates: a domain
+    supplies validation, op recording and empty-group policy through
+    hooks (`_emit`, `_check_writable`, `_check_target`,
+    `_check_nodes`, `_empty_group`).
+  - `DAGHandle` and `ReplayHandle` are now `TreeHandle` subclasses:
+    they share the manipulation flows by construction instead of
+    hand-mirroring them. The workflow keeps its policy (validation
+    rules and messages, `AdaptationOp` + the dynamic-node bound, the
+    empty-`Sequential` skip sentinel, `adjust`); replay keeps the
+    fake-tree reads and functional clone/select ops, and the
+    write-only patterns stay explicit no-ops.
+  - New exports: `Node`, `Group`, `TreeHandle` (from
+    `sequence_extensions` and `sequence_extensions.graph`).
+
+### Changed
+- Pattern-raised errors (`fan_out` / `select` / `repeat` /
+  `following_group` argument and lookup failures) lose the
+  ``dynamic adaptation:`` prefix — they now come from the generic
+  `TreeHandle` layer. Every documented failure condition still raises
+  `ValueError` with the same meaning; the handle's own policy messages
+  (read-only parallel scope, executed target, out-of-scope target,
+  node types, bound) are unchanged.
+- Replay `select` error path unifies with the live handle's (the two
+  had drifted: different message wording and default-miss behavior);
+  successful replay is unaffected.
+
+### Added
 - **DAGHandle combinators** (IMP-006): intent-level methods that cover the
   recurring driver patterns, each recording the same primitive
   ``AdaptationOp``s a hand-written driver would (the engine commit path,
