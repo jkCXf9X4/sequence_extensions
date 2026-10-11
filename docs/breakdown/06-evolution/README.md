@@ -37,3 +37,5 @@ None. `selected/` is empty. No open investigations.
 
 - `IMP-001` — Dynamic adaptation — design investigation. Complete. Design implemented via `DR-001` and `DR-002`.
 - `IMP-002` — Replace named parameter elements with generic `<argument key value>`.
+- `IMP-003` — Tier 1 workflow library functions: `aggregate`, `guard`, `while_condition`.
+- `IMP-004` — Tier 2 workflow library functions: `try_action`, `retry`, `fallback`, `regression_gate`.
