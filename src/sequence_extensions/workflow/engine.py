@@ -1082,7 +1082,18 @@ def _describe_sibling(node: _Node) -> dict[str, Any]:
     if isinstance(node, Action):
         return {"kind": "action", "function": node.function}
     kind = "sequential" if isinstance(node, Sequential) else "parallel"
-    return {"kind": kind, "children": len(node.children)}
+    descriptor = {"kind": kind, "children": len(node.children)}
+    # A named group's label is part of its declared identity — recorded
+    # so a replayed branching driver can find its named alternatives.
+    if node.name is not None:
+        descriptor["name"] = node.name
+    # The children's names (position-aligned, None for unnamed) let a
+    # replayed branching driver resolve the named alternative branches
+    # one level below the snapshot's sibling list.
+    child_names = [getattr(child, "name", None) for child in node.children]
+    if any(name is not None for name in child_names):
+        descriptor["child_names"] = child_names
+    return descriptor
 
 
 # --------------------------------------------------------------------------- #

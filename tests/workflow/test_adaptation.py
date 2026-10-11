@@ -45,9 +45,11 @@ from resources import workflows
 from sequence_extensions import (
     Action,
     FunctionRegistry,
+    Parallel,
     Sequential,
     run_workflow,
 )
+from sequence_extensions.workflow.adaptation import DAGHandle
 from sequence_extensions.workflow.history import (
     ReplayHandle,
     RunHistory,
@@ -211,6 +213,249 @@ def test_handle_append_at_scope_end_through_engine():
     # The appended action ran after the declared tail and is the final result.
     assert calls.index("tail") < calls.index("appended")
     assert result == "appended"
+
+
+# --------------------------------------------------------------------------- #
+# (b) Handle combinators — intent-level ops THROUGH THE ENGINE
+# --------------------------------------------------------------------------- #
+
+
+def test_handle_fan_out_clones_declared_scope_per_override_set():
+    """fan_out() replaces the declared group with one clone per override set.
+
+    Each clone runs with its own overrides; the declared body never runs
+    itself (only its clones do).  The op log holds ONE replace op whose
+    nodes are the clones.
+    """
+    tags: list = []
+
+    def driver(dag, **kwargs):
+        dag.fan_out([{"tag": "a"}, {"tag": "b"}])
+        return "driver_done"
+
+    def work(tag=None, **kwargs):
+        tags.append(tag)
+        return f"worked_{tag}"
+
+    registry, calls = _registry_with(["driver", "work", "tail"], driver=driver, work=work)
+    xml = (
+        "<sequential>"
+        '<action function="driver"/>'
+        "<sequential><action function='work'>"
+        '<argument key="tag" value="declared"/>'
+        "</action></sequential>"
+        '<action function="tail"/>'
+        "</sequential>"
+    )
+    result = run_workflow(xml, registry=registry)
+    # One clone per override set ran, each with its own tag.
+    assert tags == ["a", "b"]
+    assert result == "tail"
+
+
+def test_handle_fan_out_empty_and_non_mapping_rejected():
+    """fan_out() rejects an empty iterable and non-mapping override sets."""
+    root = Sequential(Action("driver"), Sequential(Action("work")))
+    handle = DAGHandle(root, 0)
+    with pytest.raises(ValueError, match="at least one"):
+        handle.fan_out([])
+    with pytest.raises(ValueError, match="mappings"):
+        handle.fan_out(["not-a-mapping"])
+
+
+def test_handle_select_picks_named_child_of_following_group():
+    """select() moves the named child into place of the alternatives scope.
+
+    The unselected alternatives never run; the chosen one does.  The
+    default child is used when the selected name matches nothing.
+    """
+    ran: list = []
+
+    def make(name):
+        def arm(**kwargs):
+            ran.append(name)
+            return name
+
+        return arm
+
+    def driver(dag, **kwargs):
+        chosen = dag.select("beta")
+        assert chosen.name == "beta"
+        return "driver_done"
+
+    registry = FunctionRegistry()
+    registry.register("driver", driver)
+    registry.register("alpha", make("alpha"))
+    registry.register("beta", make("beta"))
+    xml = (
+        "<sequential>"
+        '<action function="driver"/>'
+        "<scope type=\"sequential\">"
+        '<scope type="sequential" name="alpha"><action function="alpha"/></scope>'
+        '<scope type="sequential" name="beta"><action function="beta"/></scope>'
+        "</scope>"
+        "</sequential>"
+    )
+    result = run_workflow(xml, registry=registry)
+    # Only the selected alternative ran; the final result is its result.
+    assert ran == ["beta"]
+    assert result == "beta"
+
+
+def test_handle_select_default_and_error_paths():
+    """select() falls back to the default child and raises when neither matches."""
+    root = Sequential(
+        Action("driver"),
+        Sequential(Sequential(name="alpha"), Sequential(name="beta")),
+    )
+    handle = DAGHandle(root, 0)
+    # No match, but a usable default.
+    chosen = handle.select("gamma", "beta")
+    assert chosen.name == "beta"
+    # One replace op: the alternatives group replaced by the chosen child.
+    assert len(handle.ops) == 1
+    assert handle.ops[0].kind == "replace"
+    assert handle.ops[0].nodes == (chosen,)
+    # No match and no default.
+    with pytest.raises(ValueError, match="no alternative named"):
+        handle.select("gamma")
+    # A default that matches no child either.
+    with pytest.raises(ValueError, match="default"):
+        handle.select("gamma", "delta")
+
+
+def test_handle_skip_replaces_following_group_with_empty_group():
+    """skip() replaces the declared downstream group with an empty group.
+
+    The body never runs; the group's result is an empty list; the run
+    continues with later siblings.
+    """
+    ran: list = []
+
+    def driver(dag, **kwargs):
+        dag.skip()
+        return "driver_done"
+
+    def work(**kwargs):
+        ran.append("work")
+        return "worked"
+
+    def tail(**kwargs):
+        ran.append("tail")
+        return "tailed"
+
+    registry, _ = _registry_with(
+        ["driver", "work", "tail"], driver=driver, work=work, tail=tail
+    )
+    xml = (
+        "<sequential>"
+        '<action function="driver"/>'
+        "<sequential><action function='work'/></sequential>"
+        '<action function="tail"/>'
+        "</sequential>"
+    )
+    result = run_workflow(xml, registry=registry)
+    # The body never ran; the tail did and is the final result.
+    assert ran == ["tail"]
+    assert result == "tailed"
+
+
+def test_handle_skip_following_empties_every_following_sibling():
+    """skip_following() replaces every following sibling with an empty group."""
+    root = Sequential(
+        Action("driver"),
+        Action("alt_b"),
+        Action("check_b"),
+        Action("alt_c"),
+    )
+    handle = DAGHandle(root, 0)
+    handle.skip_following()
+    # One replace op per following sibling (the same shape fallback
+    # recorded by hand before the combinator existed).
+    assert len(handle.ops) == 3
+    for op, target in zip(handle.ops, (root.children[1], root.children[2], root.children[3])):
+        assert op.kind == "replace"
+        assert op.target is target
+        assert len(op.nodes) == 1
+        assert isinstance(op.nodes[0], Sequential)
+        assert op.nodes[0].children == []
+
+
+def test_handle_repeat_appends_body_copies_plus_self_copy():
+    """repeat() appends body copies plus a fresh copy of the acting action.
+
+    The op is ONE append whose nodes are the preceding-body copies
+    followed by a clone of the check itself.  Parameter overrides apply
+    to every copied action.
+    """
+    root = Sequential(
+        Action("work", step="declared"),
+        Action("check", level=1),
+    )
+    handle = DAGHandle(root, 1)
+    handle.repeat(level=2)
+    assert len(handle.ops) == 1
+    op = handle.ops[0]
+    assert op.kind == "append"
+    # Body copies first, then the self copy.
+    assert [node.function for node in op.nodes] == ["work", "check"]
+    # The overrides reached the body copy and the self copy alike.
+    assert op.nodes[0].params["step"] == "declared"
+    assert op.nodes[0].params["level"] == 2
+    assert op.nodes[1].params["level"] == 2
+
+
+def test_handle_repeat_without_preceding_body_raises():
+    """repeat() raises when the acting action has no preceding siblings."""
+    handle = DAGHandle(Sequential(Action("check")), 0)
+    with pytest.raises(ValueError, match="preceded"):
+        handle.repeat()
+
+
+def test_handle_copy_self_clones_the_acting_action():
+    """copy_self() clones the acting action with parameter overrides.
+
+    The clone is a fresh node: same function, merged params, no engine
+    state.  Before copy_self, iteration drivers rebuilt this node by hand
+    (``Action(check.function, **check.params)``).
+    """
+    root = Sequential(Action("work"), Action("check", level=1))
+    handle = DAGHandle(root, 1)
+    clone = handle.copy_self(level=9)
+    assert isinstance(clone, Action)
+    assert clone.function == "check"
+    assert clone.params == {"level": 9}
+    assert clone is not root.children[1]
+    # Cloning records no op (a clone alone changes nothing).
+    assert handle.ops == []
+
+
+def test_handle_combinators_rejected_on_read_only_handle():
+    """Every write combinator raises on a read-only (parallel-scope) handle."""
+    root = Parallel(Action("driver"), Sequential(Action("work")))
+    handle = DAGHandle(root, 0, read_only=True)
+    with pytest.raises(ValueError, match="read-only"):
+        handle.fan_out([{}])
+    with pytest.raises(ValueError, match="read-only"):
+        handle.select("x")
+    with pytest.raises(ValueError, match="read-only"):
+        handle.skip()
+    with pytest.raises(ValueError, match="read-only"):
+        handle.skip_following()
+    with pytest.raises(ValueError, match="read-only"):
+        handle.repeat()
+    with pytest.raises(ValueError, match="read-only"):
+        handle.copy_self()
+    assert handle.ops == []
+
+
+def test_handle_fan_out_respects_the_dynamic_node_bound():
+    """fan_out() clones count against the handle's dynamic-node bound."""
+    root = Sequential(Action("driver"), Sequential(Action("work")))
+    handle = DAGHandle(root, 0, bound=2)
+    handle.fan_out([{}, {}])  # exactly at the bound
+    with pytest.raises(ValueError, match="bound"):
+        handle.fan_out([{}, {}])
 
 
 # --------------------------------------------------------------------------- #
@@ -477,7 +722,7 @@ def test_branch_chosen_alternative_runs_others_never_via_scope():
 def test_branch_unknown_alternative_raises_via_scope():
     """An unknown selected alternative (no default) raises ValueError."""
     registry, _ = _branch_registry_with_scope("delta")
-    with pytest.raises(ValueError, match="evaluate_goal"):
+    with pytest.raises(ValueError, match="no alternative named"):
         run_workflow(_branch_xml_with_scope(), registry=registry)
 
 
@@ -782,6 +1027,101 @@ def test_replay_handle_reads_from_snapshot_and_writes_are_noops():
     adjusted = handle.adjusted(level="z")
     assert isinstance(adjusted, Sequential)
     assert adjusted.children[0].params.get("level") == "z"
+
+
+def test_replay_handle_serves_named_alternatives_and_select():
+    """ReplayHandle: named groups materialize with their label; select works.
+
+    A scope snapshot recorded AFTER group labels were kept carries each
+    named group sibling's ``name``; the materialized fake tree exposes it,
+    so a replayed branching driver (``ReplayHandle.select``) resolves its
+    alternative and the combinator write ops stay no-ops.
+    """
+    scope = {
+        "index": 0,
+        "siblings": [
+            {"kind": "action", "function": "driver"},
+            {
+                "kind": "sequential",
+                "children": 2,
+                "child_names": ["alpha", "beta"],
+            },
+        ],
+    }
+    handle = ReplayHandle(scope)
+    # The named children materialized with their labels, one level down.
+    group = handle.following_group()
+    assert [child.name for child in group.children] == ["alpha", "beta"]
+    # select() resolves the named child from the fake tree.
+    chosen = handle.select("beta")
+    assert chosen.name == "beta"
+    # The default child is used when the selected name matches nothing.
+    assert handle.select("gamma", "alpha").name == "alpha"
+    with pytest.raises(ValueError, match="no alternative named"):
+        handle.select("gamma")
+    # The combinator write ops are no-ops: they raise nothing.
+    handle.fan_out([{}])
+    handle.skip()
+    handle.skip_following()
+    handle.repeat()
+    # copy_self() clones the (fake) acting action.
+    self_clone = handle.copy_self(level="x")
+    assert isinstance(self_clone, Action)
+    assert self_clone.function == "driver"
+
+
+def test_replay_of_branching_run_reproduces_result_deterministically():
+    """Replaying an evaluate_goal run reproduces the original final result.
+
+    The branching driver needs the alternatives scope's NAMED children;
+    the engine's scope snapshot records a named group's label, so the
+    replayed run resolves the same alternative through
+    ``ReplayHandle.select`` — recomputed, not echoed.
+    """
+
+    def decide(**kwargs):
+        return {"goal": "beta"}
+
+    registry = FunctionRegistry()
+    registry.register("decide", decide)
+    registry.register("evaluate_goal", evaluate_goal)
+
+    def alpha(**kwargs):
+        return "alpha"
+
+    def beta(**kwargs):
+        return "beta"
+
+    registry.register("alpha", alpha)
+    registry.register("beta", beta)
+    xml = (
+        "<sequential>"
+        '<action function="decide"/>'
+        '<action function="evaluate_goal">'
+        '<argument key="upstream" value="decide"/>'
+        '<argument key="field" value="goal"/>'
+        "</action>"
+        '<scope type="sequential">'
+        '<scope type="sequential" name="alpha"><action function="alpha"/></scope>'
+        '<scope type="sequential" name="beta"><action function="beta"/></scope>'
+        "</scope>"
+        "</sequential>"
+    )
+    history = RunHistory()
+    original = run_workflow(xml, registry=registry, history=history)
+    assert original == "beta"
+    record = next(r for r in history.records if r.name == "evaluate_goal")
+    # The recorded scope snapshot carries the named alternatives (the
+    # alternatives scope's children, position-aligned).
+    group_sibling = next(
+        sibling
+        for sibling in record.scope["siblings"]
+        if sibling.get("kind") != "action"
+    )
+    assert group_sibling.get("child_names") == ["alpha", "beta"]
+    # Replay re-executes evaluate_goal and reproduces the same result.
+    replayed = replay(history, registry)
+    assert replayed == original == "beta"
 
 
 # --------------------------------------------------------------------------- #

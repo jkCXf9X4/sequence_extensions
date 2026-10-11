@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **DAGHandle combinators** (IMP-006): intent-level methods that cover the
+  recurring driver patterns, each recording the same primitive
+  ``AdaptationOp``s a hand-written driver would (the engine commit path,
+  op semantics, and history records are unchanged):
+  - ``dag.fan_out(overrides)`` — clone the declared downstream scope once
+    per override set and replace it (map; the paper's Listing 5).
+  - ``dag.select(name, default=None)`` — pick the named child of the
+    declared downstream group and replace the group with it (branch);
+    returns the chosen child.
+  - ``dag.skip()`` — replace the declared downstream group with an empty
+    group (the body never runs).
+  - ``dag.skip_following()`` — replace every following sibling with an
+    empty group (first-success).
+  - ``dag.repeat(**overrides)`` — append copies of the preceding body plus
+    a fresh copy of the acting action itself at the scope end (the
+    copy-to-end iteration form).
+  - ``dag.copy_self(**overrides)`` — clone the acting action itself (the
+    node the iteration drivers re-append; previously each driver rebuilt
+    it by hand via ``Action(check.function, **check.params)``, breaking
+    the "functions never build nodes" rule).
+- **Scope snapshots record group names** — a history record's ``scope``
+  snapshot now records a named group sibling's label and its named
+  children's names, and replay materializes them: branching drivers
+  (``evaluate_goal``) replay deterministically (``ReplayHandle.select``).
+- The eight adaptation drivers are rewritten onto the combinators — one
+  call each, no node construction in library functions.
+
+### Changed
+- The ``evaluate_goal`` / ``select`` error messages for an unknown
+  alternative are now prefixed ``dynamic adaptation:`` (the selection
+  logic moved from the driver into the handle).
+
 ### Fixed
 - **Cloned groups keep their `name`** — `dag.copy` (and the history
   replay clone) now preserves a group's optional scope label. Previously

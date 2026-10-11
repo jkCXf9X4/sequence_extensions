@@ -260,7 +260,7 @@ xml = """
 result = run_workflow(xml)  # the last action's result
 ```
 
-`find_files` declares a `dag` parameter, so the engine hands it a scoped handle: it clones the declared downstream `<scope type="parallel">` once per found file and splices the clones in, so each file gets its own `simulate` + `evaluate_results`. See [docs/API.md](docs/API.md) for the full workflow reference (schema, engine, registry, library, history, the adaptation contract, and the artifact store).
+`find_files` declares a `dag` parameter, so the engine hands it a scoped handle: it clones the declared downstream `<scope type="parallel">` once per found file and splices the clones in (`dag.fan_out`), so each file gets its own `simulate` + `evaluate_results`. The handle's intent-level combinators (`fan_out` / `select` / `skip` / `skip_following` / `repeat`) cover the recurring driver patterns — map, branch, skip, first-success, copy-to-end iteration — so adapting functions never build nodes. See [docs/API.md](docs/API.md) for the full workflow reference (schema, engine, registry, library, history, the adaptation contract, and the artifact store).
 
 For campaigns that produce files (simulation outputs, reports, datasets), pass an `ArtifactStore` and let functions that declare an `artifacts` parameter write payloads to their own node directory and return the pointer:
 

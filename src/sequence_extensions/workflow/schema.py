@@ -184,6 +184,33 @@ class Parallel(_Group):
     """A group whose children are independent (may run concurrently)."""
 
 
+def clone_node(
+    node: Action | Sequential | Parallel, overrides: dict
+) -> Action | Sequential | Parallel:
+    """
+    Deep-clone ``node``'s subtree, applying parameter overrides to actions.
+
+    Every :class:`Action` in the clone gets a fresh ``params`` dict with
+    ``overrides`` merged in (existing keys overwritten); groups are rebuilt
+    with cloned children.  The optional scope label is part of a group's
+    declared identity, so it is preserved.  The clone carries no engine
+    state, so it is a fresh, never-executed node.
+
+    One implementation shared by the adaptation handle (live-tree clones)
+    and the replay handle (fake-tree clones), so the two stay in parity
+    by construction.
+    """
+    if isinstance(node, Action):
+        params = dict(node.params)
+        params.update(overrides)
+        return Action(node.function, **params)
+    children = [clone_node(child, overrides) for child in node.children]
+    clone = Sequential(*children) if isinstance(node, Sequential) else Parallel(*children)
+    clone.globals = dict(node.globals)
+    clone.name = node.name
+    return clone
+
+
 # --------------------------------------------------------------------------- #
 # Templates: named, parameterized subtrees (design principle 4, reuse)
 # --------------------------------------------------------------------------- #

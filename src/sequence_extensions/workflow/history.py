@@ -58,7 +58,7 @@ from typing import Any, Union
 
 from .artifacts import ArtifactStore, ReplayArtifacts
 from .registry import DEFAULT_REGISTRY, FunctionRegistry
-from .schema import Action, Parallel, Sequential
+from .schema import Action, Parallel, Sequential, clone_node
 
 __all__ = [
     "ExecutionRecord",
@@ -304,32 +304,41 @@ def _materialize_sibling(descriptor: dict[str, Any]) -> _Node:
     if kind == "action":
         return Action(descriptor.get("function", ""))
     count = int(descriptor.get("children", 0))
-    placeholders = [Action(_REPLAY_PLACEHOLDER) for _ in range(count)]
+    # A recorded child name (position-aligned, None for unnamed) becomes
+    # a named empty group; unnamed positions stay placeholder actions.
+    # The child COUNT is preserved either way.
+    child_names = descriptor.get("child_names")
+    if child_names is not None:
+        children = [
+            Sequential(name=name) if name is not None else Action(_REPLAY_PLACEHOLDER)
+            for name in child_names
+        ]
+        children = children[:count] + [Action(_REPLAY_PLACEHOLDER)] * (
+            count - len(children)
+        )
+    else:
+        children = [Action(_REPLAY_PLACEHOLDER) for _ in range(count)]
     if kind == "parallel":
-        return Parallel(*placeholders)
-    return Sequential(*placeholders)
+        group: Sequential | Parallel = Parallel(*children)
+    else:
+        group = Sequential(*children)
+    # A named group's label is part of its declared identity — recorded
+    # in the snapshot, materialized here so a replayed branching driver
+    # (``ReplayHandle.select``) can find its named alternatives.
+    group.name = descriptor.get("name")
+    return group
 
 
 def _clone_node(node: _Node, overrides: dict[str, Any]) -> _Node:
     """
     Deep-clone a (fake) node, applying parameter overrides to its actions.
 
-    Mirrors the engine's clone: every ``Action`` gets a fresh ``params``
-    dict with ``overrides`` merged in; groups are rebuilt with cloned
-    children.  Used by :meth:`ReplayHandle.copy` so an adapting function's
-    clone-based logic runs against the materialized fake tree.
+    Thin alias over the schema's shared :func:`.schema.clone_node`, kept
+    for the module's internal call sites; used by :meth:`ReplayHandle.copy`
+    so an adapting function's clone-based logic runs against the
+    materialized fake tree.
     """
-    if isinstance(node, Action):
-        params = dict(node.params)
-        params.update(overrides)
-        return Action(node.function, **params)
-    children = [_clone_node(child, overrides) for child in node.children]
-    clone = Sequential(*children) if isinstance(node, Sequential) else Parallel(*children)
-    clone.globals = dict(node.globals)
-    # The optional scope label is part of the node's declared identity —
-    # preserved by the clone (parity with the engine's ``_clone``).
-    clone.name = node.name
-    return clone
+    return clone_node(node, overrides)
 
 
 class ReplayHandle:
@@ -420,6 +429,10 @@ class ReplayHandle:
         """Clone the first following fake sibling with parameter overrides."""
         return self.copy(self.following()[0], **param_overrides)
 
+    def copy_self(self, **param_overrides: Any) -> _Node:
+        """Clone the (fake) acting action with parameter overrides."""
+        return _clone_node(self._parent.children[self._index], param_overrides)
+
     # ------------------------------------------------------------ #
     # Write ops (NO-OPS: recorded nowhere, applied nowhere)
     # ------------------------------------------------------------ #
@@ -434,6 +447,48 @@ class ReplayHandle:
     def append(self, nodes: Any) -> None:
         """No-op in replay: the nodes are not appended to any tree."""
         return None
+
+    def fan_out(self, overrides: Any) -> None:
+        """No-op in replay: the fan-out clones are not applied to any tree."""
+        return None
+
+    def skip(self) -> None:
+        """No-op in replay: the following group is not skipped."""
+        return None
+
+    def skip_following(self) -> None:
+        """No-op in replay: the following siblings are not skipped."""
+        return None
+
+    def repeat(self, **param_overrides: Any) -> None:
+        """No-op in replay: the copy-to-end append is not applied."""
+        return None
+
+    def select(self, name: Any, default: Any = None) -> _Node:
+        """
+        Pick the named child of the first following fake group.
+
+        Functional in replay (the chosen name flows into the driver's
+        return value); the REPLACE itself is a no-op.  The fake tree's
+        named children come from the record's scope snapshot, which
+        records a named group's label.  A snapshot without the name
+        (recorded before labels were kept) has no named alternatives and
+        therefore cannot resolve one.
+        """
+        group = self.following_group()
+        named = [
+            child for child in group.children if getattr(child, "name", None)
+        ]
+        names = [child.name for child in named]
+        if name in names:
+            return next(child for child in named if child.name == name)
+        if default is not None and default in names:
+            return next(child for child in named if child.name == default)
+        raise ValueError(
+            f"dynamic adaptation (replay): no alternative named {name!r} "
+            f"in the materialized alternatives scope (named alternatives: "
+            f"{names}) and no usable default was given"
+        )
 
 
 # --------------------------------------------------------------------------- #

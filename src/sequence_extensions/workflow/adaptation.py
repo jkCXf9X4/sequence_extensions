@@ -20,7 +20,11 @@ in a deterministic, scoped form (the investigation's option 2, section
   validated EAGERLY (scope rules, read-only parallel scopes, the
   dynamic-node bound) and recorded as plain data (:class:`AdaptationOp`).
   Functions never build nodes: ``dag.copy(target, **overrides)`` clones a
-  declared subtree with parameter overrides.
+  declared subtree with parameter overrides, and five intent-level
+  combinators (``fan_out`` / ``select`` / ``skip`` / ``skip_following`` /
+  ``repeat``) cover the recurring driver patterns — map, branch, skip,
+  skip-rest, copy-to-end iteration — each recording the same primitive
+  ops the drivers used to record by hand.
 * **Commit** — at function return, on the same thread, under ONE engine
   lock acquisition: the recorded ops are re-validated, applied as tree
   surgery, bounded, recorded on the action's ``ExecutionRecord`` and the
@@ -41,7 +45,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Union
 
-from .schema import Action, Parallel, Sequential
+from .schema import Action, Parallel, Sequential, clone_node
 
 __all__ = [
     "ADAPTATION_BOUND",
@@ -106,7 +110,12 @@ def _describe_target(node: _Node | None) -> Any:
     if isinstance(node, Action):
         return {"kind": "action", "function": node.function, "params": dict(node.params)}
     kind = "sequential" if isinstance(node, Sequential) else "parallel"
-    return {"kind": kind, "children": len(node.children)}
+    descriptor = {"kind": kind, "children": len(node.children)}
+    # A named group's label is part of its declared identity — recorded
+    # so the op descriptor names the branch it selected.
+    if node.name is not None:
+        descriptor["name"] = node.name
+    return descriptor
 
 
 # --------------------------------------------------------------------------- #
@@ -332,7 +341,7 @@ class DAGHandle:
         """
         self._check_writable()
         self._check_target(target, allow_preceding=True)
-        return _clone(target, param_overrides)
+        return clone_node(target, param_overrides)
 
     def adjusted(self, **param_overrides: Any) -> _Node:
         """
@@ -343,6 +352,20 @@ class DAGHandle:
         """
         self._check_writable()
         return self.copy(self.following()[0], **param_overrides)
+
+    def copy_self(self, **param_overrides: Any) -> _Node:
+        """
+        Clone the ACTING ACTION itself with parameter overrides.
+
+        The copy-to-end iteration form needs a fresh copy of the check
+        action (the driver) alongside the body copies; before this
+        method, drivers rebuilt their own node by hand
+        (``Action(check.function, **check.params)``), breaking the
+        "functions never build nodes" rule.  The clone carries no engine
+        state, so it is a fresh, never-executed node.
+        """
+        self._check_writable()
+        return clone_node(self._parent.children[self._index], param_overrides)
 
     def append(self, nodes: Any) -> None:
         """
@@ -362,38 +385,133 @@ class DAGHandle:
         )
 
     # ------------------------------------------------------------ #
+    # Intent-level combinators (sugar over the primitive ops)
+    # ------------------------------------------------------------ #
+    def fan_out(self, overrides: Any) -> None:
+        """
+        Clone the declared downstream scope once per override set and
+        replace it with the clones (the MAP pattern, the paper's
+        Listing 5).
+
+        ``overrides`` is a non-empty iterable of mappings; each mapping
+        is the parameter overrides for one clone
+        (``dag.fan_out([{"file": f} for f in files])``).  The clones run
+        in place of the declared scope, in iterable order.  An empty
+        iterable raises ``ValueError`` — "run nothing" is not a map; a
+        driver that wants the declared scope to run once when its
+        collection is empty keeps its own ``if`` guard.
+        """
+        self._check_writable()
+        items = list(overrides)
+        if not items:
+            raise ValueError(
+                "dynamic adaptation: fan_out() needs at least one "
+                "override set (an empty map is not a body)"
+            )
+        body = self.following_group()
+        clones = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError(
+                    "dynamic adaptation: fan_out() overrides must be "
+                    f"mappings, got {type(item).__name__}"
+                )
+            clones.append(self.copy(body, **item))
+        self.replace(body, clones)
+
+    def select(self, name: Any, default: Any = None) -> _Node:
+        """
+        Pick the named child of the declared downstream group and replace
+        the group with it (the BRANCH pattern, the paper's objective 2).
+
+        The alternatives scope's children are the named branches (each a
+        NAMED group — the schema's optional ``name`` attribute; actions
+        have no name).  The child whose name equals ``name`` is moved
+        into place of the scope, so the unselected alternatives never
+        run.  When no child matches, the ``default`` child is used; when
+        there is no default (or it matches no child either), a
+        ``ValueError`` is raised.  Returns the chosen child.
+        """
+        self._check_writable()
+        group = self.following_group()
+        named = [
+            child for child in group.children if getattr(child, "name", None)
+        ]
+        names = [child.name for child in named]
+        if name in names:
+            chosen = next(child for child in named if child.name == name)
+        elif default is not None:
+            if default in names:
+                chosen = next(child for child in named if child.name == default)
+            else:
+                raise ValueError(
+                    f"dynamic adaptation: select() default {default!r} is "
+                    f"not a named child of the alternatives scope (named "
+                    f"alternatives: {names})"
+                )
+        else:
+            raise ValueError(
+                f"dynamic adaptation: no alternative named {name!r} in "
+                f"the alternatives scope (named alternatives: {names}) "
+                f"and no default alternative was given"
+            )
+        self.replace(group, [chosen])
+        return chosen
+
+    def skip(self) -> None:
+        """
+        Replace the declared downstream scope with an empty group (the
+        SKIP pattern): the body never runs, and the group's result is an
+        empty list.
+        """
+        self.replace(self.following_group(), [Sequential()])
+
+    def skip_following(self) -> None:
+        """
+        Replace every following sibling with an empty group (the
+        SKIP-REST pattern, first-success): the rest of the scope — the
+        remaining alternatives and their checks — never runs.
+        """
+        for node in self.following():
+            self.replace(node, Sequential())
+
+    def repeat(self, **param_overrides: Any) -> None:
+        """
+        Append a copy of the preceding body plus a fresh copy of the
+        acting action itself at the scope end (the ITERATE pattern, the
+        paper's section 5 copy-to-end workaround).
+
+        ``param_overrides`` are applied to every ``Action`` in the copies
+        (existing keys overwritten), so a refinement driver can re-run
+        the body with a parameter computed from the latest upstream
+        result.  Every appended copy is a fresh node, so at-most-once
+        holds and the workflow stays strictly downstream (a DAG).
+
+        Raises ``ValueError`` when the acting action has no preceding
+        siblings — it must be preceded by the iteration body in its
+        scope.
+        """
+        self._check_writable()
+        body = self.preceding()
+        if not body:
+            raise ValueError(
+                "dynamic adaptation: repeat() has no body to repeat; the "
+                "acting action must be preceded by the iteration body in "
+                "its scope"
+            )
+        copies = [self.copy(node, **param_overrides) for node in body]
+        copies.append(self.copy_self(**param_overrides))
+        self._record(
+            AdaptationOp("append", nodes=tuple(copies), scope=self._parent)
+        )
+
+    # ------------------------------------------------------------ #
     # The op log (read by the engine at commit time)
     # ------------------------------------------------------------ #
     @property
     def ops(self) -> list[AdaptationOp]:
         """The recorded ops, in issue order (empty when nothing was written)."""
         return list(self._ops)
-
-
-def _clone(node: _Node, overrides: dict[str, Any]) -> _Node:
-    """
-    Deep-clone ``node``'s subtree, applying parameter overrides to actions.
-
-    Every ``Action`` in the clone gets a fresh ``params`` dict with
-    ``overrides`` merged in (existing keys overwritten); groups are rebuilt
-    with cloned children.  The clone carries no engine state, so it is a
-    fresh, never-executed node.
-    """
-    if isinstance(node, Action):
-        params = dict(node.params)
-        params.update(overrides)
-        return Action(node.function, **params)
-    children = [_clone(child, overrides) for child in node.children]
-    clone = Sequential(*children) if isinstance(node, Sequential) else Parallel(*children)
-    clone.globals = dict(node.globals)
-    # The optional scope label is part of the node's declared identity —
-    # preserved by the clone (the artifact store addresses groups by it).
-    clone.name = node.name
-    return clone
-    @staticmethod
-    def _contains_any(node: _Node, targets: tuple[_Node, ...]) -> bool:
-        """True when any target is ``node`` itself or inside its subtree."""
-        return any(_contains(node, target) for target in targets)
 
 
 def _contains(root: _Node, target: _Node) -> bool:

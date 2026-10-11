@@ -486,7 +486,7 @@ def test_evaluate_goal_runs_chosen_alternative_only():
 def test_evaluate_goal_unknown_alternative_raises():
     """An unknown selected alternative (no default) raises ValueError."""
     registry, _ = _branch_registry("delta")  # not a named alternative
-    with pytest.raises(ValueError, match="evaluate_goal"):
+    with pytest.raises(ValueError, match="no alternative named"):
         run_workflow(_branch_xml(), registry=registry)
 
 

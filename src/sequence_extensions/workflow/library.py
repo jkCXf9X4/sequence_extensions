@@ -15,34 +15,38 @@ The functions
 
 * :func:`find_files` — file discovery and dynamic-adaptation driver
   (paper Listing 5, objective 1): clones the declared downstream scope
-  once per found file.
+  once per found file (``dag.fan_out``).
 * :func:`simulate` — a placeholder simulation that echoes its parameters.
 * :func:`evaluate_results` — a deterministic summary of one simulation's
   upstream results.
 * :func:`find_test_cases` — discovery of the test-case files under a path.
 * :func:`parameter_sweep` — dynamic-adaptation driver (paper Listing 9,
-  objective 1): clones the declared downstream scope once per sweep value.
+  objective 1): clones the declared downstream scope once per sweep value
+  (``dag.fan_out``).
 * :func:`compare_parameter_sweep` — a deterministic summary of a sweep's
   results.
 * :func:`compare_results` — a deterministic summary of the final results.
 * :func:`evaluate_goal` — branching driver (paper objective 2): selects the
   named alternative of the declared downstream alternatives scope based on
-  an upstream result field; the unselected alternatives never run.
+  an upstream result field (``dag.select``); the unselected alternatives
+  never run.
 * :func:`check_convergence` — iteration driver (paper objective 2): while
   the upstream result field is not converged, appends a copy of the
-  iteration body at the scope end (the paper's section 5 copy-to-end
-  workaround); returns a plain-data summary when converged.
+  iteration body plus a fresh copy of the check at the scope end
+  (``dag.repeat()``, the paper's section 5 copy-to-end workaround);
+  returns a plain-data summary when converged.
 * :func:`aggregate` — pure function (no ``dag``): reduces the ``field``
   value of every collision-suffixed upstream result named ``upstream``
   with an operation (``sum``/``max``/``min``/``count``/``mean``/``all``/
   ``any``), optionally grouped by a key field.
 * :func:`guard` — conditional driver: runs the declared downstream scope
   only when a predicate on the latest upstream result holds; otherwise
-  skips it (the body never runs) or raises.
+  skips it via ``dag.skip()`` (the body never runs) or raises.
 * :func:`while_condition` — iteration driver: repeats the preceding body
   while the latest upstream result's ``field`` fails a threshold
   comparison (the numeric-tolerance generalization of
-  :func:`check_convergence`), with a user-facing ``max_iterations`` cap.
+  :func:`check_convergence`), with a user-facing ``max_iterations`` cap;
+  iterates via ``dag.repeat()``.
 * :func:`try_action` — error-capturing primitive (no ``dag``): invokes a
   named registered function and returns ``{"ok": bool, "result", "error"}``
   instead of propagating the exception — the root unblocker for
@@ -51,11 +55,11 @@ The functions
 * :func:`retry` — iteration driver: re-runs the preceding body up to
   ``max_attempts`` when the latest upstream result is unacceptable (an
   error captured by :func:`try_action`, or a result-field predicate),
-  with an optional backoff hook between attempts.
+  with an optional backoff hook between attempts (``dag.repeat()``).
 * :func:`fallback` — conditional driver: after each alternative in the
   following chain, when the latest upstream result's ``field`` equals
-  ``ok_value``, replaces the remaining alternatives with an empty group
-  so they never run (first-success).
+  ``ok_value``, skips every following sibling via ``dag.skip_following()``
+  (first-success).
 * :func:`regression_gate` — pure function (no ``dag``): compares each
   collision-suffixed upstream result's ``field`` to a ``baseline`` within
   ``tolerance`` and raises on regression (a V&V gate).
@@ -71,10 +75,11 @@ The eight adaptation drivers (``find_files``, ``parameter_sweep``,
 ``retry``, ``fallback``)
 declare a ``dag`` parameter: the
 engine injects a scoped :class:`~.adaptation.DAGHandle` into them, and they
-adapt the workflow by cloning the DECLARED downstream scope (they never
-build nodes themselves).  Their own return value (a plain file/value list,
-an alternative name, or a convergence summary) is what flows downstream as
-their result.
+adapt the workflow through the handle's intent-level combinators
+(``fan_out`` / ``select`` / ``skip`` / ``skip_following`` / ``repeat``) —
+they never build nodes themselves.  Their own return value (a plain
+file/value list, an alternative name, or a convergence summary) is what
+flows downstream as their result.
 
 Registration
 ------------
@@ -105,7 +110,6 @@ from typing import Any, Callable
 from .adaptation import DAGHandle
 from .params import coerce_value, normalize_values
 from .registry import DEFAULT_REGISTRY, FunctionRegistry
-from .schema import Action, Parallel, Sequential
 
 __all__ = [
     "find_files",
@@ -147,10 +151,10 @@ def find_files(
     (objective 1: adaptation to unknown factors).  The action must be
     followed by the scope it adapts (the declared downstream group, e.g.
     the ``simulate`` + ``evaluate_results`` pair); the function CLONES that
-    declared scope once per found file (``dag.copy(body, file=f)``) and
-    splices the clones in place of the declared scope (``dag.replace``), so
-    each found file gets its own copy of the declared actions.  The
-    function never builds nodes itself — it adapts the declared ones.
+    declared scope once per found file and splices the clones in place of
+    the declared scope (``dag.fan_out``), so each found file gets its own
+    copy of the declared actions.  The function never builds nodes
+    itself — it adapts the declared ones.
 
     ``path`` may be a string or a ``pathlib.Path``; ``pattern`` is a glob
     pattern matched directly under ``path`` (default ``"*.csv"``).  Files
@@ -162,8 +166,7 @@ def find_files(
     """
     files = sorted(str(p) for p in Path(path).glob(pattern))
     if files:
-        body = dag.following_group()
-        dag.replace(body, [dag.copy(body, file=f) for f in files])
+        dag.fan_out([{"file": f} for f in files])
     return files
 
 
@@ -215,10 +218,10 @@ def parameter_sweep(
     (objective 1: adaptation to unknown factors).  The action must be
     followed by the scope it adapts (the declared downstream group, e.g. a
     single ``simulate`` action); the function CLONES that declared scope
-    once per sweep value (``dag.copy(body, <name>=<value>)``) and splices
-    the clones in place of the declared scope (``dag.replace``), so each
-    sweep value gets its own copy of the declared actions.  The function
-    never builds nodes itself — it adapts the declared ones.
+    once per sweep value and splices the clones in place of the declared
+    scope (``dag.fan_out``), so each sweep value gets its own copy of the
+    declared actions.  The function never builds nodes itself — it adapts
+    the declared ones.
 
     ``parameter_name`` is the name of the parameter to sweep.  ``values`` is
     accepted either as a comma-separated string (``"5, 10, 15"``) or as a
@@ -235,8 +238,7 @@ def parameter_sweep(
         raise ValueError("parameter_sweep requires 'parameter_name'")
     sweep_values = normalize_values(values)
     if sweep_values:
-        body = dag.following_group()
-        dag.replace(body, [dag.copy(body, **{parameter_name: v}) for v in sweep_values])
+        dag.fan_out([{parameter_name: v} for v in sweep_values])
     return sweep_values
 
 
@@ -283,7 +285,7 @@ def evaluate_goal(
     the action named ``upstream``, or the collision-suffixed variant the
     engine keys it under when the name repeats) and selects the alternative
     whose name matches that value.  The chosen alternative is moved into
-    place of the alternatives scope (``dag.replace``), so the unselected
+    place of the alternatives scope (``dag.select``), so the unselected
     alternatives never run.
 
     When the selected name matches no alternative, the ``default``
@@ -294,10 +296,8 @@ def evaluate_goal(
     Returns the name of the alternative that was selected (the plain result
     that flows downstream as this action's result).
     """
-    alternatives = dag.following_group()
     selected = _upstream_field(kwargs, upstream, field)
-    chosen = _select_alternative(alternatives, selected, default)
-    dag.replace(alternatives, [chosen])
+    chosen = dag.select(selected, default)
     return chosen.name
 
 
@@ -321,10 +321,10 @@ def check_convergence(
     converged (truthy), the function returns a plain-data summary and
     nothing is adapted.  When it is not converged, the function appends a
     copy of the iteration body — plus a fresh copy of this check action
-    itself — at the scope end, so the next iteration runs strictly
-    downstream.  The iteration count is unknown a priori; a runaway
-    workflow is terminated deterministically by the engine's dynamic-node
-    bound (``ADAPTATION_BOUND``).
+    itself — at the scope end (``dag.repeat()``), so the next iteration
+    runs strictly downstream.  The iteration count is unknown a priori; a
+    runaway workflow is terminated deterministically by the engine's
+    dynamic-node bound (``ADAPTATION_BOUND``).
 
     ``upstream`` should be an action that is part of the iteration body (it
     runs once per iteration), so that the number of its results equals the
@@ -333,22 +333,15 @@ def check_convergence(
     Returns ``{"converged": True, "iterations": <n>}`` where ``<n>`` is the
     number of times the body has run (including the current iteration) —
     the plain result that flows downstream as this action's result.
+
+    Raises ``ValueError`` when the check action has no preceding iteration
+    body in its scope.
     """
     value = _upstream_field(kwargs, upstream, field)
     iterations = _upstream_count(kwargs, upstream)
     if value:
         return {"converged": True, "iterations": iterations}
-    body = dag.preceding()
-    if not body:
-        raise ValueError(
-            "check_convergence: the check action must be preceded by the "
-            "iteration body in its scope"
-        )
-    check = dag.scope.children[dag.index]
-    check_copy = Action(check.function, **check.params)
-    copies = [dag.copy(node) for node in body]
-    copies.append(check_copy)
-    dag.append(copies)
+    dag.repeat()
     return {"converged": False, "iterations": iterations}
 
 
@@ -438,10 +431,10 @@ def retry(
     plain-data summary and nothing is adapted.  When it is unacceptable
     and the body has run fewer than ``max_attempts`` times, the function
     appends a copy of the body — plus a fresh copy of this check action
-    itself — at the scope end (the paper's section 5 copy-to-end
-    workaround; every action still executes at most once).  When the
-    body has already run ``max_attempts`` times, the function returns
-    the exhausted summary and adapts nothing.
+    itself — at the scope end (``dag.repeat()``; the paper's section 5
+    copy-to-end workaround; every action still executes at most once).
+    When the body has already run ``max_attempts`` times, the function
+    returns the exhausted summary and adapts nothing.
 
     ``backoff`` / ``delay`` / ``sleep`` control the pause between
     attempts.  The default (``backoff="fixed"``, ``delay=0.0``) pauses
@@ -479,16 +472,7 @@ def retry(
     if cap is not None and attempts >= cap:
         return {"ok": False, "attempts": attempts, "max_attempts": cap}
     _pause(backoff, delay, sleep, attempts)
-    body = dag.preceding()
-    if not body:
-        raise ValueError(
-            "retry: the check action must be preceded by the body in its scope"
-        )
-    check = dag.scope.children[dag.index]
-    check_copy = Action(check.function, **check.params)
-    copies = [dag.copy(node) for node in body]
-    copies.append(check_copy)
-    dag.append(copies)
+    dag.repeat()
     return {"ok": False, "attempts": attempts}
 
 
@@ -516,8 +500,9 @@ def fallback(
     (``ok_value="True"``) compares against a real boolean field:
 
     * success — every following sibling (the remaining alternatives and
-      their checks) is replaced with an empty ``Sequential()`` — a
-      valid node that runs nothing — so none of them ever runs;
+      their checks) is replaced with an empty group
+      (``dag.skip_following()``) — a valid node that runs nothing — so
+      none of them ever runs;
     * failure — nothing is adapted; the next alternative runs, and its
       own ``fallback`` check (declared after it) re-evaluates.
 
@@ -538,8 +523,7 @@ def fallback(
     result = _upstream_latest(kwargs, upstream)
     field_value = _result_field(result, upstream, field)
     if field_value == _coerce_operand(ok_value):
-        for node in dag.following():
-            dag.replace(node, Sequential())
+        dag.skip_following()
         return {"fallback": {"ok": True}}
     return {"fallback": {"ok": False}}
 
@@ -711,8 +695,8 @@ def guard(
     runs exactly as declared.  When it fails:
 
     * ``on_fail="skip"`` (the default) replaces the declared scope with
-      an empty ``Sequential()`` — a valid node that runs nothing, so the
-      body never runs and the group's result is an empty list;
+      an empty group (``dag.skip()``) — a valid node that runs nothing, so
+      the body never runs and the group's result is an empty list;
     * ``on_fail="fail"`` raises ``ValueError`` (a fail-fast gate: the
       run aborts with a clear message instead of silently skipping).
 
@@ -736,7 +720,7 @@ def guard(
         raise ValueError(
             f"guard: unknown on_fail {on_fail!r} (expected 'skip' or 'fail')"
         )
-    dag.replace(dag.following_group(), [Sequential()])
+    dag.skip()
     return {"guard": {"passed": False, "op": op}}
 
 
@@ -767,9 +751,9 @@ def while_condition(
     When the comparison holds (the condition is satisfied), the function
     returns a plain-data summary and nothing is adapted.  When it fails,
     the function appends a copy of the iteration body — plus a fresh copy
-    of this check action itself — at the scope end, so the next iteration
-    runs strictly downstream (the paper's section 5 copy-to-end
-    workaround; every action still executes at most once).
+    of this check action itself — at the scope end (``dag.repeat()``; the
+    paper's section 5 copy-to-end workaround; every action still executes
+    at most once).
 
     ``max_iterations`` (default ``None`` = no cap beyond the engine's
     dynamic-node bound) stops the iteration once the body has run
@@ -803,17 +787,7 @@ def while_condition(
             "iterations": iterations,
             "max_iterations": cap,
         }
-    body = dag.preceding()
-    if not body:
-        raise ValueError(
-            "while_condition: the check action must be preceded by the "
-            "iteration body in its scope"
-        )
-    check = dag.scope.children[dag.index]
-    check_copy = Action(check.function, **check.params)
-    copies = [dag.copy(node) for node in body]
-    copies.append(check_copy)
-    dag.append(copies)
+    dag.repeat()
     return {"converged": False, "iterations": iterations}
 
 
@@ -1184,40 +1158,3 @@ def _coerce_operand(value: Any) -> Any:
             return text == "True"
         return coerce_value(text)
     return value
-
-
-def _select_alternative(
-    alternatives: Any,
-    selected: Any,
-    default: str | None,
-) -> Any:
-    """
-    Select the named child of the alternatives scope.
-
-    The alternatives scope's children are the named alternative branches
-    (NAMED groups — the schema's optional ``name`` attribute; actions have
-    no name).  The child whose name equals ``selected`` is returned.  When
-    no child matches, the ``default`` child is used; when there is no
-    default (or it matches no child either), a ``ValueError`` is raised.
-    """
-    if not isinstance(alternatives, (Sequential, Parallel)):
-        raise ValueError(
-            "evaluate_goal: the following sibling must be the alternatives "
-            "scope (a group of named alternatives)"
-        )
-    names = [child.name for child in alternatives.children if child.name]
-    if selected in names:
-        return next(child for child in alternatives.children if child.name == selected)
-    if default is not None:
-        if default in names:
-            return next(child for child in alternatives.children if child.name == default)
-        raise ValueError(
-            f"evaluate_goal: the default alternative {default!r} is not a "
-            f"named child of the alternatives scope (named alternatives: "
-            f"{names})"
-        )
-    raise ValueError(
-        f"evaluate_goal: no alternative named {selected!r} in the "
-        f"alternatives scope (named alternatives: {names}) and no default "
-        f"alternative was given"
-    )
