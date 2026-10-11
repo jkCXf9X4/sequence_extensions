@@ -386,6 +386,9 @@ def _clone(node: _Node, overrides: dict[str, Any]) -> _Node:
     children = [_clone(child, overrides) for child in node.children]
     clone = Sequential(*children) if isinstance(node, Sequential) else Parallel(*children)
     clone.globals = dict(node.globals)
+    # The optional scope label is part of the node's declared identity —
+    # preserved by the clone (the artifact store addresses groups by it).
+    clone.name = node.name
     return clone
     @staticmethod
     def _contains_any(node: _Node, targets: tuple[_Node, ...]) -> bool:

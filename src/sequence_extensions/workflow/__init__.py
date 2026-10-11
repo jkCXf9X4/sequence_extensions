@@ -22,9 +22,20 @@ Modules:
 * :mod:`~sequence_extensions.workflow.adaptation` — the scoped DAG handle
   (``DAGHandle``) handed to functions that declare a ``dag`` parameter:
   scoped reads, validated write ops and the transactional commit protocol.
+* :mod:`~sequence_extensions.workflow.artifacts` — the opt-in, by-reference
+  artifact store (``ArtifactStore``): one minted directory per executed
+  action (append-only manifest), and a scoped ``ArtifactHandle`` handed to
+  functions that declare an ``artifacts`` parameter — write to the node
+  directory, read the causal past, enumerate completed parallel groups'
+  branches.
 """
 
 from sequence_extensions.workflow.adaptation import ADAPTATION_BOUND, AdaptationOp, DAGHandle
+from sequence_extensions.workflow.artifacts import (
+    ArtifactHandle,
+    ArtifactStore,
+    ReplayArtifacts,
+)
 from sequence_extensions.workflow.engine import (
     Test_Framework,
     check_splice_scope,
@@ -48,9 +59,12 @@ __all__ = [
     "DEFAULT_REGISTRY",
     "Action",
     "AdaptationOp",
+    "ArtifactHandle",
+    "ArtifactStore",
     "DAGHandle",
     "FunctionRegistry",
     "Parallel",
+    "ReplayArtifacts",
     "Sequential",
     "Template",
     "Test_Framework",

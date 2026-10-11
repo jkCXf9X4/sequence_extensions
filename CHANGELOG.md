@@ -7,7 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Cloned groups keep their `name`** — `dag.copy` (and the history
+  replay clone) now preserves a group's optional scope label. Previously
+  a clone of `<scope name="solvers">` lost its name (falling back to its
+  kind in addressing and losing its label downstream).
+
 ### Added
+- **Workflow artifact store** (IMP-005): an opt-in, by-reference data
+  plane for bulk data. Control data (verdicts, counts, paths, summaries)
+  keeps flowing by value through kwargs — unchanged, paper parity —
+  while artifacts (simulation outputs, reports, datasets) flow by
+  reference through a new ``workflow.artifacts`` module and never enter
+  kwargs. The store is coupled to the DAG and decoupled from the engine
+  (it imports the schema only, like ``workflow.history``).
+  - ``ArtifactStore(root)`` — one store per run: the run directory and
+    a fresh append-only ``manifest.jsonl`` are created at run start; a
+    root that already contains a manifest is refused (recorded evidence
+    is never silently appended to). ``run_workflow`` /
+    ``Test_Framework`` accept ``artifacts=`` (default ``None`` = no
+    store, zero behavior change; ``artifacts`` then stays an ordinary
+    parameter name).
+  - **Minted addresses** — an action's address is its call-time tree
+    position: enclosing scope labels (a ``name``d scope by name, an
+    unnamed one by kind) plus the function name, each with a collision
+    suffix on repeat (``name``, ``name_2``, ... — the kwargs vocabulary,
+    in path space). Addresses are minted at submission time (walk
+    order, never thread scheduling), recorded in the manifest (one
+    entry per executed action: ``seq`` / ``address`` / ``function`` /
+    the action's own ``params`` / ``dynamic``), and never recomputed —
+    sweep clones and iteration bodies get fresh directories
+    (``sequential``, ``sequential_2``, ...), preserving every clone's
+    outputs.
+  - **Scoped ``ArtifactHandle``** — injected as the reserved
+    ``artifacts`` kwarg into functions that declare one (the registry's
+    cached ``wants_artifacts`` flag, mirroring ``dag``; the handle wins
+    over any same-named parameter). ``out_dir()`` is the node's own
+    directory (the only writable one); ``read(path)`` reads a received
+    pointer scope-checked (the causal past — the same actions whose
+    results fan into the call's kwargs; parallel siblings are
+    information barriers); ``branches(name)`` enumerates every
+    completed parallel group named ``name`` in the causal past, the
+    fan-in view for cross-branch comparison.
+  - **History linkage and replay** — with a store, every
+    ``ExecutionRecord.artifacts`` carries the action's minted address
+    (the join key into the manifest). ``replay(history, registry,
+    artifacts=store)`` re-invokes artifacts-declaring functions with a
+    ``ReplayArtifacts`` handle (reads from the recorded manifest,
+    ``out_dir()`` returning the original node directory) so the
+    replayed result — returned pointers included — matches the
+    recorded one.
 - **Workflow templates** (design principle 4, reuse): a named,
   parameterized subtree can be defined once and instantiated wherever its
   verification scenario is needed, limiting duplication between workflows.

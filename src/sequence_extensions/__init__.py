@@ -5,6 +5,8 @@ from sequence_extensions.graph import GraphFuture, GraphPool, graph_future
 from sequence_extensions.workflow import (
     DEFAULT_REGISTRY,
     Action,
+    ArtifactHandle,
+    ArtifactStore,
     FunctionRegistry,
     Parallel,
     Sequential,
@@ -20,6 +22,8 @@ __version__ = "0.2.0"
 __all__ = [
     "DEFAULT_REGISTRY",
     "Action",
+    "ArtifactHandle",
+    "ArtifactStore",
     "FunctionRegistry",
     "GraphFuture",
     "GraphPool",

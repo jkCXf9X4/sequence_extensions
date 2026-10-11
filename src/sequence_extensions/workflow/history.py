@@ -56,6 +56,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, Union
 
+from .artifacts import ArtifactStore, ReplayArtifacts
 from .registry import DEFAULT_REGISTRY, FunctionRegistry
 from .schema import Action, Parallel, Sequential
 
@@ -108,6 +109,9 @@ class ExecutionRecord:
       descriptors; empty when the function adapted nothing).
     * ``scope`` — snapshot of the acting action's sibling list and index,
       recorded at handle injection (``None`` for non-adapting actions).
+    * ``artifacts`` — the action's minted artifact-store address (the
+      root-relative node directory, the join key into the run's manifest
+      entries); ``None`` when the run had no artifact store (IMP-005).
     """
 
     name: str
@@ -122,6 +126,7 @@ class ExecutionRecord:
     dynamic: bool = False
     adaptations: list[dict] = field(default_factory=list)
     scope: dict | None = None
+    artifacts: str | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -321,6 +326,9 @@ def _clone_node(node: _Node, overrides: dict[str, Any]) -> _Node:
     children = [_clone_node(child, overrides) for child in node.children]
     clone = Sequential(*children) if isinstance(node, Sequential) else Parallel(*children)
     clone.globals = dict(node.globals)
+    # The optional scope label is part of the node's declared identity —
+    # preserved by the clone (parity with the engine's ``_clone``).
+    clone.name = node.name
     return clone
 
 
@@ -436,6 +444,7 @@ class ReplayHandle:
 def replay_records(
     history: RunHistory,
     registry: FunctionRegistry | None = None,
+    artifacts: ArtifactStore | None = None,
 ) -> list[Any]:
     """
     Re-execute every recorded action and return the replayed values.
@@ -455,6 +464,16 @@ def replay_records(
     fake tree materialized from the record's ``scope`` snapshot and write
     ops are no-ops, so replay is deterministic and never mutates the live
     tree.  Non-adapting records are replayed byte-for-byte as before.
+
+    Artifacts-declaring functions (whose record carries a minted
+    ``artifacts`` address) are re-invoked with the ``artifacts`` kwarg
+    stripped and a :class:`~.artifacts.ReplayArtifacts` handle re-injected
+    instead: reads are served from the run's manifest and ``out_dir()``
+    returns the ORIGINAL node directory, so a deterministic function
+    rewrites identical content and the replayed result — returned pointers
+    included — matches the recorded one.  Pass the run's
+    :class:`~.artifacts.ArtifactStore` as ``artifacts``; a record that
+    needs one when no store was given raises ``ValueError``.
     """
     reg = registry if registry is not None else DEFAULT_REGISTRY
     replayed: list[Any] = []
@@ -463,11 +482,24 @@ def replay_records(
         if "dag" in params:
             params.pop("dag")
             params["dag"] = ReplayHandle(record.scope)
+        if record.artifacts is not None and "artifacts" in params:
+            params.pop("artifacts")
+            if artifacts is None:
+                raise ValueError(
+                    f"replay: record {record.order} ({record.name!r}) was "
+                    f"recorded with an artifact store; pass the run's "
+                    f"ArtifactStore as artifacts= to replay it"
+                )
+            params["artifacts"] = ReplayArtifacts(artifacts, record.artifacts)
         replayed.append(recordable_result(reg.get(record.name)(**params)))
     return replayed
 
 
-def replay(history: RunHistory, registry: FunctionRegistry | None = None) -> Any:
+def replay(
+    history: RunHistory,
+    registry: FunctionRegistry | None = None,
+    artifacts: ArtifactStore | None = None,
+) -> Any:
     """
     Replay a recorded run and return the same final result.
 
@@ -478,8 +510,13 @@ def replay(history: RunHistory, registry: FunctionRegistry | None = None) -> Any
     Returns ``None`` for an empty workflow.  This proves reproducibility:
     the result is recomputed by re-running the recorded function calls,
     not echoed from the history.
+
+    When the recorded run used an artifact store, pass it as
+    ``artifacts`` so artifacts-declaring functions replay with a
+    :class:`~.artifacts.ReplayArtifacts` handle (reads from the recorded
+    manifest; writes re-derive the original node directory).
     """
-    results = replay_records(history, registry)
+    results = replay_records(history, registry, artifacts)
     if history.final_order is None:
         return None
     return results[history.final_order]

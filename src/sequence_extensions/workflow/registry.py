@@ -23,6 +23,7 @@ from typing import Any, Callable
 __all__ = [
     "DEFAULT_REGISTRY",
     "FunctionRegistry",
+    "wants_artifacts",
     "wants_dag",
     "workflow_function",
 ]
@@ -49,6 +50,29 @@ def wants_dag(fn: Callable[..., Any]) -> bool:
     return "dag" in parameters
 
 
+def wants_artifacts(fn: Callable[..., Any]) -> bool:
+    """
+    True when ``fn``'s signature declares an explicit ``artifacts``
+    parameter.
+
+    The engine injects a scoped
+    :class:`~.artifacts.ArtifactHandle` (the by-reference artifact store's
+    view) only into functions that ask for it, and only when the run was
+    given an :class:`~.artifacts.ArtifactStore` — signature inspection is
+    cached at registration time, mirroring :func:`wants_dag`.  ``artifacts``
+    is then a reserved kwarg name (the injected handle wins over any
+    same-named parameter); with no store configured it stays an ordinary
+    parameter name and nothing changes.
+
+    A bare ``**kwargs`` does NOT count (same rationale as :func:`wants_dag`).
+    """
+    try:
+        parameters = inspect.signature(fn).parameters
+    except (TypeError, ValueError):  # non-introspectable callable: never inject
+        return False
+    return "artifacts" in parameters
+
+
 class FunctionRegistry:
     """
     A name -> function registry for workflow actions.
@@ -64,14 +88,20 @@ class FunctionRegistry:
         # registered function's signature declares a ``dag`` parameter, so
         # the engine injects the scoped DAGHandle into its calls.
         self._wants_dag: dict[str, bool] = {}
+        # Cached per-function artifact-store flag (IMP-005): True when the
+        # registered function's signature declares an ``artifacts``
+        # parameter, so the engine injects the scoped ArtifactHandle into
+        # its calls (when the run has an ArtifactStore).
+        self._wants_artifacts: dict[str, bool] = {}
 
     def register(self, name: str, fn: Callable[..., Any]) -> None:
         """
         Register ``fn`` under ``name`` (replacing any earlier registration).
 
         The function's ``wants_dag`` flag (whether its signature declares a
-        ``dag`` parameter) is cached here, at registration time, so the
-        engine never inspects a signature on the hot path.
+        ``dag`` parameter) and ``wants_artifacts`` flag (whether it declares
+        an ``artifacts`` parameter) are cached here, at registration time,
+        so the engine never inspects a signature on the hot path.
 
         Raises ``ValueError`` if ``name`` is empty or ``fn`` is not callable.
 
@@ -95,6 +125,7 @@ class FunctionRegistry:
             )
         self._functions[name] = fn
         self._wants_dag[name] = wants_dag(fn)
+        self._wants_artifacts[name] = wants_artifacts(fn)
 
     def get(self, name: str) -> Callable[..., Any]:
         """
@@ -115,6 +146,20 @@ class FunctionRegistry:
         """
         self.get(name)  # unknown-name parity with get()
         return self._wants_dag.get(name, False)
+
+    def uses_artifacts(self, name: str) -> bool:
+        """
+        True when the function registered under ``name`` declares an
+        ``artifacts`` parameter.
+
+        Raises ``ValueError`` (via :meth:`get`) for an unknown name.  The
+        engine injects the scoped
+        :class:`~.artifacts.ArtifactHandle` into such functions' calls,
+        but only when the run was given an
+        :class:`~.artifacts.ArtifactStore`.
+        """
+        self.get(name)  # unknown-name parity with get()
+        return self._wants_artifacts.get(name, False)
 
     def names(self) -> list[str]:
         """Return the registered function names in registration order."""

@@ -26,6 +26,7 @@ The package `sequence-extensions` (v0.2.0) is a pure Python library: src layout,
 - `workflow/history.py` — `ExecutionRecord`, `RunHistory`, `replay` / `replay_records`
 - `workflow/library.py` — the paper's seven library functions and `register_library`
 - `workflow/adaptation.py` — `DAGHandle`: scoped DAG reads and the commit protocol
+- `workflow/artifacts.py` — `ArtifactStore`, `ArtifactHandle`, `ReplayArtifacts`: the by-reference data plane (`INFO-008`)
 
 ## Entry points
 

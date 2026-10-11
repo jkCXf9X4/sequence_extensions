@@ -898,6 +898,7 @@ The layer is split into modules:
 | `workflow.adaptation` | `DAGHandle`, `AdaptationOp`, `ADAPTATION_BOUND` |
 | `workflow.library` | the paper's library functions + `register_library` |
 | `workflow.history` | `ExecutionRecord`, `RunHistory`, `replay`, `ReplayHandle` |
+| `workflow.artifacts` | `ArtifactStore`, `ArtifactHandle`, `ReplayArtifacts` |
 
 All names are re-exported from `sequence_extensions.workflow` (and the core node / registry / engine names from the package root).
 
@@ -917,10 +918,10 @@ Key behaviors:
 ### `run_workflow`
 
 ```python
-def run_workflow(xml_source, registry=None, parameters=None, history=None)
+def run_workflow(xml_source, registry=None, parameters=None, history=None, artifacts=None)
 ```
 
-- **Parameters:** `xml_source` (`str` | `bytes`) — the workflow XML (see `parse_workflow`); `registry` (`FunctionRegistry`, default `DEFAULT_REGISTRY`); `parameters` (`dict`, optional) — extra global parameters merged over the XML's globals (winning on a name clash); `history` (`RunHistory`, optional) — opt-in execution recording.
+- **Parameters:** `xml_source` (`str` | `bytes`) — the workflow XML (see `parse_workflow`); `registry` (`FunctionRegistry`, default `DEFAULT_REGISTRY`); `parameters` (`dict`, optional) — extra global parameters merged over the XML's globals (winning on a name clash); `history` (`RunHistory`, optional) — opt-in execution recording; `artifacts` (`ArtifactStore`, optional) — the opt-in by-reference artifact store (see [Artifact store](#artifact-store-by-reference-data-plane)).
 - **Returns:** the final result (the last action's return value).
 - **Raises:** `ValueError` for invalid XML, an unknown function name, or an out-of-scope dynamic-adaptation splice.
 - **Description:** Parse and execute a workflow XML document.
@@ -928,10 +929,10 @@ def run_workflow(xml_source, registry=None, parameters=None, history=None)
 ### `Test_Framework`
 
 ```python
-def Test_Framework(seq, parameters=None, registry=None, history=None)
+def Test_Framework(seq, parameters=None, registry=None, history=None, artifacts=None)
 ```
 
-- **Parameters:** `seq` (`Sequential` | `Parallel`) — the root group built via the Python API; `parameters` / `registry` / `history` as in `run_workflow`.
+- **Parameters:** `seq` (`Sequential` | `Parallel`) — the root group built via the Python API; `parameters` / `registry` / `history` / `artifacts` as in `run_workflow`.
 - **Returns:** the final result.
 - **Raises:** as `run_workflow`.
 - **Description:** Execute a workflow built via the Python API (the paper's Listing 10).
@@ -1089,10 +1090,38 @@ The workflow schema is **not** a Turing-complete language: a workflow is a finit
 
 `workflow.history` supplies the evidence layer: per-action records and deterministic replay. Recording is opt-in — `run_workflow` / `Test_Framework` accept a `history=` argument (default `None`); when no history is requested the engine behaves exactly as before.
 
-- **`ExecutionRecord`** — per-action evidence: `name` (the action's registry name), `function` (the resolved callable's name), `params` (the **resolved** keyword arguments the function was actually called with — globals, upstream results and own params merged in engine precedence order), `result` (the return value; a dynamic-adaptation return is stored as a plain descriptor), `exception`, `started_at` / `ended_at` (wall-clock timestamps), `order` (deterministic completion-order index), `group_path` (the action's path in the workflow tree at call completion, e.g. `root/parallel[1]/action[0]`), `dynamic` (`True` when the action was spliced in at runtime), **`adaptations`** (the committed dynamic-adaptation ops as plain descriptors — what the function did to the DAG; empty when it adapted nothing), and **`scope`** (a snapshot of the acting action's sibling list and index, recorded at handle injection; `None` for non-adapting actions).
+- **`ExecutionRecord`** — per-action evidence: `name` (the action's registry name), `function` (the resolved callable's name), `params` (the **resolved** keyword arguments the function was actually called with — globals, upstream results and own params merged in engine precedence order), `result` (the return value; a dynamic-adaptation return is stored as a plain descriptor), `exception`, `started_at` / `ended_at` (wall-clock timestamps), `order` (deterministic completion-order index), `group_path` (the action's path in the workflow tree at call completion, e.g. `root/parallel[1]/action[0]`), `dynamic` (`True` when the action was spliced in at runtime), **`adaptations`** (the committed dynamic-adaptation ops as plain descriptors — what the function did to the DAG; empty when it adapted nothing), and **`scope`** (a snapshot of the acting action's sibling list and index, recorded at handle injection; `None` for non-adapting actions), and **`artifacts`** (the action's minted artifact-store address — the join key into the run's manifest; `None` when the run had no store).
 - **`RunHistory`** — a thread-safe, ordered collector the engine appends to as each action's function call completes, so the history captures what *actually* executed — including actions spliced in at runtime by dynamic adaptation — in true completion order. `final_order` is set by the engine after a successful run to the `order` of the workflow's final action (the value `replay` returns).
-- **`replay(history, registry=None)`** — replay a recorded run and return the same final result: it re-executes the recorded actions (see `replay_records`) and returns the replayed value of the run's final action. Returns `None` for an empty workflow. This proves reproducibility: the result is recomputed by re-running the recorded function calls, not echoed from the history.
-- **`replay_records(history, registry=None)`** — re-execute every recorded action strictly sequentially, in recorded (completion) order, and return the replayed values (positionally aligned with `history.records`). A recorded failure re-raises at the same point in the sequence.
+- **`replay(history, registry=None, artifacts=None)`** — replay a recorded run and return the same final result: it re-executes the recorded actions (see `replay_records`) and returns the replayed value of the run's final action. Returns `None` for an empty workflow. This proves reproducibility: the result is recomputed by re-running the recorded function calls, not echoed from the history. When the recorded run used an artifact store, pass it as `artifacts` so artifacts-declaring functions replay with a `ReplayArtifacts` handle.
+- **`replay_records(history, registry=None, artifacts=None)`** — re-execute every recorded action strictly sequentially, in recorded (completion) order, and return the replayed values (positionally aligned with `history.records`). A recorded failure re-raises at the same point in the sequence.
 - **`ReplayHandle`** — a read-only, no-op stand-in for `DAGHandle` in replay. When a recorded run's function declared a `dag` parameter, replay re-invokes it with the recorded `dag` kwarg **stripped** and a `ReplayHandle` re-injected: reads (`following` / `preceding` / `following_group` and node traversal) are served from a **fake tree** materialized from the record's `scope` snapshot, write ops (`replace` / `adjust` / `append`) are **no-ops** (recorded nowhere, applied nowhere), and clone ops (`copy` / `adjusted`) are functional (they clone the materialized fake target). Replaying an adapting run is therefore deterministic and never mutates the live tree.
 - **`recordable_result(value)`** — normalize a function return value for storage in a record: a dynamic-adaptation return (a workflow node, or a non-empty list/tuple of them) becomes a plain, comparable descriptor; any other value is returned unchanged.
 - **`resolve_group_path(root, node)`** — return `node`'s path in the workflow tree rooted at `root` (e.g. `root/parallel[1]/action[0]`); `root` for the root itself, `""` when not in the tree.
+
+### Artifact store (by-reference data plane)
+
+`workflow.artifacts` supplies the reference plane for bulk data. The engine's data plane is by value — results flow through kwargs — which is right for control data (verdicts, counts, paths, summaries) and wrong for payloads (simulation outputs, reports, datasets). With an artifact store, control data keeps flowing by value (unchanged; paper parity) while artifacts flow by reference through the store and never enter kwargs. The store is opt-in and decoupled from the engine (it imports the schema only, like `workflow.history`): pass `artifacts=ArtifactStore(root)` to `run_workflow` / `Test_Framework`. Without it, no directory is created, no manifest is written, and `artifacts` remains an ordinary parameter name — zero behavior change.
+
+The convention is modeled by the functions themselves: write the payload into the node directory, return a small pointer (the root-relative address of the file). A downstream function receives the pointer by value (through kwargs, like any result) and reads it through the store.
+
+- **`ArtifactStore(root)`** — the store for one run. `root` is the run directory, created at run start together with a fresh `manifest.jsonl`; a root that already contains a manifest is **refused** (recorded evidence is never silently appended to), and a store that already ran a workflow is refused too. `store.root` / `store.manifest_path` are the paths; `store.entries()` parses the manifest after a run.
+- **Addressing** — an action's address is its call-time tree position: the enclosing scopes' labels (a `name`d scope by name, an unnamed one by kind — `sequential` / `parallel`) plus the function name, each with a collision suffix on repeat (`name`, `name_2`, ... — the kwargs vocabulary, in path space where collisions are harmless). Addresses are minted at submission time (walk order, never thread scheduling), stored on the action, recorded in the manifest, and never recomputed: positions shift under dynamic adaptation, minted addresses never move. Sweep clones and iteration bodies therefore get fresh directories — `sequential`, `sequential_2`, `sequential_3` — each preserving its outputs (single assignment).
+- **Manifest** — append-only JSON lines, one entry per executed action in mint (walk) order: `seq` (global mint index), `address`, `function`, `params` (the action's **own** declared parameters — never the merged kwargs, so the manifest cannot echo upstream results), `dynamic`. The manifest is the executed truth; the XML is the declared truth; together they are the run's evidence. Global sequence numbers may interleave across concurrently-walked parallel branches (they record execution); every address is deterministic.
+- **`ArtifactHandle`** — the scoped view injected as the reserved `artifacts` kwarg into functions that declare one (the registry's cached flag, mirroring `dag`; the handle wins over any same-named parameter). `handle.address` is the node's root-relative directory; `handle.out_dir()` returns it (created on first use) — the only writable place; `handle.read(path)` returns a file's bytes after a scope check (see below); `handle.branches(name)` enumerates a completed parallel group's branch directories (see below).
+- **Read scope** — the causal past: the own directory, plus the directories of the actions whose results the engine fans into this call's kwargs (the same information the by-value plane carries — parallel siblings are information barriers, exactly as for results). Root-relative pointers (the convention) and absolute paths under the run root are both accepted; anything else raises `ValueError`.
+- **Fan-in** — `handle.branches(name)` returns the branch directories of every completed parallel group named `name` in the causal past, in causal order (the all-occurrences convention of the library's upstream suffix scans): the data-plane counterpart of a group's ordered result list, for cross-branch comparison of payloads that kwargs deliberately do not carry. A branch cannot enumerate its own (still-running) group; reads of enumerated branch directories are allowed downstream of the group's completion.
+- **`ReplayArtifacts`** — the replay stand-in (mirrors `ReplayHandle`). `replay(history, registry, artifacts=store)` re-invokes artifacts-declaring functions with the `artifacts` kwarg stripped and a `ReplayArtifacts` handle re-injected: reads are served from the recorded manifest (`out_dir()` returns the original node directory, so a deterministic function rewrites identical content and the replayed result — returned pointers included — matches the recorded one). Replaying an artifacts run without passing the store raises `ValueError`.
+- **History linkage** — with a store, every `ExecutionRecord.artifacts` carries the action's minted address (the join key into the manifest); `None` without a store.
+
+A mini-campaign and its executed layout:
+
+```text
+runs/campaign/                 # ArtifactStore("runs/campaign")
+  manifest.jsonl               # one entry per executed action, in walk order
+  find_cases/cases.json        # a root-level action: function-name directory
+  sweep/                       # <scope type="sequential" name="sweep">
+    parameter_sweep/           # the sweep actor, inside its named scope
+    solvers/simulate/result.json       # clone 1 of a swept parallel group
+    solvers_2/simulate/result.json     # clone 2 — a fresh scope, own outputs
+  compare/                     # the fan-in consumer: branches("solvers") + read
+```

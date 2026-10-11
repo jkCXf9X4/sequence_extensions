@@ -39,3 +39,4 @@ None. `selected/` is empty. No open investigations.
 - `IMP-002` — Replace named parameter elements with generic `<argument key value>`.
 - `IMP-003` — Tier 1 workflow library functions: `aggregate`, `guard`, `while_condition`.
 - `IMP-004` — Tier 2 workflow library functions: `try_action`, `retry`, `fallback`, `regression_gate`.
+- `IMP-005` — Artifact store — design investigation. Store core and fan-in implemented via `DR-004` (design in `INFO-008`); P0 control-plane hygiene and P3 tooling remain open.

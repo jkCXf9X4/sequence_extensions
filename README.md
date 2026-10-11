@@ -234,7 +234,7 @@ Pool lifecycle:
 
 ## workflow
 
-The V&V workflow layer: a small XML/Python schema of `Action` / `Sequential` / `Parallel` nodes, a named function registry, and a lazy tree-walking execution engine. A `<scope type="sequential|parallel">` element names each action's grouping scope (the `<sequential>` / `<parallel>` spellings are aliases); an action may declare a `dag` parameter to adapt its downstream scope at runtime.
+The V&V workflow layer: a small XML/Python schema of `Action` / `Sequential` / `Parallel` nodes, a named function registry, and a lazy tree-walking execution engine. A `<scope type="sequential|parallel">` element names each action's grouping scope (the `<sequential>` / `<parallel>` spellings are aliases); an action may declare a `dag` parameter to adapt its downstream scope at runtime, and a run may be given an `ArtifactStore` so bulk artifacts flow by reference (one minted directory per executed action) instead of through kwargs.
 
 ```python
 from sequence_extensions import run_workflow
@@ -260,7 +260,23 @@ xml = """
 result = run_workflow(xml)  # the last action's result
 ```
 
-`find_files` declares a `dag` parameter, so the engine hands it a scoped handle: it clones the declared downstream `<scope type="parallel">` once per found file and splices the clones in, so each file gets its own `simulate` + `evaluate_results`. See [docs/API.md](docs/API.md) for the full workflow reference (schema, engine, registry, library, history, and the adaptation contract).
+`find_files` declares a `dag` parameter, so the engine hands it a scoped handle: it clones the declared downstream `<scope type="parallel">` once per found file and splices the clones in, so each file gets its own `simulate` + `evaluate_results`. See [docs/API.md](docs/API.md) for the full workflow reference (schema, engine, registry, library, history, the adaptation contract, and the artifact store).
+
+For campaigns that produce files (simulation outputs, reports, datasets), pass an `ArtifactStore` and let functions that declare an `artifacts` parameter write payloads to their own node directory and return the pointer:
+
+```python
+from sequence_extensions import ArtifactStore, run_workflow, workflow_function
+
+@workflow_function
+def simulate(artifacts=None, **kwargs):
+    out = artifacts.out_dir() / "result.csv"   # this action's own directory
+    out.write_text(run_case(kwargs))           # the heavy payload stays on disk
+    return f"{artifacts.address}/result.csv"  # the pointer, by value
+
+result = run_workflow(xml, artifacts=ArtifactStore("runs/campaign-2026-10-11"))
+```
+
+Every executed action is minted into `runs/campaign-2026-10-11/manifest.jsonl` (the executed truth; the XML is the declared truth), downstream actions read received pointers scope-checked, and a fan-in consumer can enumerate a completed parallel group's branch directories to compare them. Without `artifacts=` nothing changes.
 
 ## Development
 

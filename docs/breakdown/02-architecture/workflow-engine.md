@@ -16,6 +16,7 @@ The workflow engine is a lazy tree-walking interpreter. It walks the node tree c
 - `_walk_sequential` re-reads `group.children` every step; a runtime splice is seen on the next iteration.
 - `_walk_parallel` snapshots children once; action children submit as `GraphFuture`s, group children run on plain threads (never pool workers, to avoid starvation).
 - Each action runs as a `GraphFuture` on the pool; upstream results are positional dependencies (strict ordering).
+- Every submitted action mints an artifact address when the run has a store; the walk threads the readable past alongside the kwargs chain (`INFO-008`).
 - The final result is the last action's result, resolved post-run by `_final_action`.
 
 ## The DAGHandle
