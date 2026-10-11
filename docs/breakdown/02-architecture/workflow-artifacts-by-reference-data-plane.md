@@ -14,7 +14,8 @@ paths, summaries) flows by value through kwargs, as the paper specifies.
 Artifacts (simulation outputs, reports, datasets) flow by reference through
 `workflow/artifacts.py`: written to a per-action directory, referenced by a
 root-relative pointer that flows by value like any result. Motivated by
-`IMP-005`; locked in by `DR-004`; the execution model is `INFO-004`.
+`IMP-005`; locked in by `DR-004`; the execution model is `INFO-004`; the
+decoupling contract that keeps the store engine-independent is `INFO-009`.
 
 ## Split by weight
 
@@ -78,4 +79,6 @@ root-relative pointer that flows by value like any result. Motivated by
 
 ## Excludes
 - The walk and injection mechanics: `INFO-004`.
+- The decoupling contract, the retrospective-only domain rule, and the
+  causal-past definition of read scope: `INFO-009`.
 - The information-flow analysis and the option set: `IMP-005`.

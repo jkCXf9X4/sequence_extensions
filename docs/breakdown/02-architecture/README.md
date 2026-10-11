@@ -18,6 +18,7 @@ How the system is organized: component decomposition, data and message flow, int
 - Not the proof strategy: `04-verification/`.
 - The workflow engine's execution model: INFO-004.
 - The workflow artifact store's data plane: INFO-008.
+- The artifact store's decoupling contract: INFO-009.
 
 ## Contents
 
