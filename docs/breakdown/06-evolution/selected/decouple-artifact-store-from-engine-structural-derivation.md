@@ -14,8 +14,9 @@ status: current
 - INFO-009's decoupling is one-sided: the store imports schema only; the
   engine imports the store and threads its addressing state.
 - `_WalkState` (path, labels, mints, readable, groups) threaded through
-  every walk, `_mint_address`, handle injection, `self._store`: 150
-  lines; a second consumer (tracer, profiler) extends it again.
+  every walk, `_mint_address`, handle injection, `self._store`: 150 lines.
+- A second consumer (tracer, profiler) extends the engine again — no
+  extension surface exists.
 
 ## Key finding — the store's needs are structural
 
@@ -31,8 +32,9 @@ call time. No walk state.
 - **Readable** — per ancestor, preceding action children plus direct
   action children of preceding group children (flattening is literal
   one-level).
-- Spliced nodes included without a special case (preceding siblings in
-  the live tree); replaced-before-start nodes never minted.
+- Spliced nodes included without a special case: preceding siblings in
+  the live tree. Nodes replaced before start: absent, never entered,
+  never minted.
 - **Groups** — parallel groups in the deep left flank, sequential
   descent only, never a parallel barrier; matches `new_groups`
   propagation.
