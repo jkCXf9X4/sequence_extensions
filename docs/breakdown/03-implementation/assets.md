@@ -22,11 +22,11 @@ The package `sequence-extensions` (v0.2.0) is a pure Python library: src layout,
 - `workflow/schema.py` — `Action` / `Sequential` / `Parallel` / `Template` nodes and the `parse_workflow` XML parser
 - `workflow/registry.py` — `FunctionRegistry`, `DEFAULT_REGISTRY`, `workflow_function` decorator
 - `workflow/params.py` — normalizes XML string parameters to native Python types
-- `workflow/engine.py` — `run_workflow` / `Test_Framework`; walks the node tree on the graph substrate
+- `workflow/engine.py` — `run_workflow` / `Test_Framework`; walks the node tree, injects `walk_context` when declared (`INFO-004`); the artifact-store wiring point (`INFO-009`)
 - `workflow/history.py` — `ExecutionRecord`, `RunHistory`, `replay` / `replay_records`
 - `workflow/library.py` — the paper's seven library functions and `register_library`
 - `workflow/adaptation.py` — `DAGHandle`: scoped DAG reads and the commit protocol
-- `workflow/artifacts.py` — `ArtifactStore`, `ArtifactHandle`, `ReplayArtifacts`: the by-reference data plane (`INFO-008`)
+- `workflow/artifacts.py` — `ArtifactStore`, `WrappedRegistry`, `ArtifactHandle`, `ReplayArtifacts`: the by-reference data plane, deriving its addressing from the walk context (`INFO-008`, `INFO-009`)
 
 ## Entry points
 

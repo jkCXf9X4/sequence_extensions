@@ -21,15 +21,20 @@ The suite is pytest (>= 8, < 9) with pytest-cov. `pytest` runs it as-is: `pyproj
 
 - `tests/test_package.py` — package-level smoke tests: root re-exports and public methods (30)
 - `tests/ext/` — `list_ext` (51), `dict_ext` (44), `gen_ext` (6)
+- `tests/graph/test_node.py` — generic nodes: identity, locate, clone (21)
+- `tests/graph/test_handle.py` — `TreeHandle` patterns and hooks (34)
 - `tests/graph/test_graph_future.py` — DAG execution, pool lifecycle, timeouts, cycle detection (22)
-- `tests/workflow/test_schema.py` — `parse_workflow` and every XML rejection rule (14)
+- `tests/workflow/test_schema.py` — `parse_workflow` and every XML rejection rule (25)
 - `tests/workflow/test_templates.py` — `Template` and the XML template surface (56)
 - `tests/workflow/test_registry.py` — `FunctionRegistry`, decorators, name conflicts (12)
 - `tests/workflow/test_engine.py` — ordering, concurrency, adaptation splicing, scope (11)
+- `tests/workflow/test_adaptation.py` — `DAGHandle` reads, writes, commit protocol (33)
 - `tests/workflow/test_history.py` — execution history and deterministic replay (26)
-- `tests/workflow/test_library.py` — the seven shipped library functions (18)
+- `tests/workflow/test_library.py` — the shipped library functions (92)
+- `tests/workflow/test_artifacts.py` — the artifact store: addresses, manifest, handles, replay (38)
+- `tests/workflow/test_walk_context.py` — generic walk-context injection, engine store-freedom (9)
 - `tests/workflow/test_scaling.py` — concurrency stability under scaling (4)
-- `tests/workflow/test_integration_alignment.py` — one workflow composing all four features (1)
+- `tests/workflow/test_integration_alignment.py` — one workflow composing all features (1)
 
 ## Fixtures and claim verification
 

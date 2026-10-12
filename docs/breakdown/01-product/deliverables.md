@@ -28,8 +28,8 @@ status: current
 ## API surface at a glance
 
 - `ext`: `list_ext`, `dict_ext`, `gen_ext`, `KeyValueTuple`.
-- `graph`: `GraphFuture`, `GraphPool`.
-- `workflow`: `Action`, `Sequential`, `Parallel`, `Template`, `FunctionRegistry`, `DEFAULT_REGISTRY`, `workflow_function`, `parse_workflow`, `run_workflow`, `Test_Framework`, `DAGHandle`, `AdaptationOp`, `check_splice_scope`.
+- `graph`: `GraphFuture`, `GraphPool`, `Node`, `Group`, `TreeHandle`.
+- `workflow`: `Action`, `Sequential`, `Parallel`, `Template`, `FunctionRegistry`, `DEFAULT_REGISTRY`, `workflow_function`, `parse_workflow`, `run_workflow`, `Test_Framework`, `DAGHandle`, `AdaptationOp`, `ArtifactStore`, `ArtifactHandle`, `WalkContext`, `check_splice_scope`.
 
 ## Out of scope
 

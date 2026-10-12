@@ -31,7 +31,7 @@ The package decomposes into three subpackages with a strict dependency order: `w
 - **`schema`** — node classes `Action`, `Sequential`, `Parallel` (specializing `graph.Node` / `graph.Group`), `Template`; `parse_workflow` turns XML into a node tree.
 - **`registry`** — `FunctionRegistry` maps names to callables; `workflow_function` registers; `DEFAULT_REGISTRY` is the default.
 - **`params`** — normalizes XML string parameters to Python values.
-- **`engine`** — walks the node tree, submits each `Action` as a `GraphFuture`, and returns the final result; enforces splice scope.
+- **`engine`** — walks the node tree, submits each `Action` as a `GraphFuture`, injects `walk_context` into functions that declare it (`IMP-007`), and returns the final result; enforces splice scope.
 - **`adaptation`** — `DAGHandle` (a `TreeHandle` specialization) gives a function a scoped view of the tree; writes are recorded as `AdaptationOp` and committed transactionally.
 - **`history`** — opt-in `RunHistory` records per-action evidence; `replay` re-runs it deterministically.
 
@@ -47,6 +47,6 @@ The package decomposes into three subpackages with a strict dependency order: `w
 
 - `ext`: the three classes; methods return extended types or plain values.
 - `graph`: `GraphFuture(function, *args, **kwargs)`, `result()`, `done()`; `GraphPool(max_workers)`, `result(gf)`.
-- `workflow`: `Action(function, **params)`, `Sequential`/`Parallel(*children)`, `parse_workflow(xml)`, `run_workflow(xml, registry, parameters, history)`, `Test_Framework(seq, parameters, registry, history)`.
+- `workflow`: `Action(function, **params)`, `Sequential`/`Parallel(*children)`, `parse_workflow(xml)`, `run_workflow(xml, registry, parameters, history, artifacts)`, `Test_Framework(seq, parameters, registry, history, artifacts)`.
 
 Engine internals: `INFO-004`. Scope: `INFO-001`.

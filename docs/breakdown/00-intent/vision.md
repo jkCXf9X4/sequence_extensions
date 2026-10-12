@@ -63,6 +63,12 @@ Out of scope (framework-level concerns from the paper): Git-in-archive version c
 Completed work, cited by ID:
 - `IMP-002` — schema evolution: generic `<argument key value>` replaces named parameter elements.
 - `IMP-001` — design study of principle 2 (dynamic adaptation); committed choice `DR-001`, engine architecture `DR-002`.
+- `IMP-003` — tier-1 library functions (`aggregate`, `guard`, `while_condition`).
+- `IMP-004` — tier-2 library functions (`try_action`, `retry`, `fallback`, `regression_gate`).
+- `IMP-005` — artifact store: the by-reference data plane (`DR-004`, design in `INFO-008`).
+- `IMP-006` — DAG manipulation surface simplification; the intent-level combinators.
+- `IMP-007` — engine-free artifact store: structural derivation, the `walk_context` injection (`INFO-009`).
+- `IMP-008` — generic node layer in `graph`: `Node` / `Group` / `TreeHandle`.
 
 ## Success criteria
 
