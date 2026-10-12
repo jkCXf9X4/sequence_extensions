@@ -11,9 +11,6 @@ conditionals, branching, composition, and V&V campaigns — in the workflow engi
 1. The paper: Rosenlund, Hällqvist, Braun, Krus — *Automation Nation: Taming Complex V&V
    Workflows*, 16th International Modelica & FMI Conference, Lucerne, September 2025
    (`docs/references/paper_44_yBqbPyj1.pdf`). Section references are given as §.
-   *Note: the repo's source headers cite DOI `10.3384/ecp12076741` while
-   `docs/breakdown/00-intent/vision.md:11` cites `10.3384/ecp218741`; the two DOIs refer to
-   the same paper and the discrepancy is unresolved in the repo.*
 2. The engine: file:line-anchored capability inventory of `workflow/` (schema, registry,
    engine, adaptation, library, history) — anchors given as `file:line`.
 3. The scenario taxonomy: 23 prioritized scenarios in 5 categories with feasibility notes
@@ -488,6 +485,6 @@ def fn(<params>, **kwargs: Any) -> <plain result>:                              
    and warrant further evaluation" (§4.4, L9); large-binary handling in Git (§4.3, L8);
    MTMD integration (§5, L11); layering on more sophisticated workflow management tools
    (§3.3, L12). These are outside the driver-function decision.
-7. **DOI discrepancy.** The repo's source headers cite `10.3384/ecp12076741` while
-   `docs/breakdown/00-intent/vision.md:11` cites `10.3384/ecp218741` for the same paper;
-   one of them is a typo. Worth resolving in a separate commit (not this document).
+7. **DOI discrepancy.** Resolved 2026-10-12: both DOIs printed in the repo (and in
+   the paper itself) were wrong for this paper — the authoritative DOI is
+   `10.3384/ecp218751` (the publisher page), and every citation now carries it.

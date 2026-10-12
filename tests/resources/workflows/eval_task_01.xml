@@ -1,19 +1,19 @@
 <VerificationWorkflow>
   <argument key="model" value="./model_1"/>
-  <sequential>
+  <scope type="sequential">
     <action function="find_test_cases">
       <argument key="path" value="./test"/>
     </action>
-    <sequential>
+    <scope type="sequential">
       <action function="parameter_sweep">
         <argument key="parameter_name" value="parameter_1"/>
         <argument key="values" value="5, 10, 15"/>
       </action>
-      <sequential>
+      <scope type="sequential">
         <action function="simulate"/>
-      </sequential>
+      </scope>
       <action function="compare_parameter_sweep"/>
-    </sequential>
+    </scope>
     <action function="compare_results"/>
-  </sequential>
+  </scope>
 </VerificationWorkflow>

@@ -917,7 +917,7 @@ The workflow specializations: `Action(Node)` (a leaf — `children` stays empty,
 - **Reads** — `scope` (the parent group), `index`, `read_only`, `following()` (the siblings after the acting node), `preceding()` (the siblings before it), `following_group()` (the first following sibling, which must be a `Group` — the declared downstream scope a driver adapts).
 - **Clone ops** — `copy(target, **overrides)` (deep-clone a scoped target), `adjusted(**overrides)` (clone the first following sibling), `copy_self(**overrides)` (clone the acting node).
 - **Write primitives** — `replace(target, nodes)`, `append(nodes)`.
-- **Patterns** — the recurring manipulation intents: `fan_out(overrides)` (map: clone the declared scope once per override set, replace it), `select(name, default=None)` (branch: move the named child into the group's place, return it), `skip()` / `skip_following()` (replace the declared scope / every following sibling with an empty group), `repeat(**overrides)` (iterate: append copies of the preceding body plus a fresh copy of the acting node).
+- **Patterns** — the recurring manipulation intents: `fan_out(overrides)` (map: clone the declared scope once per override set, replace it), `fan_out_parallel(overrides)` (concurrent map: clone the declared parallel scope's children once per override set, in place), `select(name, default=None)` (branch: move the named child into the group's place, return it), `skip()` / `skip_following()` (replace the declared scope / every following sibling with an empty group), `repeat(**overrides)` (iterate: append copies of the preceding body plus a fresh copy of the acting node).
 
 The handle never mutates anything itself. A domain subclass supplies its policy through five hooks:
 
@@ -943,7 +943,7 @@ The layer is split into modules:
 | --- | --- |
 | `workflow.schema` | `Action` / `Sequential` / `Parallel` node classes (specialize `graph.Node` / `graph.Group`), `Template`, `parse_workflow` |
 | `workflow.registry` | `FunctionRegistry`, `DEFAULT_REGISTRY`, `workflow_function`, `wants_dag` |
-| `workflow.params` | parameter normalization (XML string form → Python form) |
+| `workflow.params` | parameter normalization — the `values` key only (XML string form → Python form) |
 | `workflow.engine` | `run_workflow` / `Test_Framework`, `check_splice_scope` |
 | `workflow.adaptation` | `DAGHandle`, `AdaptationOp`, `ADAPTATION_BOUND` (the adaptation policy over `graph.TreeHandle`) |
 | `workflow.library` | the paper's library functions + `register_library` |
@@ -951,6 +951,8 @@ The layer is split into modules:
 | `workflow.artifacts` | `ArtifactStore`, `ArtifactHandle`, `ReplayArtifacts` |
 
 All names are re-exported from `sequence_extensions.workflow` (and the core node / registry / engine names from the package root).
+
+Parameter shapes: an action receives its own parameters, globals and upstream results merged in the engine's precedence order (own parameters win).  The XML form passes every argument value as a string; the Python API form passes native types.  Exactly one parameter name is normalized across both shapes: `values` (a comma-separated string becomes a list, numeric strings become numbers) — every other parameter name passes through as-is, and the library functions coerce their own comparison operands (`library._coerce_operand`).
 
 ### The engine: a lazy tree-walking interpreter
 
@@ -1117,7 +1119,7 @@ A registered function may declare a `dag` parameter; the engine then injects a s
 - **Injection** — the engine passes `dag=` only when the function's signature declares it (the registry's cached `wants_dag` flag). `dag` is a **reserved kwarg name** for adapting functions: the injected handle wins over any same-named parameter (globals, upstream results, own params).
 - **Reads** — served from the live tree: `following()` (the siblings after the action, and their whole subtrees — so an outer action can alter inner actions, the paper's Listing 7), `preceding()` (the siblings before the action — so an end-of-body check can copy them to the end), `following_group()` (the first following sibling, which must be a group — the declared downstream scope a driver adapts), plus `scope` (the parent group), `index` (the action's position), `read_only`, and node traversal via `.children`.
 - **Writes** — `replace`, `adjust`, `copy`, `append` (and the `adjusted` shorthand) are validated **eagerly** (scope rules, read-only parallel scopes, the dynamic-node bound) and recorded as plain data (`AdaptationOp`); the engine applies them at commit time. Functions never build nodes: `dag.copy(target, **param_overrides)` clones a declared subtree with parameter overrides, and `dag.copy_self(**param_overrides)` clones the acting action itself.
-- **Combinators** — five intent-level methods cover the recurring driver patterns, each recording the same primitive ops a hand-written driver would (the engine commit path is unchanged): `fan_out(overrides)` (map), `select(name, default=None)` (branch), `skip()` (skip), `skip_following()` (skip-rest), `repeat(**overrides)` (copy-to-end iteration, body + a fresh copy of the check itself).
+- **Combinators** — six intent-level methods cover the recurring driver patterns, each recording the same primitive ops a hand-written driver would (the engine commit path is unchanged): `fan_out(overrides)` (map), `fan_out_parallel(overrides)` (concurrent map), `select(name, default=None)` (branch), `skip()` (skip), `skip_following()` (skip-rest), `repeat(**overrides)` (copy-to-end iteration, body + a fresh copy of the check itself).
 - **Commit** — at function return, on the same thread, under **one** engine-lock acquisition: the recorded ops are re-validated, applied as tree surgery, bounded, recorded on the action's `ExecutionRecord`, and the inserted nodes are marked dynamic. If the function raised, the op log is discarded — nothing is applied (atomic).
 
 #### `DAGHandle`
@@ -1126,13 +1128,13 @@ A registered function may declare a `dag` parameter; the engine then injects a s
 class DAGHandle(TreeHandle)
 ```
 
-A specialization of the generic `TreeHandle`: the scoped reads, the clone ops, the write primitives and the five combinators are **inherited** from `graph.handle`; `DAGHandle` supplies the workflow's policy — the validation rules (an adaptable target is a workflow node that has not started, inside the action's own scope), the op recording (`AdaptationOp` plus the dynamic-node bound), the empty `Sequential()` skip sentinel, and `adjust` (parameter retuning).
+A specialization of the generic `TreeHandle`: the scoped reads, the clone ops, the write primitives and the six combinators are **inherited** from `graph.handle`; `DAGHandle` supplies the workflow's policy — the validation rules (an adaptable target is a workflow node that has not started, inside the action's own scope), the op recording (`AdaptationOp` plus the dynamic-node bound), the empty `Sequential()` skip sentinel, and `adjust` (parameter retuning).
 
 Reads (inherited):
 
 - **`scope`** — the action's own grouping scope (its parent group).
 - **`index`** — the action's position in its parent's children list.
-- **`read_only`** — `True` when the handle rejects writes (a parallel-scope child).
+- **`read_only`** — `True` when the handle rejects writes: the action's **direct parent** is a `Parallel` scope. An action nested in an inner `Sequential` inside the group is **not** read-only (see the inner-scope idiom below).
 - **`following()`** — the siblings after this action, in order (outermost first).
 - **`preceding()`** — the siblings before this action, in order.
 - **`following_group()`** — the first following sibling, which must be a group. Raises `ValueError` when there is no following sibling, or the first following sibling is an action.
@@ -1148,7 +1150,8 @@ Write ops (all raise `ValueError` on a read-only handle):
 
 Combinators (intent-level sugar over the primitive ops; all raise `ValueError` on a read-only handle):
 
-- **`fan_out(overrides)`** — clone the declared downstream scope (the first following group) once per override set — a non-empty iterable of mappings — and replace it with the clones (the map pattern, the paper's Listing 5). An empty iterable raises `ValueError` (a driver that wants "run once as declared" on an empty collection keeps its own `if` guard).
+- **`fan_out(overrides)`** — clone the declared downstream scope (the first following group) once per override set — a non-empty iterable of mappings — and replace it with the clones (the map pattern, the paper's Listing 5). The clones run **one after another**, in iterable order, in place of the declared scope. An empty iterable raises `ValueError` (a driver that wants "run once as declared" on an empty collection keeps its own `if` guard).
+- **`fan_out_parallel(overrides)`** — the **concurrent** map pattern: clone the declared downstream scope's *children* once per override set and replace each child with its clones, in place. The declared downstream scope must be a `Parallel` group (`<scope type="parallel">`) — its type is the concurrency contract, and the clones run as direct children of that group, so the engine walks them concurrently. Because the clones are direct children (not wrapped in a new group), each clone keeps the declared child's data-plane position: an action child's clones deliver their results downstream (`sim`, `sim_2`, ...) exactly as `fan_out`'s clones do, while a group child's clones become independent branches. `overrides` follows the same rules as `fan_out`'s (non-empty iterable of mappings; empty raises `ValueError`). A `Sequential` declared body raises `ValueError` — use `fan_out` for the sequential map. The clones count against the dynamic-node bound exactly as `fan_out`'s do (one op per declared child, each carrying its clones — no wrapper node is added to the count).
 - **`select(name, default=None)`** — pick the named child of the declared downstream group and replace the group with it (the branch pattern): the unselected alternatives never run. Falls back to the `default` child when `name` matches nothing; raises `ValueError` when neither matches. Returns the chosen child.
 - **`skip()`** — replace the declared downstream group with an empty group: the body never runs, and the group's result is an empty list.
 - **`skip_following()`** — replace every following sibling with an empty group (first-success): the rest of the scope — the remaining alternatives and their checks — never runs.
@@ -1165,12 +1168,36 @@ Combinators (intent-level sugar over the primitive ops; all raise `ValueError` o
 | **Injection** | `dag=` is passed only when the function's signature declares it (registry-cached `wants_dag`). `dag` is a reserved kwarg name — the injected handle wins over any same-named parameter. |
 | **Read scope** | The action's own grouping scope: following siblings + their subtrees, and preceding siblings. |
 | **Write targets** | Only nodes that provably have not started: later siblings when the parent scope is sequential, the subtree of a following scope, and fresh appends at the scope end. A target that already executed is rejected. |
-| **Parallel scopes** | Children of a `Parallel` scope get a **read-only** handle — every write op raises `ValueError` (inside a parallel scope the sequential invariant does not hold: siblings may already be running). |
+| **Parallel scopes** | The read-only rule is structural, not recursive: an action whose **direct parent** is a `Parallel` scope gets a **read-only** handle — every write op raises `ValueError` (inside a parallel scope the sequential invariant does not hold: siblings may already be running). An action whose direct parent is an inner `Sequential` nested inside the group gets a **writable** handle — wrapping a branch body in an inner scope is the supported idiom for per-branch adaptation (below). |
 | **Commit** | Transactional at function return (one lock acquisition); if the function raised, the op log is discarded and nothing is applied. |
 | **Bound** | The engine counts dynamic nodes added; exceeding `ADAPTATION_BOUND` (default **10 000**) raises a deterministic `ValueError` (a runaway adaptation terminates instead of hanging). |
 | **One mechanism** | A function that declares `dag` **and** returns workflow node(s) raises `ValueError` — use either the handle or the return-nodes protocol, not both. |
 | **Combinators** | `fan_out` / `select` / `skip` / `skip_following` / `repeat` are sugar over the primitive ops: they record the same op shapes a hand-written driver would, so the commit path, op semantics, and history records are unchanged. `copy_self` clones the acting action. |
 | **Reserved kwarg** | `dag` is reserved for the injected handle; a bare `**kwargs` does not opt a function into adaptation. |
+
+#### Per-branch adaptation: the inner-scope idiom
+
+The read-only rule applies only to a `Parallel` scope's **direct** children, so per-branch adaptation is possible: wrap the branch body in an inner `<scope type="sequential">`. The driver's direct parent is then the inner scope, its handle is writable, and it may adapt the siblings inside that branch (the branch's own subtree — the sequential invariant holds there). This is the **only** way to get per-branch adaptation today.
+
+```xml
+<VerificationWorkflow>
+  <scope type="parallel">
+    <scope type="sequential">
+      <action function="driver"/>
+      <action function="work"/>
+    </scope>
+  </scope>
+</VerificationWorkflow>
+```
+
+```python
+def driver(dag, **kwargs):
+    # Writable: the direct parent is the inner sequential scope.
+    dag.adjust(dag.following()[0], level="tuned")
+    return "driver_done"
+```
+
+The driver's `adjust` lands on the branch's `work` action (verified: the run completes and `work` receives `level="tuned"`). The same idiom works for every write op (`replace` / `adjust` / `copy` / `append` and the combinators), with the usual scope rules: the driver may only adapt its following siblings inside the inner scope. A driver that is a **direct** child of the parallel group (no inner scope) still gets a read-only handle, and every write op raises `ValueError`.
 
 #### Non-Turing-completeness
 
@@ -1180,11 +1207,11 @@ The workflow schema is **not** a Turing-complete language: a workflow is a finit
 
 `workflow.library` ships the paper's library functions, ready to be addressed by name from XML or the Python API. Every function is deterministic and stdlib-only, and tolerates extra keyword arguments (the engine passes globals and upstream results alongside each action's own parameters). The eight adaptation drivers (`find_files`, `parameter_sweep`, `evaluate_goal`, `check_convergence`, `guard`, `while_condition`, `retry`, `fallback`) declare a `dag` parameter: the engine injects a scoped `DAGHandle` into them, and they adapt the workflow through the handle's intent-level combinators (`fan_out` / `select` / `skip` / `skip_following` / `repeat`) — they never build nodes themselves. Their own return value (a plain file/value list, an alternative name, or a convergence summary) is what flows downstream as their result.
 
-- **`find_files(path, pattern="*.csv", *, dag, **kwargs)`** — file discovery and dynamic-adaptation driver (paper Listing 5, objective 1). The action must be followed by the scope it adapts; the function clones that declared scope once per found file and splices the clones in place of the declared scope (`dag.fan_out`), so each found file gets its own copy of the declared actions. Files are processed in sorted order. Returns the list of found file paths. When no file matches, nothing is adapted and the declared scope runs once, as declared.
+- **`find_files(path, pattern="*.csv", *, dag, parallel=False, **kwargs)`** — file discovery and dynamic-adaptation driver (paper Listing 5, objective 1). The action must be followed by the scope it adapts; the function clones that declared scope once per found file and splices the clones in place of the declared scope (`dag.fan_out`), so each found file gets its own copy of the declared actions. Files are processed in sorted order. With the default `parallel=False` the per-file clones run **one after another**, in sorted file order. With `parallel=True` the declared downstream scope must be a `<scope type="parallel">` group and the per-file clones run **concurrently** (`dag.fan_out_parallel`); the option also accepts the XML strings `"true"` / `"false"` (any case) so it can be set from an `<argument>`. Returns the list of found file paths. When no file matches, nothing is adapted and the declared scope runs once, as declared.
 - **`simulate(**params)`** — a placeholder simulation that echoes its parameters: returns `{"simulate": <params>}`.
 - **`evaluate_results(**params)`** — a deterministic summary of one simulation's upstream results: the item count of each upstream result, keyed by the name the engine used for it.
 - **`find_test_cases(path, **kwargs)`** — discovery of the test-case files (`*.csv`) directly under `path`, as strings in sorted order (empty if none match).
-- **`parameter_sweep(parameter_name=None, values=None, *, dag, **kwargs)`** — dynamic-adaptation driver (paper Listing 9, objective 1). The action must be followed by the scope it adapts; the function clones that declared scope once per sweep value and splices the clones in place of the declared scope (`dag.fan_out`). `values` is accepted as a comma-separated string (`"5, 10, 15"`) or a list; string items are stripped, empty items dropped, and numeric strings converted to `int` (or `float`). Returns the list of sweep values. Raises `ValueError` if `parameter_name` is not given.
+- **`parameter_sweep(parameter_name=None, values=None, *, dag, parallel=False, **kwargs)`** — dynamic-adaptation driver (paper Listing 9, objective 1). The action must be followed by the scope it adapts; the function clones that declared scope once per sweep value and splices the clones in place of the declared scope (`dag.fan_out`). `values` is accepted as a comma-separated string (`"5, 10, 15"`) or a list; string items are stripped, empty items dropped, and numeric strings converted to `int` (or `float`). With the default `parallel=False` the per-value clones run **one after another**, in sweep order. With `parallel=True` the declared downstream scope must be a `<scope type="parallel">` group and the per-value clones run **concurrently** (`dag.fan_out_parallel`); the option also accepts the XML strings `"true"` / `"false"` (any case) so it can be set from an `<argument>`. Returns the list of sweep values. Raises `ValueError` if `parameter_name` is not given.
 - **`compare_parameter_sweep(**params)`** — a deterministic summary of a sweep's results (item count of each upstream result, keyed by name).
 - **`compare_results(**params)`** — a deterministic summary of the final results (item count of each upstream result, keyed by name).
 - **`evaluate_goal(upstream, field, default=None, *, dag, **kwargs)`** — branching driver (paper objective 2: adaptation to intermediate results). The action must be followed by the **alternatives scope**: a group whose children are the named alternative branches (each a **named** group — the schema's optional `name` attribute; actions have no name). The function reads `field` from the latest upstream result (the result of the action named `upstream`, or the collision-suffixed variant the engine keys it under when the name repeats) and selects the alternative whose name matches that value. The chosen alternative is moved into place of the alternatives scope (`dag.select`), so the unselected alternatives never run. When the selected name matches no alternative, the `default` alternative (a named child) is used instead; when there is no default (or the default name matches no alternative either), a `ValueError` is raised. Returns the name of the alternative that was selected.
@@ -1211,7 +1238,7 @@ A registered function may declare a `walk_context` parameter; the engine then in
 - **`RunHistory`** — a thread-safe, ordered collector the engine appends to as each action's function call completes, so the history captures what *actually* executed — including actions spliced in at runtime by dynamic adaptation — in true completion order. `final_order` is set by the engine after a successful run to the `order` of the workflow's final action (the value `replay` returns).
 - **`replay(history, registry=None, artifacts=None)`** — replay a recorded run and return the same final result: it re-executes the recorded actions (see `replay_records`) and returns the replayed value of the run's final action. Returns `None` for an empty workflow. This proves reproducibility: the result is recomputed by re-running the recorded function calls, not echoed from the history. When the recorded run used an artifact store, pass it as `artifacts` so artifacts-declaring functions replay with a `ReplayArtifacts` handle.
 - **`replay_records(history, registry=None, artifacts=None)`** — re-execute every recorded action strictly sequentially, in recorded (completion) order, and return the replayed values (positionally aligned with `history.records`). A recorded failure re-raises at the same point in the sequence.
-- **`ReplayHandle`** — a read-only, no-op stand-in for `DAGHandle` in replay. When a recorded run's function declared a `dag` parameter, replay re-invokes it with the recorded `dag` kwarg **stripped** and a `ReplayHandle` re-injected: reads (`following` / `preceding` / `following_group` and node traversal) are served from a **fake tree** materialized from the record's `scope` snapshot, write ops (`replace` / `adjust` / `append` and the combinators `fan_out` / `skip` / `skip_following` / `repeat`) are **no-ops** (recorded nowhere, applied nowhere), and clone ops (`copy` / `adjusted` / `copy_self`) are functional (they clone the materialized fake target). `select` resolves the named child from the fake tree (the scope snapshot records a named group's label and its named children's names). Replaying an adapting run is therefore deterministic and never mutates the live tree.
+- **`ReplayHandle`** — a read-only, no-op stand-in for `DAGHandle` in replay. When a recorded run's function declared a `dag` parameter, replay re-invokes it with the recorded `dag` kwarg **stripped** and a `ReplayHandle` re-injected: reads (`following` / `preceding` / `following_group` and node traversal) are served from a **fake tree** materialized from the record's `scope` snapshot, write ops (`replace` / `adjust` / `append` and the combinators `fan_out` / `fan_out_parallel` / `skip` / `skip_following` / `repeat`) are **no-ops** (recorded nowhere, applied nowhere), and clone ops (`copy` / `adjusted` / `copy_self`) are functional (they clone the materialized fake target). `select` resolves the named child from the fake tree (the scope snapshot records a named group's label and its named children's names). Replaying an adapting run is therefore deterministic and never mutates the live tree.
 - **`recordable_result(value)`** — normalize a function return value for storage in a record: a dynamic-adaptation return (a workflow node, or a non-empty list/tuple of them) becomes a plain, comparable descriptor; any other value is returned unchanged.
 - **`resolve_group_path(root, node)`** — return `node`'s path in the workflow tree rooted at `root` (e.g. `root/parallel[1]/action[0]`); `root` for the root itself, `""` when not in the tree.
 
@@ -1238,7 +1265,7 @@ runs/campaign/                 # ArtifactStore("runs/campaign")
   find_cases/cases.json        # a root-level action: function-name directory
   sweep/                       # <scope type="sequential" name="sweep">
     parameter_sweep/           # the sweep actor, inside its named scope
-    solvers/simulate/result.json       # clone 1 of a swept parallel group
+    solvers/simulate/result.json       # clone 1 of a swept group
     solvers_2/simulate/result.json     # clone 2 — a fresh scope, own outputs
   compare/                     # the fan-in consumer: branches("solvers") + read
 ```

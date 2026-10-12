@@ -29,20 +29,7 @@ Idea to IMP to decision to task, per the change pipeline:
 
 ## Open IMPs
 
-Build order: IMP-009 first, then IMP-010, IMP-011, IMP-012, IMP-013 (the five
-patch batches from the 2026-10-12 implementation review).
-
-- IMP-009 — kwargs precedence fixes: templates ignore run-time `parameters`;
-  upstream suffix matching crashes on same-prefix globals; reserved kwargs
-  silently hijack user data parameters.
-- IMP-010 — history record evidence: `params` carries live engine handles; replay
-  trusts the live registry; durations wall-clock only.
-- IMP-011 — no run identity in the history; recorded params embed all upstream
-  results (quadratic memory).
-- IMP-012 — thread pool not pluggable or configurable per run; parallel path
-  drops the `BaseException` contract.
-- IMP-013 — readability and docs parity: no plan mode, no node descriptions, no
-  XSD, implicit paper deviations, DOI split, small library hygiene items.
+- `IMP-015` — scope-only XML vocabulary: drop the `<sequential>` / `<parallel>` aliases. Candidate, deferred for paper-listing parity.
 
 ## Implemented (not tracked)
 
@@ -56,3 +43,9 @@ patch batches from the 2026-10-12 implementation review).
 - `IMP-006` — Simplify DAG manipulation surface for adaptation drivers. `copy_self` plus five intent-level combinators (`fan_out` / `select` / `skip` / `skip_following` / `repeat`); the eight drivers rewritten onto them.
 - `IMP-007` — Decouple artifact store from engine — structural derivation. Engine store-free at runtime; `walk_context` injection (design in `INFO-009`); the store derives at call entry via `WrappedRegistry`.
 - `IMP-008` — Generic node layer in graph. `graph.node` (`Node` / `Group` + tree operations) and `graph.handle` (`TreeHandle` + the manipulation patterns, hook-parameterized); the workflow schema, `DAGHandle` and `ReplayHandle` become specializations.
+- `IMP-009` — kwargs precedence fixes: run-time `parameters` reach template placeholders (pre-parse re-parse with merged globals); strict upstream suffix matching; reserved-kwarg warning at registration (`warn_reserved=False` opts out). Complete.
+- `IMP-010` — history record evidence: `params` holds plain data (injected handles stripped); replay checks registry drift (warns); monotonic `duration` beside the wall-clock stamps. Complete.
+- `IMP-011` — run identity and by-reference history params: `RunHistory.run_id` / `source` (workflow digest) stamped at run start, carried on every record; `params_mode="summary"` records bulk payloads as item counts. Complete.
+- `IMP-012` — engine resource configuration: `max_workers`, `adaptation_bound`, caller-owned `executor` seam per run; the parallel per-future loop catches `BaseException` (inspection-verified; substrate caveat noted). Complete.
+- `IMP-013` — readability and docs parity: `dry_run` plan mode, node `description` labels, `docs/schema.xsd` mirror, deviations-from-paper table, DOI harmonized to `10.3384/ecp218751`, deterministic `aggregate` sort, `values`-only normalization documented, `run_python_workflow` alias. Complete.
+- `IMP-014` — optional scope type for single-child scopes: a `<scope>` holding exactly one child may omit `type`; the parser builds a sequential group. Zero or several children without `type` still rejected. Complete.

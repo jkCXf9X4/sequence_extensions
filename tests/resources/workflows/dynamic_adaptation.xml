@@ -1,9 +1,9 @@
-<sequential>
+<scope type="sequential">
   <action function="find_files">
     <argument key="path" value="file_storage/"/>
   </action>
-  <sequential>
+  <scope type="sequential">
     <action function="simulate"/>
     <action function="evaluate_results"/>
-  </sequential>
-</sequential>
+  </scope>
+</scope>

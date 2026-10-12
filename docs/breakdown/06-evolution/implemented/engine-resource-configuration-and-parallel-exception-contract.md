@@ -22,11 +22,14 @@ IMP-009 first, then IMP-010, IMP-011, IMP-012, IMP-013.
   per run: a 20 000-point `parameter_sweep` dies at the bound; license-limited
   parallelism is untunable from the workflow layer.
 - The parallel walk collects per-future errors with `except Exception`
-  (`engine.py` `_walk_parallel`); a `BaseException` such as `KeyboardInterrupt`
-  from an action propagates at `future.result()`, skips the joins of the
-  remaining child threads, and breaks the documented first-failure-in-child-order
-  after all children settle contract. The sequential path records and re-raises
-  `BaseException` correctly (`_walk_child_thread` catches `BaseException`).
+  (`engine.py` `_walk_parallel`); a `BaseException` reaching `future.result()`
+  — on Python 3.8+ that is a cancelled action's `CancelledError`, since the
+  substrate's `GraphFuture._run` deliberately catches only `Exception` and a
+  `BaseException` raised inside a function never settles the node's future —
+  propagates immediately, skips the joins of the remaining child threads, and
+  breaks the documented first-failure-in-child-order after all children settle
+  contract. The sequential path records and re-raises `BaseException`
+  correctly (`_walk_child_thread` catches `BaseException`).
 
 ## Change
 
@@ -44,6 +47,21 @@ IMP-009 first, then IMP-010, IMP-011, IMP-012, IMP-013.
 ## Verification
 
 - `tests/workflow/test_engine.py` / `test_scaling.py`: `max_workers` and
-  `adaptation_bound` plumbed through the XML and Python API paths; a parallel
-  action raising `KeyboardInterrupt` still settles all children, then re-raises.
+  `adaptation_bound` plumbed through the XML and Python API paths.
+- BaseException collection (`except BaseException` in the `_walk_parallel`
+  per-future loop): verified by inspection against `_walk_child_thread`'s
+  matching contract — an executable probe is NOT achievable on this substrate,
+  because a `BaseException` raised inside an action function never settles the
+  node's future (`GraphFuture._run` catches only `Exception`), so anything
+  waiting on the group's join node blocks forever (verified live with a 120 s
+  probe).  The reachable `BaseException` at `future.result()` — a cancelled
+  action's `CancelledError` — is collected and re-raised in child order by the
+  changed loop.
 - Suite green; `pb check --strict` green.
+
+## Excludes
+
+- The substrate flaw itself (a `KeyboardInterrupt`/`SystemExit` from an action
+  deadlocks the join instead of killing the run) is a graph-layer finding, out
+  of scope for these five workflow batches; it is a follow-up IMP candidate
+  for the `sequence_extensions.graph` layer.

@@ -33,8 +33,7 @@ IMP-009 first, then IMP-010, IMP-011, IMP-012, IMP-013.
   DOI is `10.3384/ecp218751` (the paper's page on the publisher site).
   The package's module docstrings and `INFO-001` (vision) now all carry the
   resolved DOI.
-  `INFO-001` (vision) uses the first-page variant.
-- `aggregate` sorts groups by `str(key)`; int keys sort lexicographically
+* `aggregate` sorts groups by `str(key)`; int keys sort lexicographically
   (`"10"` before `"2"`).
 - Type-coercion responsibility is split: `params.py` normalizes the `values`
   key only; `library.py` `_coerce_operand` coerces comparison operands. Undocumented.

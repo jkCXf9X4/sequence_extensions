@@ -3,7 +3,7 @@ id: INFO-001
 type: info
 title: 00-intent — Vision & Goals
 summary: Vision, goal, requirements, design principles, and success criteria for sequence_extensions, distilled from the source paper
-date: 2026-10-09
+date: 2026-10-12
 status: current
 ---
 # 00-intent — Vision & Goals
@@ -33,6 +33,19 @@ Source: `docs/references/paper_44_yBqbPyj1.pdf` — *"Automation Nation: Taming 
 - The paper designs and evaluates the solution via the "Industry-as-laboratory" method.
 - The setting: an in-house V&V automation framework supporting model exploration, verification, validation, and design optimization.
 
+## System goal
+
+The workflow layer delivers, as one behavior:
+
+- Accept a workflow definition that identifies tasks and their data dependencies, execute it, and consolidate the outcomes into one overall result.
+  - Independent tasks run concurrently; dependent tasks wait for upstream results.
+  - Intermediate results are evaluated and may change downstream actions.
+  - Required data stays available and traceable; failures and incomplete results follow declared policies.
+  - Results are reproducible and interpretable; resources are used efficiently.
+  -Data can only be read from previous tasks and written to the active current task
+
+Concretized by the use-case catalog in `INFO-010`.
+
 ## Requirements
 
 - **Traceability** — verification activities and their results can be traced (SSP Traceability)
@@ -58,17 +71,7 @@ The package realizes the *workflow layer* of the paper as a reusable open-source
 - A Python API mirroring the XML (`Action`, `Sequential`, `Parallel`, `Test_Framework`)
 - A DAG execution engine with sequential/parallel grouping, global parameter propagation, and scope-restricted dynamic adaptation
 
-Out of scope (framework-level concerns from the paper): Git-in-archive version control, STMD/SRMD traceability metadata, FMI/SSP packaging, HPC distribution.
 
-Completed work, cited by ID:
-- `IMP-002` — schema evolution: generic `<argument key value>` replaces named parameter elements.
-- `IMP-001` — design study of principle 2 (dynamic adaptation); committed choice `DR-001`, engine architecture `DR-002`.
-- `IMP-003` — tier-1 library functions (`aggregate`, `guard`, `while_condition`).
-- `IMP-004` — tier-2 library functions (`try_action`, `retry`, `fallback`, `regression_gate`).
-- `IMP-005` — artifact store: the by-reference data plane (`DR-004`, design in `INFO-008`).
-- `IMP-006` — DAG manipulation surface simplification; the intent-level combinators.
-- `IMP-007` — engine-free artifact store: structural derivation, the `walk_context` injection (`INFO-009`).
-- `IMP-008` — generic node layer in `graph`: `Node` / `Group` / `TreeHandle`.
 
 ## Success criteria
 

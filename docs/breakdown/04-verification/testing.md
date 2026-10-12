@@ -3,7 +3,7 @@ id: INFO-006
 type: info
 title: Test strategy
 summary: How the pytest suite verifies the package: run commands, per-area coverage, and claim verification
-date: 2026-10-09
+date: 2026-10-12
 status: current
 ---
 
@@ -19,19 +19,23 @@ The suite is pytest (>= 8, < 9) with pytest-cov. `pytest` runs it as-is: `pyproj
 
 ## Areas
 
+The suite collects 614 tests.
+
 - `tests/test_package.py` — package-level smoke tests: root re-exports and public methods (30)
 - `tests/ext/` — `list_ext` (51), `dict_ext` (44), `gen_ext` (6)
 - `tests/graph/test_node.py` — generic nodes: identity, locate, clone (21)
 - `tests/graph/test_handle.py` — `TreeHandle` patterns and hooks (34)
 - `tests/graph/test_graph_future.py` — DAG execution, pool lifecycle, timeouts, cycle detection (22)
-- `tests/workflow/test_schema.py` — `parse_workflow` and every XML rejection rule (25)
-- `tests/workflow/test_templates.py` — `Template` and the XML template surface (56)
-- `tests/workflow/test_registry.py` — `FunctionRegistry`, decorators, name conflicts (12)
-- `tests/workflow/test_engine.py` — ordering, concurrency, adaptation splicing, scope (11)
-- `tests/workflow/test_adaptation.py` — `DAGHandle` reads, writes, commit protocol (33)
-- `tests/workflow/test_history.py` — execution history and deterministic replay (26)
-- `tests/workflow/test_library.py` — the shipped library functions (92)
-- `tests/workflow/test_artifacts.py` — the artifact store: addresses, manifest, handles, replay (38)
+- `tests/workflow/test_schema.py` — `parse_workflow` and every XML rejection rule (27)
+- `tests/workflow/test_templates.py` — `Template` and the XML template surface (57)
+- `tests/workflow/test_registry.py` — `FunctionRegistry`, decorators, name conflicts (24)
+- `tests/workflow/test_engine.py` — ordering, concurrency, adaptation splicing, scope, `max_workers`, `dry_run` (20)
+- `tests/workflow/test_adaptation.py` — `DAGHandle` reads, writes, commit protocol (34)
+- `tests/workflow/test_parallel_fanout.py` — parallel fan-out: concurrent map, clone placement, op shape, dynamic-node bound (15)
+- `tests/workflow/test_history.py` — execution history and deterministic replay (39)
+- `tests/workflow/test_library.py` — the shipped library functions (117)
+- `tests/workflow/test_artifacts.py` — the artifact store: addresses, manifest, handles, replay (42)
+- `tests/workflow/test_action_timeout.py` — per-action timeout: `ActionTimeoutError`, parallel scope, history, caller-owned executor (17)
 - `tests/workflow/test_walk_context.py` — generic walk-context injection, engine store-freedom (9)
 - `tests/workflow/test_scaling.py` — concurrency stability under scaling (4)
 - `tests/workflow/test_integration_alignment.py` — one workflow composing all features (1)
@@ -41,4 +45,5 @@ The suite is pytest (>= 8, < 9) with pytest-cov. `pytest` runs it as-is: `pyproj
 - `tests/resources/workflows/` — XML documents mirroring the paper's listings (2, 3, 5, 7, 9) plus template examples; `invalid/` holds one file per rejection rule
 - `tests/resources/workflow_stubs.py` — the paper's seven functions as deterministic stubs; they self-register in `DEFAULT_REGISTRY` on import
 - Vision claims (`INFO-001`) are verified by fixture: paper listings run end-to-end, scaling tests prove the speed-up claim, history tests prove traceability and replay
+- Use cases (`INFO-010`) each cite their evidence file in this suite
 - The engine under test is `INFO-004`; the product claims it verifies are `INFO-002`

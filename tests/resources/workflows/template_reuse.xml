@@ -5,7 +5,7 @@
        scenarios, limiting duplication between workflows). -->
   <argument key="model" value="./model_1"/>
   <template name="file_check">
-    <sequential>
+    <scope type="sequential">
       <action function="simulate">
         <argument key="file" value="{file}"/>
         <argument key="model" value="{model}"/>
@@ -13,14 +13,14 @@
       <action function="evaluate_results">
         <argument key="file" value="{file}"/>
       </action>
-    </sequential>
+    </scope>
   </template>
-  <sequential>
+  <scope type="sequential">
     <use-template name="file_check">
       <argument key="file" value="case_1.csv"/>
     </use-template>
     <use-template name="file_check">
       <argument key="file" value="case_2.csv"/>
     </use-template>
-  </sequential>
+  </scope>
 </VerificationWorkflow>

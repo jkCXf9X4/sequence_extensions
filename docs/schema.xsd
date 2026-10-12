@@ -91,8 +91,12 @@
     <xs:attribute name="description" type="xs:string"/>
   </xs:complexType>
 
-  <!-- The explicit grouping form: a group whose required 'type' selects
-       the execution order. -->
+  <!-- The explicit grouping form: a group whose 'type' selects the
+       execution order. A scope holding exactly one child may OMIT the
+       'type' (one child carries no ordering; the parser then builds a
+       sequential group). XSD 1.0 cannot express "required unless exactly
+       one child", so the attribute is optional here and the parser is
+       authoritative on the precise rule. -->
   <xs:element name="scope">
     <xs:complexType>
       <xs:sequence>
@@ -100,7 +104,7 @@
       </xs:sequence>
       <xs:attribute name="name" type="xs:string"/>
       <xs:attribute name="description" type="xs:string"/>
-      <xs:attribute name="type" use="required">
+      <xs:attribute name="type">
         <xs:simpleType>
           <xs:restriction base="xs:string">
             <xs:enumeration value="sequential"/>
