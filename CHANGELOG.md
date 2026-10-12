@@ -34,8 +34,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     write-only patterns stay explicit no-ops.
   - New exports: `Node`, `Group`, `TreeHandle` (from
     `sequence_extensions` and `sequence_extensions.graph`).
+- **Generic `walk_context` injection** (IMP-007): a registered function
+  may declare a `walk_context` parameter and receive the engine's
+  per-action walk context — plain structural position data (`node` plus
+  the root-down ancestry `chain` of `(group, index)` pairs; exported as
+  `WalkContext`). Mirrors the `dag=` / `artifacts=` injection shape:
+  signature-derived (registry-cached `wants_context` flag), a reserved
+  kwarg name when declared, never injected otherwise — zero behavior
+  change for existing workflows.
+- **Store-side structural derivation** (IMP-007): `ArtifactStore`
+  gains `wrap_registry` (and the exported `WrappedRegistry` view). The
+  run wiring point (`run_workflow` / `Test_Framework`) opens the store
+  and swaps in the wrapped registry view; every wrapped function
+  derives its address, causal-past read scope and completed-group view
+  structurally from the injected walk context at call entry, mints the
+  manifest row, records the address on the node and injects the scoped
+  `ArtifactHandle` for artifacts-declaring functions. Addresses are
+  unchanged (rank-based, scheduling-independent); the manifest's global
+  `seq` is now assigned at call entry in call order (identical to the
+  walk order within a sequential walk).
+- **Engine is store-free at runtime** (IMP-007): the engine module no
+  longer imports `workflow.artifacts` (type checking only), and the
+  walk recursion threads plain ancestry chains instead of store-shaped
+  addressing state (`_WalkState` and `_mint_address` are gone). The
+  store is decoupled in both directions: it imports schema and registry
+  only, and plugs in through the registry surface.
 
 ### Changed
+- Replay (`replay_records`) strips the recorded `walk_context` kwarg
+  (engine plumbing) and re-gates artifact-handle re-injection on the
+  record carrying a minted address AND the replayed function declaring
+  an `artifacts` parameter — fixing an edge case where a non-declaring
+  function's same-named user parameter could be overwritten by a
+  replayed `ReplayArtifacts` handle.
+- `ExecutionRecord.artifacts` is read after the call completes (the
+  wrapper mints at call entry), so the address is recorded on both the
+  success and the exception path; recorded `params` of a store run now
+  include the injected `walk_context` object (stripped at replay).
 - Pattern-raised errors (`fan_out` / `select` / `repeat` /
   `following_group` argument and lookup failures) lose the
   ``dynamic adaptation:`` prefix — they now come from the generic

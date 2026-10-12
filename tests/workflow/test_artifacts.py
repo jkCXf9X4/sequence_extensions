@@ -9,6 +9,7 @@ deterministic replay through ``ReplayArtifacts``.
 """
 
 import json
+import threading
 
 import pytest
 
@@ -26,7 +27,18 @@ from sequence_extensions.workflow.artifacts import (
     ReplayArtifacts,
 )
 from sequence_extensions.workflow.history import RunHistory, replay
-from sequence_extensions.workflow.library import parameter_sweep as library_parameter_sweep
+from sequence_extensions.workflow.library import (
+    evaluate_goal as library_evaluate_goal,
+)
+from sequence_extensions.workflow.library import (
+    guard as library_guard,
+)
+from sequence_extensions.workflow.library import (
+    parameter_sweep as library_parameter_sweep,
+)
+from sequence_extensions.workflow.library import (
+    while_condition as library_while_condition,
+)
 
 # --------------------------------------------------------------------------- #
 # Shared builder: registries of small artifacts-declaring functions
@@ -706,6 +718,206 @@ def test_named_sweep_scope_prefixes_clone_addresses(tmp_path):
     _, store = _run(xml, registry, tmp_path)
     assert (store.root / "sweep" / "sequential" / "simulate" / "result.json").is_file()
     assert (store.root / "sweep" / "sequential_2" / "simulate" / "result.json").is_file()
+
+
+# --------------------------------------------------------------------------- #
+# Driver corpus (IMP-007 verification): structural derivation equals the
+# engine-countered addresses across every adaptation mechanic — the
+# expectations below were minted by the engine-side implementation and
+# are reproduced position for position by the store-side derivation.
+# --------------------------------------------------------------------------- #
+
+
+def test_iteration_driver_appended_copies_mint_successive_addresses(tmp_path):
+    """while_condition's copy-to-end rounds: fresh, suffixed addresses."""
+    registry = FunctionRegistry()
+    registry.register("while_condition", library_while_condition)
+
+    def body(artifacts=None, **kwargs):
+        path = artifacts.out_dir() / "state.txt"
+        path.write_text("pending", encoding="utf-8")
+        return {"residual": 1.0}  # never below threshold
+
+    registry.register("body", body)
+    result, store = _run(
+        Sequential(
+            Action("body"),
+            Action(
+                "while_condition",
+                upstream="body",
+                field="residual",
+                op="lt",
+                threshold=0.5,
+                max_iterations=3,
+            ),
+        ),
+        registry,
+        tmp_path,
+    )
+    assert result == {"converged": False, "iterations": 4, "max_iterations": 3}
+    # ``repeat()`` copies the whole preceding prefix (the shipped
+    # copy-to-end semantics: each round's copy set contains the earlier
+    # rounds), so the cap leaves one already-appended round to run —
+    # the same shape the library's own max_iterations test pins.  Every
+    # appended copy preserved, suffixed by its rank among same-function
+    # siblings.
+    assert [e["address"] for e in store.entries()] == [
+        "body",
+        "while_condition",
+        "body_2",
+        "while_condition_2",
+        "body_3",
+        "while_condition_3",
+        "body_4",
+        "while_condition_4",
+    ]
+    # The appended copies are dynamic; the declared pair is not.
+    assert [e["dynamic"] for e in store.entries()] == [
+        False,
+        False,
+        True,
+        True,
+        True,
+        True,
+        True,
+        True,
+    ]
+    for address in ("body", "body_2", "body_3"):
+        assert (store.root / address / "state.txt").is_file()
+
+
+def test_guard_skipped_body_never_mints(tmp_path):
+    """guard's skip: the replaced body is absent from the manifest."""
+    registry = FunctionRegistry()
+    registry.register("guard", library_guard)
+
+    def decide(**kwargs):
+        return {"ok": False}
+
+    def body(artifacts=None, **kwargs):
+        raise AssertionError("the guarded body must never run")
+
+    registry.register("decide", decide)
+    registry.register("body", body)
+    _, store = _run(
+        Sequential(
+            Action("decide"),
+            Action("guard", upstream="decide", field="ok", op="eq", value="True"),
+            Sequential(Action("body")),
+        ),
+        registry,
+        tmp_path,
+    )
+    # The declared body was replaced by an empty group (which walks
+    # without minting); only the decision and the guard executed.
+    assert [e["address"] for e in store.entries()] == ["decide", "guard"]
+
+
+def test_branch_driver_selected_alternative_mints_under_its_name(tmp_path):
+    """evaluate_goal's select: the chosen alternative keeps its name."""
+    registry = FunctionRegistry()
+    registry.register("evaluate_goal", library_evaluate_goal)
+
+    def decide(**kwargs):
+        return {"goal": "beta"}
+
+    def run_alpha(artifacts=None, **kwargs):
+        raise AssertionError("the unselected alternative must never run")
+
+    def run_beta(artifacts=None, **kwargs):
+        path = artifacts.out_dir() / "result.txt"
+        path.write_text("beta", encoding="utf-8")
+        return f"{artifacts.address}/result.txt"
+
+    def collect(run_beta=None, artifacts=None, **kwargs):
+        return artifacts.read(run_beta).decode()
+
+    registry.register("decide", decide)
+    registry.register("run_alpha", run_alpha)
+    registry.register("run_beta", run_beta)
+    registry.register("collect", collect)
+    xml = (
+        "<sequential>"
+        '<action function="decide"/>'
+        '<action function="evaluate_goal">'
+        '<argument key="upstream" value="decide"/>'
+        '<argument key="field" value="goal"/>'
+        "</action>"
+        '<sequential name="alternatives">'
+        '<sequential name="alpha"><action function="run_alpha"/></sequential>'
+        '<sequential name="beta"><action function="run_beta"/></sequential>'
+        "</sequential>"
+        '<action function="collect"/>'
+        "</sequential>"
+    )
+    result, store = _run(xml, registry, tmp_path)
+    assert result == "beta"
+    # The selected alternative replaced the alternatives group in place,
+    # so its action mints under the alternative's own name; alpha never
+    # minted, and the fan-in read flows through the by-value pointer.
+    assert [e["address"] for e in store.entries()] == [
+        "decide",
+        "evaluate_goal",
+        "beta/run_beta",
+        "collect",
+    ]
+
+
+def test_concurrent_branch_mutation_leaves_a_running_flank_settled(tmp_path):
+    """Freeze theorem (IMP-007): branch B adapts its own subtree while
+    branch A's action is mid-call; A's call-entry derivation still reads
+    the shared pre-group past, undisturbed."""
+    a_entered = threading.Event()
+    b_returning = threading.Event()
+    reads: list[str] = []
+
+    def upstream(artifacts=None, **kwargs):
+        path = artifacts.out_dir() / "note.txt"
+        path.write_text("shared", encoding="utf-8")
+        return f"{artifacts.address}/note.txt"
+
+    def reader_a(upstream=None, artifacts=None, **kwargs):
+        # The handle's causal-past view was derived at call entry, on
+        # this thread, before the function body started.
+        a_entered.set()
+        b_returning.wait(timeout=10)  # hold the call across B's adaptation
+        reads.append(artifacts.read(upstream).decode())
+        return "done"
+
+    def adapter_b(dag=None, **kwargs):
+        a_entered.wait(timeout=10)  # A is mid-call when B adapts
+        dag.skip()  # the surgery lands at B's return (the commit protocol)
+        b_returning.set()
+        return {"skipped": True}
+
+    def never_b(**kwargs):
+        raise AssertionError("the skipped body must never run")
+
+    registry = FunctionRegistry()
+    registry.register("upstream", upstream)
+    registry.register("reader_a", reader_a)
+    registry.register("adapter_b", adapter_b)
+    registry.register("never_b", never_b)
+    _, store = _run(
+        Sequential(
+            Action("upstream"),
+            Parallel(
+                Sequential(Action("reader_a")),
+                Sequential(Action("adapter_b"), Sequential(Action("never_b"))),
+            ),
+        ),
+        registry,
+        tmp_path,
+    )
+    assert reads == ["shared"]
+    # B's own subtree was emptied; nothing of it leaked into the past.
+    addresses = [e["address"] for e in store.entries()]
+    assert "never_b" not in addresses
+    assert set(addresses) == {
+        "upstream",
+        "parallel/sequential/reader_a",
+        "parallel/sequential_2/adapter_b",
+    }
 
 
 # --------------------------------------------------------------------------- #

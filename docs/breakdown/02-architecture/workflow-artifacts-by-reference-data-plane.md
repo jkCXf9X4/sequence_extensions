@@ -21,16 +21,19 @@ decoupling contract that keeps the store engine-independent is `INFO-009`.
 
 - Control data by value through kwargs: unchanged, paper parity.
 - Artifacts by reference through the store: never enter kwargs.
-- The store imports the schema only, never the engine (same isolation as
-  history). The engine injects a handle; it never touches file payloads.
+- The store imports schema and registry only, never the engine (same
+  isolation as history). It plugs in at the run wiring point by wrapping
+  the registry (`IMP-007`); the engine itself is store-free at runtime.
 
 ## Addressing
 
-- An address is the action's call-time tree position: enclosing scope
-  labels (a named scope by name, an unnamed one by kind) plus the function
-  name, each with a collision suffix on repeat (`name`, `name_2`).
-- Minted at submission, on the walking thread, in child order: walk order,
-  never thread scheduling.
+- An address is the action's tree position: enclosing scope labels (a
+  named scope by name, an unnamed one by kind) plus the function name,
+  each with a collision suffix on repeat (`name`, `name_2`).
+- Derived structurally at call entry by the registry wrapper: ranks
+  among same-function siblings and same-label group children — rank
+  addressing is scheduling-independent, which is what makes call-time
+  minting deterministic.
 - Stored on the action, appended to the run's manifest, never recomputed.
   Positions shift under adaptation; minted addresses never move.
 - Sweep clones and iteration bodies mint fresh directories
@@ -40,18 +43,20 @@ decoupling contract that keeps the store engine-independent is `INFO-009`.
 ## The manifest
 
 - `root/manifest.jsonl`, append-only, one entry per executed action in
-  mint order: `seq`, `address`, `function`, the action's OWN `params`,
+  call order: `seq`, `address`, `function`, the action's OWN `params`,
   `dynamic`.
 - Own params, never merged kwargs: the manifest cannot echo upstream
   results.
 - The manifest is executed truth; the XML is declared truth.
-- Global sequence numbers may interleave across concurrent parallel
-  branches; every address is deterministic.
+- Within a sequential walk, call order is the walk order; global
+  sequence numbers may interleave across concurrent parallel branches;
+  every address is deterministic.
 
 ## The handle
 
-- Injected as the reserved `artifacts` kwarg when a function declares it
-  and the run has a store (registry-cached flag, mirroring `dag`).
+- The store's registry wrapper injects it as the reserved `artifacts`
+  kwarg when the wrapped function declares it (registry-cached flag,
+  mirroring `dag`); without a store the name stays ordinary.
 - Write scope: `out_dir()`, the node's own directory, nothing else.
 - Read scope: the causal past — the own directory, the directories of the
   actions whose results fan into this call's kwargs, and the branch
@@ -59,9 +64,10 @@ decoupling contract that keeps the store engine-independent is `INFO-009`.
 - Fan-in: `branches(name)` enumerates every completed group named `name`
   in the causal past, in causal order (all-occurrences, like the library's
   upstream suffix scans).
-- The read scope mirrors the by-value scope by construction: the walker
-  threads the readable past alongside the kwargs chain, so parallel
-  siblings are barriers for artifacts exactly as for results.
+- The read scope mirrors the by-value scope by construction: both are
+  derived from the same structural flank (the one-level closure per
+  sequential ancestor level), so parallel siblings are barriers for
+  artifacts exactly as for results.
 
 ## Replay
 

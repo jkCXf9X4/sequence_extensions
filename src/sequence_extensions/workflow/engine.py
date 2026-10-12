@@ -50,15 +50,16 @@ and replay it deterministically with
 :func:`sequence_extensions.workflow.history.replay`.  Without a
 ``history`` argument the engine behaves exactly as before.
 
-Opt-in artifact store (IMP-005): pass ``artifacts=ArtifactStore(root)``
+Opt-in artifact store (IMP-005, IMP-007): pass ``artifacts=ArtifactStore(root)``
 (see :mod:`sequence_extensions.workflow.artifacts`) to give the run a
-by-reference data plane: every executed action mints a directory address
-(recorded in an append-only manifest under ``root``), and a function
-that declares an ``artifacts`` parameter receives a scoped
-:class:`~.artifacts.ArtifactHandle` — it writes to its own node
-directory, reads the causal past, and enumerates completed parallel
-groups' branches.  Without an ``artifacts`` argument the engine behaves
-exactly as before (no directory is created, no manifest is written).
+by-reference data plane.  The ENGINE carries no store knowledge: the
+wiring point in :func:`run_workflow` / :func:`Test_Framework` opens the
+store (``store._begin()``) and swaps in a wrapped registry view
+(``store.wrap_registry(registry)``) whose functions derive their own
+addressing at call time from the walk context the engine injects (the
+generic ``walk_context`` parameter, mirroring ``dag``).  Without an
+``artifacts`` argument the engine behaves exactly as before (no
+directory is created, no manifest is written).
 """
 
 from __future__ import annotations
@@ -66,18 +67,23 @@ from __future__ import annotations
 import concurrent.futures
 import threading
 import time
-from typing import Any, Callable, Union
+from typing import TYPE_CHECKING, Any, Callable, Union
 
 from ..graph import GraphFuture, GraphPool
 from .adaptation import ADAPTATION_BOUND, AdaptationOp, DAGHandle
-from .artifacts import ArtifactHandle, ArtifactStore, _safe_segment, group_label
 from .history import ExecutionRecord, RunHistory, recordable_result, resolve_group_path
 from .params import normalize_params
 from .registry import DEFAULT_REGISTRY, FunctionRegistry
 from .schema import Action, Parallel, Sequential, parse_workflow
 
+if TYPE_CHECKING:  # the engine is store-free at runtime (IMP-007); the
+    # wiring point in run_workflow / Test_Framework talks to the store
+    # through its documented protocol (``_begin`` / ``wrap_registry``).
+    from .artifacts import ArtifactStore
+
 __all__ = [
     "Test_Framework",
+    "WalkContext",
     "check_splice_scope",
     "run_workflow",
 ]
@@ -172,87 +178,49 @@ def _as_node_list(returned: Any) -> list[_Node] | None:
 # --------------------------------------------------------------------------- #
 
 
-class _WalkState:
+class WalkContext:
     """
-    Per-group-walk addressing state for the artifact store (IMP-005).
+    The per-action walk context: plain structural position data (IMP-007).
 
-    One instance is created for every group the walker enters (the root
-    walk and every group child, including spliced-in groups).  It holds:
+    The walk recursion holds every action's ancestry natively — it is
+    where it is walking — so the engine hands it out as plain data
+    instead of computing store-shaped facts.  A function (typically a
+    registry wrapper, e.g. the artifact store's
+    :meth:`~.artifacts.ArtifactStore.wrap_registry`) that declares a
+    ``walk_context`` parameter receives one; the engine's involvement
+    ends at the injection (the same shape of surface as the ``dag``
+    injection).
 
-    * ``path`` — the walked group's own address path (a tuple of address
-      segments; ``()`` for the root).  Actions minted by this walk hang
-      directly below it.
-    * ``labels`` / ``mints`` — collision-suffix counters (the kwargs
-      vocabulary: ``name``, ``name_2``, ...).  ``labels`` counts child
-      GROUP entries by label, so sibling clones (a parameter sweep's
-      spliced copies, an iteration's appended bodies) get successive
-      ordinals; ``mints`` counts ACTION submissions by function name,
-      so repeated and re-spliced actions get successive ordinals.
-    * ``readable`` — the ambient CAUSAL PAST for this walk's children:
-      node addresses whose results the engine fans into their kwargs.
-      It grows exactly as the walk's ``chain`` does (and additionally
-      picks up spliced-in nodes' addresses, whose results flow onward
-      inside the splicing action's composite result), and is snapshotted
-      at every action submission — the artifact read scope mirrors the
-      data-plane scope by construction.
-    * ``groups`` — completed parallel groups visible downstream of their
-      completion (the fan-in view for ``ArtifactHandle.branches``).
-    * ``new_readable`` / ``new_groups`` — this walk's own growth, handed
-      back to the parent walk on return (mirroring how ``direct`` pairs
-      flow: sequential groups are transparent, parallel groups are
-      barriers).
+    Fields:
 
-    A parallel walk never extends its state (its children all see the
-    pre-group snapshot; its branch directories are computed, not grown),
-    so the barrier semantics need no locking: each walk instance is
-    touched by exactly one thread.
+    * ``node`` — the action node itself (its function name, parameters
+      and engine flags are readable from it).
+    * ``chain`` — the action's ancestry, root down, as a tuple of
+      ``(group, index)`` pairs: each entry locates the next node on the
+      path from the root to the action, and the LAST entry is the
+      action's own parent and index.  ``chain[0][0]`` is always the root
+      group.  Groups are live tree objects (the chain is a position
+      descriptor, not a snapshot).
+
+    Everything a structural consumer needs is derivable from
+    ``(node, tree)`` at call time: an action's ancestry and left flank
+    are frozen from submission until call completion (mutations come
+    only from preceding siblings — done before submission — the action
+    itself, or later siblings; concurrent branches mutate only their own
+    subtrees; parallel scopes are read-only), which is the same
+    sequential invariant that makes ``dag=`` writes safe.
     """
 
-    __slots__ = ("path", "labels", "mints", "readable", "groups", "new_readable", "new_groups")
+    __slots__ = ("node", "chain")
 
-    def __init__(
-        self,
-        path: tuple[str, ...] = (),
-        readable: list[str] | tuple[str, ...] = (),
-        groups: list | tuple = (),
-    ) -> None:
-        """Create walk state for a group at ``path`` seeded with a past."""
-        self.path: tuple[str, ...] = tuple(path)
-        self.labels: dict[str, int] = {}
-        self.mints: dict[str, int] = {}
-        self.readable: list[str] = list(readable)
-        self.groups: list[tuple[str, tuple[str, ...]]] = list(groups)
-        self.new_readable: list[str] = []
-        self.new_groups: list[tuple[str, tuple[str, ...]]] = []
+    def __init__(self, node: Action, chain: tuple[tuple[_Group, int], ...]) -> None:
+        """Bind the context to ``node`` with its ancestry ``chain``."""
+        self.node: Action = node
+        self.chain: tuple[tuple[_Group, int], ...] = tuple(chain)
 
-    def enter(self, label: str) -> str:
-        """
-        Consume one child-group entry of ``label``; return its segment.
-
-        The first entry of a label is the bare segment; every further
-        entry (a clone, an appended iteration body, a same-named sibling)
-        gets the next collision suffix — the same vocabulary the engine
-        uses for kwargs keys, applied in path space where collisions are
-        harmless.  Called exactly once per entered group child, in walk
-        order, so the suffixes are deterministic.
-        """
-        count = self.labels.get(label, 0) + 1
-        self.labels[label] = count
-        return label if count == 1 else f"{label}_{count}"
-
-    def child(self, segment: str) -> _WalkState:
-        """The walk state for a child group at ``path + (segment,)``."""
-        return _WalkState((*self.path, segment), self.readable, self.groups)
-
-    def add_readable(self, address: str) -> None:
-        """A node's artifacts became ambient for this walk's later children."""
-        self.readable.append(address)
-        self.new_readable.append(address)
-
-    def add_group(self, label: str, directories: tuple[str, ...]) -> None:
-        """A parallel group completed; its branches are enumerable downstream."""
-        self.groups.append((label, directories))
-        self.new_groups.append((label, directories))
+    def __repr__(self) -> str:
+        """One-liner with the action's function name and ancestry depth."""
+        return f"WalkContext({self.node.function!r}, depth={len(self.chain)})"
 
 
 def _action_address(action: Action) -> str | None:
@@ -280,7 +248,6 @@ class _Engine:
         registry: FunctionRegistry,
         parameters: dict[str, Any] | None = None,
         history: RunHistory | None = None,
-        artifacts: ArtifactStore | None = None,
     ) -> None:
         """Create an engine for ``root``; ``parameters`` override XML globals."""
         self._registry = registry
@@ -298,9 +265,6 @@ class _Engine:
         # Opt-in execution history (None = record nothing; the engine then
         # behaves exactly as if this feature did not exist).
         self._history = history
-        # Opt-in artifact store (None = no addresses are minted, no handle
-        # is injected, no manifest is written; zero behavior change).
-        self._store = artifacts
 
     # ------------------------------------------------------------ #
     # Public entry point
@@ -317,15 +281,10 @@ class _Engine:
         """
         with GraphPool() as pool:
             self._pool = pool
-            # Opt-in artifact store: the run root and a FRESH manifest are
-            # created here (a root that already holds one is refused, so
-            # recorded evidence is never silently extended).
-            if self._store is not None:
-                self._store._begin()
             # Eager validation: every action's function name must resolve
             # BEFORE any execution starts (parity with the old build pass).
             self._validate_node(self._root)
-            self._walk_group(self._root, [], _WalkState())
+            self._walk_group(self._root, [], ())
             # The tree may have been spliced during execution, so the final
             # action is resolved AFTER the run (the last child of the root,
             # resolved recursively into groups).
@@ -352,28 +311,31 @@ class _Engine:
     # Tree walking (the lazy interpreter core)
     # ------------------------------------------------------------ #
     def _walk_group(
-        self, group: _Group, pairs: list, state: _WalkState
-    ) -> tuple[Any, list, list, list]:
+        self, group: _Group, pairs: list, ancestry: tuple[tuple[_Group, int], ...]
+    ) -> tuple[Any, list]:
         """
         Walk ``group`` (sequential or parallel) seeded with ``pairs``.
 
-        Returns ``(group result, direct pairs, new readable, new groups)``
-        where ``direct pairs`` are the ``(action, result)`` pairs of the
-        group's DIRECT action children (one-level flattening, matching the
-        old engine's fan-in chain: a group contributes its direct
-        children's futures to the chain, and only action futures carry
-        results into keyword arguments), ``new readable`` are the node
-        addresses whose artifacts become ambient downstream (mirroring the
-        direct-pairs flow), and ``new groups`` are the completed parallel
-        groups that become enumerable downstream.
+        Returns ``(group result, direct pairs)`` where ``direct pairs``
+        are the ``(action, result)`` pairs of the group's DIRECT action
+        children (one-level flattening, matching the old engine's fan-in
+        chain: a group contributes its direct children's futures to the
+        chain, and only action futures carry results into keyword
+        arguments).
+
+        ``ancestry`` is ``group``'s own root-down chain of
+        ``(parent, index)`` pairs (``()`` for the root walk); each child
+        the walk reaches gets ``ancestry + ((group, i),)`` — the walk
+        recursion holds every action's position natively, which is what
+        the injected walk context is derived from.
         """
         if isinstance(group, Sequential):
-            return self._walk_sequential(group, pairs, state)
-        return self._walk_parallel(group, pairs, state)
+            return self._walk_sequential(group, pairs, ancestry)
+        return self._walk_parallel(group, pairs, ancestry)
 
     def _walk_sequential(
-        self, group: Sequential, pairs: list, state: _WalkState
-    ) -> tuple[Any, list, list, list]:
+        self, group: Sequential, pairs: list, ancestry: tuple[tuple[_Group, int], ...]
+    ) -> tuple[Any, list]:
         """
         Walk a ``Sequential`` group: strict child order.
 
@@ -383,12 +345,6 @@ class _Engine:
         chain; a group child contributes its direct action children's pairs
         (one-level flattening).  Children already executed (replaced by a
         splice) are skipped without adding pairs.
-
-        Artifact addressing mirrors the chain exactly: a completed action's
-        minted address joins the walk's ambient readable past (so later
-        siblings — and only later siblings — may read its artifacts), and
-        a group child's returned growth flows on the same way its direct
-        pairs do.
         """
         chain: list = list(pairs)
         direct: list = []
@@ -401,30 +357,20 @@ class _Engine:
                 i += 1
                 continue
             if isinstance(child, Action):
-                future = self._submit_action(child, chain, state)
+                future = self._submit_action(child, chain, ancestry + ((group, i),))
                 raw = self._pool.result(future)
-                result = self._handle_result(child, group, i, raw, chain, state)
+                result = self._handle_result(child, group, i, raw, chain, ancestry)
                 chain.append((child, result))
                 direct.append((child, result))
-                address = _action_address(child)
-                if address is not None:
-                    state.add_readable(address)
             else:
-                child_state = state.child(state.enter(group_label(child)))
-                _, child_direct, new_readable, new_groups = self._walk_group(
-                    child, chain, child_state
-                )
+                _, child_direct = self._walk_group(child, chain, ancestry + ((group, i),))
                 chain.extend(child_direct)
-                for node_address in new_readable:
-                    state.add_readable(node_address)
-                for entry in new_groups:
-                    state.add_group(*entry)
             i += 1
-        return self._group_result(group), direct, state.new_readable, state.new_groups
+        return self._group_result(group), direct
 
     def _walk_parallel(
-        self, group: Parallel, pairs: list, state: _WalkState
-    ) -> tuple[Any, list, list, list]:
+        self, group: Parallel, pairs: list, ancestry: tuple[tuple[_Group, int], ...]
+    ) -> tuple[Any, list]:
         """
         Walk a ``Parallel`` group: independent, concurrent children.
 
@@ -438,14 +384,11 @@ class _Engine:
         threads are joined, and the first exception in child order is raised
         after every child has settled.
 
-        Artifact addressing honors the barrier: every child is submitted
-        with the PRE-GROUP snapshot of the readable past (siblings never
-        see each other, exactly as they never see each other's results),
-        and the group's own walk state is never extended.  On completion
-        the group registers itself as enumerable: its branch directories
-        (one per child, in child order — the action's minted address, or
-        the child group's path segment) become visible to actions
-        DOWNSTREAM of the group through ``ArtifactHandle.branches``.
+        The information barrier is structural: every child is submitted
+        with the SAME pre-group upstream pairs (siblings never see each
+        other, exactly as they never see each other's results), and each
+        branch group child is walked on its own thread with its own
+        ancestry below the group.
         """
         children = list(group.children)
         upstream = list(pairs)
@@ -454,14 +397,14 @@ class _Engine:
         # Wire every action leaf FIRST (in child order, matching the old
         # engine's build order), then start the group-child threads: the
         # pool's FIFO then runs the actions in the same order the old
-        # engine submitted them.  Submission order is also the MINT order
-        # (the walker thread, in child order), so addresses are
-        # deterministic regardless of worker scheduling.
+        # engine submitted them.
         for position, child in enumerate(children):
             if getattr(child, "_engine_executed", False):
                 continue
             if isinstance(child, Action):
-                submitted.append((position, child, self._submit_action(child, upstream, state)))
+                child_ancestry = ancestry + ((group, position),)
+                future = self._submit_action(child, upstream, child_ancestry)
+                submitted.append((position, child, future))
         if submitted:
             # Wire-then-wait: bind the whole graph (submitting every leaf)
             # with a zero-timeout probe that never blocks on a result.
@@ -470,18 +413,13 @@ class _Engine:
                 self._pool.result(probe, timeout=0)
             except concurrent.futures.TimeoutError:
                 pass
-        child_states: dict[int, _WalkState] = {}
         for position, child in enumerate(children):
             if getattr(child, "_engine_executed", False) or isinstance(child, Action):
                 continue
-            # The branch segment is minted HERE, on the walker thread, in
-            # child order — concurrent branches get deterministic, distinct
-            # paths (label, label_2, ...).
-            child_states[position] = state.child(state.enter(group_label(child)))
             holder: dict = {}
             thread = threading.Thread(
                 target=self._walk_child_thread,
-                args=(child, upstream, holder, child_states[position]),
+                args=(child, upstream, holder, ancestry + ((group, position),)),
                 daemon=True,
             )
             threads.append((position, thread, holder))
@@ -502,7 +440,7 @@ class _Engine:
                 try:
                     raw = future.result()
                     results[position] = self._handle_result(
-                        action, group, position, raw, upstream, state
+                        action, group, position, raw, upstream, ancestry
                     )
                 except Exception as exc:
                     errors.append((position, exc))
@@ -520,50 +458,33 @@ class _Engine:
             for child in children
             if isinstance(child, Action) and not getattr(child, "_engine_executed", False)
         ]
-        if self._store is None:
-            return results, direct, [], []
-        # One-level flattening: the group's direct ACTION children's
-        # artifacts become ambient downstream (mirroring their results);
-        # branch-group children's internals stay behind the barrier.
-        new_readable = [
-            address
-            for address in (_action_address(action) for action, _ in direct)
-            if address is not None
-        ]
-        # The fan-in view: one branch directory per child, in child order.
-        branches: list[str] = []
-        for position, child in enumerate(children):
-            if getattr(child, "_engine_executed", False):
-                continue
-            if isinstance(child, Action):
-                address = _action_address(child)
-                if address is not None:
-                    branches.append(address)
-            elif position in child_states:
-                branches.append("/".join(child_states[position].path))
-        return results, direct, new_readable, [(group_label(group), tuple(branches))]
+        return results, direct
 
     def _walk_child_thread(
-        self, child: _Group, upstream: list, holder: dict, state: _WalkState
+        self,
+        child: _Group,
+        upstream: list,
+        holder: dict,
+        ancestry: tuple[tuple[_Group, int], ...],
     ) -> None:
         """
         Run a parallel group child on a plain thread; capture its outcome.
 
-        The child's walk growth (direct pairs, readable addresses,
-        completed groups) stays INSIDE the thread: a parallel branch is an
-        information barrier, so nothing it accumulated reaches the group's
-        siblings or downstream (its branch directory is what downstream
-        sees, via ``branches``).
+        The child's walk growth (direct pairs) stays INSIDE the thread: a
+        parallel branch is an information barrier, so nothing it
+        accumulated reaches the group's siblings or downstream.
         """
         try:
-            holder["result"], _direct, _readable, _groups = self._walk_group(
-                child, list(upstream), state
-            )
+            holder["result"], _direct = self._walk_group(child, list(upstream), ancestry)
         except BaseException as exc:  # re-raised in child order by the walker
             holder["error"] = exc
 
     def _walk_spliced(
-        self, parent: _Group, nodes: list, upstream: list, state: _WalkState
+        self,
+        parent: _Group,
+        nodes: list,
+        upstream: list,
+        ancestry: tuple[tuple[_Group, int], ...],
     ) -> list:
         """
         Walk nodes spliced in by dynamic adaptation (the nested walk).
@@ -575,11 +496,10 @@ class _Engine:
         list of the nodes' results.  Nodes replaced by a NESTED splice are
         skipped (they were marked executed by the nested surgery).
 
-        The walk uses the PARENT walk's state: spliced siblings are real
-        siblings, so they continue the parent's label/mint suffix series,
-        mint under the parent's path, and their artifact addresses join the
-        parent's readable past (later siblings receive their pointers by
-        value inside the actor's composite result).
+        Spliced siblings are real siblings: each is walked with its live
+        position in ``parent`` (its ancestry is the parent walk's own
+        ancestry plus that position), so whatever a structural consumer
+        derives for it matches the parent's other children.
         """
         chain: list = list(upstream)
         results: list = []
@@ -593,24 +513,16 @@ class _Engine:
                 results.append(None)
                 continue
             if isinstance(node, Action):
-                future = self._submit_action(node, chain, state)
+                future = self._submit_action(node, chain, ancestry + ((parent, position),))
                 raw = self._pool.result(future)
-                result = self._handle_result(node, parent, position, raw, chain, state)
+                result = self._handle_result(node, parent, position, raw, chain, ancestry)
                 chain.append((node, result))
-                address = _action_address(node)
-                if address is not None:
-                    state.add_readable(address)
                 results.append(result)
             else:
-                child_state = state.child(state.enter(group_label(node)))
-                result, child_direct, new_readable, new_groups = self._walk_group(
-                    node, chain, child_state
+                result, child_direct = self._walk_group(
+                    node, chain, ancestry + ((parent, position),)
                 )
                 chain.extend(child_direct)
-                for node_address in new_readable:
-                    state.add_readable(node_address)
-                for entry in new_groups:
-                    state.add_group(*entry)
                 results.append(result)
         return results
 
@@ -635,7 +547,9 @@ class _Engine:
     # ------------------------------------------------------------ #
     # Action execution (every action runs on a pool worker)
     # ------------------------------------------------------------ #
-    def _submit_action(self, action: Action, upstream: list, state: _WalkState) -> GraphFuture:
+    def _submit_action(
+        self, action: Action, upstream: list, ancestry: tuple[tuple[_Group, int], ...]
+    ) -> GraphFuture:
         """
         Submit one action's function call as a :class:`GraphFuture` leaf.
 
@@ -644,24 +558,22 @@ class _Engine:
         actions are passed separately for result keying.  The function call
         itself runs on a pool worker thread.
 
-        When an artifact store is configured, the action's ADDRESS is
-        minted HERE — on the walking thread, in submission (child) order,
-        before the call runs — and the causal-past snapshots are frozen:
-        the readable addresses and completed groups exactly as this
-        action's walk sees them.  Minting on the walker (never on the
-        worker) is what makes addresses deterministic: they derive from
-        walk order, not thread scheduling.
+        ``ancestry`` is the action's own root-down chain (the walk's
+        ancestry plus its position in the group).  When the callee declares
+        a ``walk_context`` parameter (the registry's cached flag), it is
+        bound into a :class:`WalkContext` and handed to the call — plain
+        position data the callee derives from (the artifact store's
+        registry wrapping does exactly that; the engine itself keeps no
+        addressing state).
         """
         fn = self._registry.get(action.function)
         params = normalize_params(action.params)
         actions = [act for act, _ in upstream]
-        address = None
-        readable = None
-        groups = None
-        if self._store is not None:
-            address = self._mint_address(action, state, params)
-            readable = tuple(state.readable)
-            groups = tuple(state.groups)
+        context = (
+            WalkContext(action, ancestry)
+            if self._registry.wants_context(action.function)
+            else None
+        )
         return GraphFuture(
             self._run_action,
             *[result for _, result in upstream],
@@ -669,38 +581,8 @@ class _Engine:
             params=params,
             actions=actions,
             action=action,
-            address=address,
-            readable=readable,
-            groups=groups,
+            context=context,
         )
-
-    def _mint_address(
-        self, action: Action, state: _WalkState, params: dict[str, Any]
-    ) -> str:
-        """
-        Mint this action's artifact address and append its manifest entry.
-
-        The address is the action's call-time tree position: the enclosing
-        walk's scope path plus the function name with a collision suffix
-        on repeat (the kwargs vocabulary — ``name``, ``name_2`` — in path
-        space, where collisions are harmless).  It is stored on the
-        action object (``_engine_address``), recorded in the store's
-        manifest (the executed truth), and NEVER recomputed: positions
-        shift under later adaptation, minted addresses never move.
-        """
-        name = action.function
-        count = state.mints.get(name, 0) + 1
-        state.mints[name] = count
-        segment = name if count == 1 else f"{name}_{count}"
-        address = "/".join((*state.path, _safe_segment(segment)))
-        action._engine_address = address
-        self._store._mint(
-            address=address,
-            function=name,
-            params=params,
-            dynamic=getattr(action, "_engine_dynamic", False),
-        )
-        return address
 
     def _handle_result(
         self,
@@ -709,7 +591,7 @@ class _Engine:
         index: int,
         raw: Any,
         upstream: list,
-        state: _WalkState,
+        ancestry: tuple[tuple[_Group, int], ...],
     ) -> Any:
         """
         Settle an action's raw result on the WALKER thread.
@@ -723,11 +605,9 @@ class _Engine:
         walker thread (never inside a pool worker) so a nested walk can
         submit to the pool without starving it.
 
-        The spliced walk shares the PARENT walk's state (``state``), so
-        spliced siblings continue the parent's collision-suffix series and
-        their minted addresses join the parent's readable past: the actor's
-        composite result carries their pointers onward by value, and the
-        store's read scope follows the by-value flow.
+        The spliced walk shares the parent walk's ``ancestry`` — spliced
+        siblings are real siblings — so each spliced node is walked at its
+        live position in the parent.
         """
         nodes = _as_node_list(raw)
         if nodes is None:
@@ -745,7 +625,7 @@ class _Engine:
         # spliced actions execute).
         for node in nodes:
             self._validate_node(node)
-        results = self._walk_spliced(parent, nodes, list(upstream), state)
+        results = self._walk_spliced(parent, nodes, list(upstream), ancestry)
         for node in nodes:
             node._engine_executed = True
         action._engine_result = results
@@ -758,9 +638,7 @@ class _Engine:
         params: dict[str, Any],
         actions: list[Action | None],
         action: Action,
-        address: str | None = None,
-        readable: tuple[str, ...] | None = None,
-        groups: tuple | None = None,
+        context: WalkContext | None = None,
     ) -> Any:
         """
         Execute one action's function (runs on a pool worker thread).
@@ -781,13 +659,12 @@ class _Engine:
         workflow node(s) raises ``ValueError`` (one adaptation mechanism
         per action).
 
-        When the run has an artifact store AND the signature declares an
-        ``artifacts`` parameter (the registry's cached ``wants_artifacts``
-        flag), a scoped :class:`~.artifacts.ArtifactHandle` is injected —
-        the action's minted address plus the causal-past snapshots frozen
-        at submission.  ``artifacts`` is then a reserved kwarg name too
-        (the injected handle wins); with no store configured it stays an
-        ordinary parameter name and nothing changes.
+        When the callee declares a ``walk_context`` parameter (the
+        registry's cached ``wants_context`` flag — every function of a
+        store-wrapped registry does), the action's
+        :class:`WalkContext` is injected the same way.  ``walk_context``
+        is then a reserved kwarg name too; with no declaring callee
+        nothing is injected and nothing changes.
         """
         kwargs: dict[str, Any] = dict(self._globals)
         used: dict[str, int] = {}
@@ -808,10 +685,10 @@ class _Engine:
             # Reserved kwarg name: the injected handle wins over any
             # same-named parameter (globals, upstream results, own params).
             kwargs["dag"] = handle
-        if self._store is not None and self._registry.uses_artifacts(action.function):
-            # Reserved kwarg name (same rule as ``dag``): the scoped
-            # artifact handle wins over any same-named parameter.
-            kwargs["artifacts"] = ArtifactHandle(self._store, address, readable or (), groups or ())
+        if context is not None:
+            # Reserved kwarg name (same rule as ``dag``): the walk context
+            # wins over any same-named parameter.
+            kwargs["walk_context"] = context
         if self._history is None:
             result = fn(**kwargs)
         else:
@@ -971,6 +848,12 @@ class _Engine:
         record is appended to the history when the call completes, so the
         history is in true completion order.  An exception is re-raised
         after being recorded.
+
+        The artifact address (``record.artifacts``) is read AFTER the
+        call: a wrapped registry view mints at call entry (IMP-007), so
+        the address exists once the function has started — on both the
+        success and the exception path.  ``None`` when the run has no
+        store.
         """
         record = ExecutionRecord(
             name=action.function,
@@ -978,7 +861,6 @@ class _Engine:
             params=dict(kwargs),
             group_path=self._path_of(action),
             dynamic=getattr(action, "_engine_dynamic", False),
-            artifacts=_action_address(action),
         )
         # Identity-keyed link so the final action's record can be found
         # exactly, even if a later splice shifts tree positions.
@@ -989,9 +871,11 @@ class _Engine:
         except BaseException as exc:
             record.ended_at = time.time()
             record.exception = exc
+            record.artifacts = _action_address(action)
             self._history.add(record)
             raise
         record.ended_at = time.time()
+        record.artifacts = _action_address(action)
         record.result = recordable_result(result)
         self._history.add(record)
         return result
@@ -1046,6 +930,25 @@ class _Engine:
 def _join_results(*_results: Any) -> None:
     """A join node: it runs once every dependency has settled (value unused)."""
     return None
+
+
+def _wire_store(
+    registry: FunctionRegistry, artifacts: ArtifactStore | None
+) -> FunctionRegistry:
+    """
+    The artifact store's wiring point (IMP-007): the one place the engine
+    layer talks to the store, through its documented protocol only.
+
+    Opens the store (a fresh run root and manifest) and returns the
+    store's wrapped registry view: every function wrapped, addressing
+    derived at call time from the injected walk context.  With no store
+    (``None``), the registry passes through unchanged and nothing happens
+    — the opt-in contract.
+    """
+    if artifacts is None:
+        return registry
+    artifacts._begin()
+    return artifacts.wrap_registry(registry)
 
 
 def _apply_params(target: _Node, params: dict[str, Any]) -> None:
@@ -1121,8 +1024,11 @@ def run_workflow(
     (recorded in an append-only manifest) and hand a scoped
     ``ArtifactHandle`` to every function that declares an ``artifacts``
     parameter — write to the node directory, read the causal past,
-    enumerate completed parallel groups' branches.  See
-    :mod:`sequence_extensions.workflow.artifacts`.
+    enumerate completed parallel groups' branches.  The engine itself
+    carries no store knowledge: the wiring here opens the store and
+    swaps in the store's wrapped registry view, whose functions derive
+    their addressing at call time from the engine's injected walk
+    context.  See :mod:`sequence_extensions.workflow.artifacts`.
 
     Raises ``ValueError`` for invalid XML, an unknown function name (naming
     the function), or an out-of-scope dynamic-adaptation splice attempt.
@@ -1130,10 +1036,11 @@ def run_workflow(
     root = parse_workflow(xml_source)
     engine = _Engine(
         root,
-        registry if registry is not None else DEFAULT_REGISTRY,
+        _wire_store(
+            registry if registry is not None else DEFAULT_REGISTRY, artifacts
+        ),
         parameters,
         history,
-        artifacts,
     )
     return engine.run()
 
@@ -1165,9 +1072,10 @@ def Test_Framework(
     """
     engine = _Engine(
         seq,
-        registry if registry is not None else DEFAULT_REGISTRY,
+        _wire_store(
+            registry if registry is not None else DEFAULT_REGISTRY, artifacts
+        ),
         parameters,
         history,
-        artifacts,
     )
     return engine.run()

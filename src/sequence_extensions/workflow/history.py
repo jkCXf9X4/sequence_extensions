@@ -58,7 +58,7 @@ from typing import Any, Union
 
 from ..graph.handle import TreeHandle
 from .artifacts import ArtifactStore, ReplayArtifacts
-from .registry import DEFAULT_REGISTRY, FunctionRegistry
+from .registry import DEFAULT_REGISTRY, FunctionRegistry, wants_artifacts
 from .schema import Action, Parallel, Sequential
 
 __all__ = [
@@ -464,12 +464,16 @@ def replay_records(
     ops are no-ops, so replay is deterministic and never mutates the live
     tree.  Non-adapting records are replayed byte-for-byte as before.
 
-    Artifacts-declaring functions (whose record carries a minted
-    ``artifacts`` address) are re-invoked with the ``artifacts`` kwarg
-    stripped and a :class:`~.artifacts.ReplayArtifacts` handle re-injected
-    instead: reads are served from the run's manifest and ``out_dir()``
-    returns the ORIGINAL node directory, so a deterministic function
-    rewrites identical content and the replayed result — returned pointers
+    The engine's injected ``walk_context`` kwarg (present in a recorded
+    store run, where every call went through the store's registry
+    wrapper) is engine plumbing, never replayed: it is stripped.  A
+    record whose run minted an artifact address, whose function
+    declares an ``artifacts`` parameter, is re-invoked with the
+    ``artifacts`` kwarg stripped and a
+    :class:`~.artifacts.ReplayArtifacts` handle re-injected instead:
+    reads are served from the run's manifest and ``out_dir()`` returns
+    the ORIGINAL node directory, so a deterministic function rewrites
+    identical content and the replayed result — returned pointers
     included — matches the recorded one.  Pass the run's
     :class:`~.artifacts.ArtifactStore` as ``artifacts``; a record that
     needs one when no store was given raises ``ValueError``.
@@ -478,11 +482,13 @@ def replay_records(
     replayed: list[Any] = []
     for record in history.records:
         params = dict(record.params)
+        params.pop("walk_context", None)
         if "dag" in params:
             params.pop("dag")
             params["dag"] = ReplayHandle(record.scope)
-        if record.artifacts is not None and "artifacts" in params:
-            params.pop("artifacts")
+        fn = reg.get(record.name)
+        if record.artifacts is not None and wants_artifacts(fn):
+            params.pop("artifacts", None)
             if artifacts is None:
                 raise ValueError(
                     f"replay: record {record.order} ({record.name!r}) was "
@@ -490,7 +496,7 @@ def replay_records(
                     f"ArtifactStore as artifacts= to replay it"
                 )
             params["artifacts"] = ReplayArtifacts(artifacts, record.artifacts)
-        replayed.append(recordable_result(reg.get(record.name)(**params)))
+        replayed.append(recordable_result(fn(**params)))
     return replayed
 
 

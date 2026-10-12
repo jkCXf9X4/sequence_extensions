@@ -47,6 +47,7 @@ from sequence_extensions.workflow.artifacts import (
 )
 from sequence_extensions.workflow.engine import (
     Test_Framework,
+    WalkContext,
     check_splice_scope,
     run_workflow,
 )
@@ -77,6 +78,7 @@ __all__ = [
     "Sequential",
     "Template",
     "Test_Framework",
+    "WalkContext",
     "check_splice_scope",
     "parse_workflow",
     "run_workflow",

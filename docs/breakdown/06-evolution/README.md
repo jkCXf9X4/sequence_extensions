@@ -29,11 +29,7 @@ Idea to IMP to decision to task, per the change pipeline:
 
 ## Open IMPs
 
-- `IMP-007` — Decouple artifact store from engine — structural
-  derivation. Engine sheds all store knowledge; a walk context (own node
-  plus ancestry) is the only injection; the store derives address,
-  causal past and branches structurally at call time via registry
-  wrapping.
+- (none — the register is clear)
 
 ## Implemented (not tracked)
 
@@ -45,4 +41,5 @@ Idea to IMP to decision to task, per the change pipeline:
 - `IMP-004` — Tier 2 workflow library functions: `try_action`, `retry`, `fallback`, `regression_gate`.
 - `IMP-005` — Artifact store — design investigation. Store core and fan-in implemented via `DR-004` (design in `INFO-008`); P0 control-plane hygiene and P3 tooling remain open.
 - `IMP-006` — Simplify DAG manipulation surface for adaptation drivers. `copy_self` plus five intent-level combinators (`fan_out` / `select` / `skip` / `skip_following` / `repeat`); the eight drivers rewritten onto them.
+- `IMP-007` — Decouple artifact store from engine — structural derivation. Engine store-free at runtime; `walk_context` injection (design in `INFO-009`); the store derives at call entry via `WrappedRegistry`.
 - `IMP-008` — Generic node layer in graph. `graph.node` (`Node` / `Group` + tree operations) and `graph.handle` (`TreeHandle` + the manipulation patterns, hook-parameterized); the workflow schema, `DAGHandle` and `ReplayHandle` become specializations.

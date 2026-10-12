@@ -24,6 +24,7 @@ __all__ = [
     "DEFAULT_REGISTRY",
     "FunctionRegistry",
     "wants_artifacts",
+    "wants_context",
     "wants_dag",
     "workflow_function",
 ]
@@ -73,6 +74,33 @@ def wants_artifacts(fn: Callable[..., Any]) -> bool:
     return "artifacts" in parameters
 
 
+def wants_context(fn: Callable[..., Any]) -> bool:
+    """
+    True when ``fn``'s signature declares an explicit ``walk_context``
+    parameter.
+
+    The engine injects its per-action walk context — plain structural
+    position data (the action's node plus its ancestry chain of
+    ``(group, index)`` pairs; see :class:`~.engine.WalkContext`) — only
+    into functions that ask for it, mirroring :func:`wants_dag`.
+    ``walk_context`` is then a reserved kwarg name: the injected context
+    wins over any same-named parameter.  The name is deliberately
+    unmistakably engine plumbing, so an ordinary data parameter never
+    collides with it.
+
+    The primary consumer is the artifact store's registry wrapping
+    (:meth:`~.artifacts.ArtifactStore.wrap_registry`, IMP-007): every
+    wrapped function declares ``walk_context`` and derives its addressing
+    from it, so the engine stays free of store knowledge.  A bare
+    ``**kwargs`` does NOT count (same rationale as :func:`wants_dag`).
+    """
+    try:
+        parameters = inspect.signature(fn).parameters
+    except (TypeError, ValueError):  # non-introspectable callable: never inject
+        return False
+    return "walk_context" in parameters
+
+
 class FunctionRegistry:
     """
     A name -> function registry for workflow actions.
@@ -93,15 +121,22 @@ class FunctionRegistry:
         # parameter, so the engine injects the scoped ArtifactHandle into
         # its calls (when the run has an ArtifactStore).
         self._wants_artifacts: dict[str, bool] = {}
+        # Cached per-function walk-context flag (IMP-007): True when the
+        # registered function's signature declares a ``walk_context``
+        # parameter, so the engine injects its per-action walk context
+        # (plain structural position data) into its calls.
+        self._wants_context: dict[str, bool] = {}
 
     def register(self, name: str, fn: Callable[..., Any]) -> None:
         """
         Register ``fn`` under ``name`` (replacing any earlier registration).
 
         The function's ``wants_dag`` flag (whether its signature declares a
-        ``dag`` parameter) and ``wants_artifacts`` flag (whether it declares
-        an ``artifacts`` parameter) are cached here, at registration time,
-        so the engine never inspects a signature on the hot path.
+        ``dag`` parameter), ``wants_artifacts`` flag (whether it declares an
+        ``artifacts`` parameter) and ``wants_context`` flag (whether it
+        declares a ``walk_context`` parameter) are cached here, at
+        registration time, so the engine never inspects a signature on the
+        hot path.
 
         Raises ``ValueError`` if ``name`` is empty or ``fn`` is not callable.
 
@@ -126,6 +161,7 @@ class FunctionRegistry:
         self._functions[name] = fn
         self._wants_dag[name] = wants_dag(fn)
         self._wants_artifacts[name] = wants_artifacts(fn)
+        self._wants_context[name] = wants_context(fn)
 
     def get(self, name: str) -> Callable[..., Any]:
         """
@@ -160,6 +196,21 @@ class FunctionRegistry:
         """
         self.get(name)  # unknown-name parity with get()
         return self._wants_artifacts.get(name, False)
+
+    def wants_context(self, name: str) -> bool:
+        """
+        True when the function registered under ``name`` declares a
+        ``walk_context`` parameter.
+
+        Raises ``ValueError`` (via :meth:`get`) for an unknown name.  The
+        engine injects the per-action walk context (plain structural
+        position data) into such functions' calls.  A wrapped registry
+        view (:meth:`~.artifacts.ArtifactStore.wrap_registry`) reports
+        ``True`` for every name: its wrappers all derive their addressing
+        from the context.
+        """
+        self.get(name)  # unknown-name parity with get()
+        return self._wants_context.get(name, False)
 
     def names(self) -> list[str]:
         """Return the registered function names in registration order."""

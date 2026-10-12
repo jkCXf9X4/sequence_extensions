@@ -63,20 +63,24 @@ borrows it. The store relies on it — pin with a test.
 - **Engine deletions** — artifacts import, `_WalkState`, `_mint_address`,
   handle injection, `self._store`. Residue: context injection, the
   `_engine_address` getattr, `store._begin()` at wiring.
-- **Determinism** — manifest `seq` becomes call order; parallel action
-  children interleave too (cross-branch already accepted, `INFO-008`).
-  Entry sets and addresses unchanged.
 - **Cost** — only declaring actions pay the closure derivation.
 
-## Work plan
+## What changed (implementation, 2026-10-12)
 
-- **W1** — thread (group, index) chains; inject context when declared.
-- **W2** — move addressing into `artifacts.py`; registry wrapper; delete
-  engine store code.
-- **W3** — `ReplayArtifacts` wrap shape; replay strips the context kwarg
-  as it strips `artifacts` today.
-- Independent of IMP-005 P0 / P3. Lands on top of `IMP-006`.
-- At implementation, revise `INFO-009`: walker couriers raw position.
+- Landed as designed: chain threading + `WalkContext` injection;
+  store-side derivation + `WrappedRegistry`; engine store code
+  deleted; replay strips the context kwarg. `INFO-009` revised.
+- Deltas: the reserved name is `walk_context` (unmistakably plumbing;
+  a bare `context` data parameter would collide). Manifest `seq` is
+  now call order (identical to walk order within a sequential walk;
+  concurrent branches interleave, as before). Replay re-gates handle
+  re-injection on `record.artifacts` + a `wants_artifacts` signature
+  check — also fixing a replay edge case where a non-declaring
+  function's same-named `artifacts` user parameter was overwritten.
+- Verified: the pre-existing artifact tests pass unmodified (derived
+  addresses equal the engine-minted ones across the driver corpus);
+  new corpus, freeze-theorem, generic-injection and engine-store-freedom
+  tests in `tests/workflow/test_walk_context.py`.
 
 ## Owns
 
@@ -91,12 +95,6 @@ borrows it. The store relies on it — pin with a test.
   injection stays engine-side — `INFO-004`, `IMP-006`.
 - P0 control-plane hygiene (`run_2` collision, D5 echo) — `IMP-005`.
 
-## Verification
-
-- Property test: derived addresses equal today's minted addresses across
-  the driver corpus (sweep, iterate, branch, skip, return-nodes).
-- Freeze theorem pinned by a dedicated test.
-- Determinism: manifest entry sets and addresses stable across runs.
-- The 34 tests in `tests/workflow/test_artifacts.py` pass; row-order
-  assertions move from submission order to call order.
-- `pb check --strict`, full suite.
+(The planned verification — derived-equals-minted across the driver
+corpus, the freeze theorem, determinism, the pre-existing suite — was
+executed and is recorded under What changed.)

@@ -2,7 +2,7 @@
 id: INFO-009
 type: info
 title: Artifact store — decoupling contract and retrospective domain
-summary: The walker drives the store with settled facts; the store sees only the present and the causal past, so frozen snapshots answer every query and replay needs no engine.
+summary: The store derives from raw position (walk context + registry wrapping); the store sees only the present and the causal past, so frozen snapshots answer every query and replay needs no engine.
 date: 2026-10-11
 status: current
 ---
@@ -15,25 +15,32 @@ there. The store's parts and addressing are `INFO-008`; the decision is
 
 ## Two arrows, opposite directions
 
-- Dependency: the engine imports the store; the store imports schema only,
-  never the reverse.
-- Information: the walker pushes settled facts into the store; the store
-  never pulls.
-- Module decoupling is not information decoupling: the store is a passive
-  service driven by the engine.
-- The schema import is vocabulary only — `group_label` reads a node's
-  name or kind; no tree knowledge crosses the boundary.
+- Dependency: the store imports schema and registry, never the engine;
+  the engine imports the store only for type checking — at runtime the
+  wiring point (`IMP-007`) talks to it through its protocol and swaps in
+  its wrapped registry view.
+- Information: the walker pushes the action's RAW POSITION (the walk
+  context — node plus ancestry chain); the store derives everything else.
+- Module decoupling and information decoupling now agree: the store is a
+  plugged-in consumer of position data, not a service the engine drives.
+- The registry import is vocabulary only — signature flags and the
+  registry surface; no tree knowledge crosses the boundary.
 
 ## The walker is the courier, the store the record
 
 - Only the walker observes the live, transformed DAG; it re-reads
-  children every step (`INFO-004`).
-- The walker compresses every observation into settled facts: an address,
-  the readable past, the completed groups.
+  children every step (`INFO-004`). The walk recursion holds every
+  action's ancestry natively — position is where it walks.
+- The walker hands out plain position data; the store's registry wrapper
+  derives the settled facts from it: the address, the readable past, the
+  completed groups.
 - The store receives results, never mechanics: a sweep splices three
-  clones; the store receives three addresses in walk order.
-- Mint at submission, never recompute: the address is computed after the
-  dust settles — the store receives identity, not history.
+  clones; the store derives three ranks in child order.
+- Mint at call entry, never recompute: the derivation reads the live
+  tree at the one moment it is provably settled — the freeze theorem
+  (`IMP-007`: an action's ancestry and left flank are frozen from
+  submission until call completion; the same sequential invariant that
+  makes `dag=` writes safe).
 - An observing store would need the adaptation protocol (splices, replace
   ops, the commit transaction); that would be the real pollution.
 
@@ -47,8 +54,10 @@ there. The store's parts and addressing are `INFO-008`; the decision is
   exist.
 - A settled domain has one decisive property: a frozen snapshot answers
   every possible query.
-- The handle is plain data, built on the walker thread, used on a pool
-  worker: no live tree references, no callbacks, no locks at read time.
+- The handle is plain data (address plus the causal-past and
+  completed-group views derived at call entry), so it is safe to build
+  and use on a pool worker: no live tree references, no callbacks, no
+  locks at read time.
 
 ## Causal past, not temporal past
 
