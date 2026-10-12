@@ -935,7 +935,7 @@ The workflow's `DAGHandle` (dynamic adaptation) and `ReplayHandle` (deterministi
 
 ## `workflow`
 
-The V&V workflow layer: a small XML/Python schema of `Action` / `Sequential` / `Parallel` nodes, a named function registry, and a lazy tree-walking execution engine built on the `graph` substrate. The semantics follow the paper "Automation Nation: Taming Complex V&V Workflows" (16th International Modelica & FMI Conference, September 2025, Lucerne, Switzerland; DOI 10.3384/ecp12076741).
+The V&V workflow layer: a small XML/Python schema of `Action` / `Sequential` / `Parallel` nodes, a named function registry, and a lazy tree-walking execution engine built on the `graph` substrate. The semantics follow the paper "Automation Nation: Taming Complex V&V Workflows" (16th International Modelica & FMI Conference, September 2025, Lucerne, Switzerland; DOI 10.3384/ecp218751).
 
 The layer is split into modules:
 
@@ -968,13 +968,63 @@ Key behaviors:
 ### `run_workflow`
 
 ```python
-def run_workflow(xml_source, registry=None, parameters=None, history=None, artifacts=None)
+def run_workflow(
+    xml_source,
+    registry=None,
+    parameters=None,
+    history=None,
+    artifacts=None,
+    *,
+    params_mode="full",
+    max_workers=None,
+    adaptation_bound=None,
+    executor=None,
+    dry_run=False,
+)
 ```
 
-- **Parameters:** `xml_source` (`str` | `bytes`) — the workflow XML (see `parse_workflow`); `registry` (`FunctionRegistry`, default `DEFAULT_REGISTRY`); `parameters` (`dict`, optional) — extra global parameters merged over the XML's globals (winning on a name clash); `history` (`RunHistory`, optional) — opt-in execution recording; `artifacts` (`ArtifactStore`, optional) — the opt-in by-reference artifact store (see [Artifact store](#artifact-store-by-reference-data-plane)).
-- **Returns:** the final result (the last action's return value).
-- **Raises:** `ValueError` for invalid XML, an unknown function name, or an out-of-scope dynamic-adaptation splice.
-- **Description:** Parse and execute a workflow XML document.
+```python
+def Test_Framework(
+    seq,
+    parameters=None,
+    registry=None,
+    history=None,
+    artifacts=None,
+    *,
+    params_mode="full",
+    max_workers=None,
+    adaptation_bound=None,
+    executor=None,
+    dry_run=False,
+)
+```
+
+Run options (all keyword-only, all defaulting to the current behavior):
+
+- ``params_mode`` — the recorded-params shape: ``"full"`` (the default)
+  records the resolved kwargs as before; ``"summary"`` records each
+  dict/list/tuple parameter value as its item count (the call itself is
+  unchanged — the by-reference shape for bulk payloads is the artifact
+  store).
+- ``max_workers`` — the ``GraphPool`` worker count (default 16).
+- ``adaptation_bound`` — the dynamic-node bound (default
+  ``ADAPTATION_BOUND``); must be >= 0.
+- ``executor`` — a caller-owned ``RunHistory``... no: a caller-owned
+  :class:`~sequence_extensions.graph.graph_future.GraphPool` (it wins over
+  ``max_workers`` and is NOT shut down at run end — the caller keeps its
+  lifecycle).
+- ``dry_run`` — plan mode: the workflow is parsed (templates expanded),
+  every function name is validated, and the walk runs with no-op
+  functions; ``run_workflow`` returns the workflow tree (the plan)
+  instead of a result, and ``history`` still records.  Nothing executes:
+  no side effects, no splices, no store directories (``artifacts`` is
+  ignored — a plan mints nothing).
+
+The history's ``records`` gain ``description`` (the action's plain-data
+label from the workflow source) and ``duration`` (the call's
+``time.monotonic()`` duration), and the collector exposes ``run_id`` (a
+fresh uuid4 hex per history) and ``source`` (the workflow's sha256 digest
+the engine stamps at run start).
 
 ### `Test_Framework`
 

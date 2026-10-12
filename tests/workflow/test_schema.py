@@ -9,6 +9,8 @@ Listing 5 (dynamic adaptation), and one file per parser rejection rule under
 ``invalid/``.
 """
 
+from pathlib import Path
+
 import pytest
 
 from resources import workflows
@@ -298,3 +300,44 @@ def test_parse_scope_alias_emits_no_warning():
         parse_workflow("<parallel><action function='a'/></parallel>")
         # The explicit <scope> form is also warning-free.
         parse_workflow('<scope type="sequential"><action function="a"/></scope>')
+
+
+# --------------------------------------------------------------------------- #
+# 8. XSD MIRROR (docs/schema.xsd)
+# --------------------------------------------------------------------------- #
+
+
+def test_schema_xsd_validates_every_valid_fixture():
+    """docs/schema.xsd (the parser's structural mirror) validates every valid
+    fixture under tests/resources/workflows/ (the ``invalid/`` rejection cases
+    excluded — the parser is authoritative where a mirror cannot follow)."""
+    lxml_etree = pytest.importorskip("lxml.etree")
+    schema_path = Path(__file__).resolve().parents[2] / "docs" / "schema.xsd"
+    schema = lxml_etree.XMLSchema(lxml_etree.parse(str(schema_path)))
+    for name in sorted(p.name for p in workflows._DIR.iterdir() if p.suffix == ".xml"):
+        document = lxml_etree.fromstring(workflows.load(name))
+        assert schema.validate(document), f"{name}: {schema.error_log}"
+        # Every valid fixture also parses (the parser agrees with its mirror).
+        parse_workflow(workflows.load(name))
+
+
+def test_schema_xsd_rejects_structural_rejections():
+    """The mirror rejects the structural rejection cases too (a sample: the
+    shape-level rules a schema CAN follow — attribute presence, unknown
+    elements, root choice)."""
+    lxml_etree = pytest.importorskip("lxml.etree")
+    schema_path = Path(__file__).resolve().parents[2] / "docs" / "schema.xsd"
+    schema = lxml_etree.XMLSchema(lxml_etree.parse(str(schema_path)))
+    structural = (
+        "action_without_function.xml",
+        "argument_without_key.xml",
+        "argument_without_value.xml",
+        "action_unknown_element.xml",
+        "missing_top_level_grouping.xml",
+    )
+    for name in structural:
+        path = workflows.path(f"invalid/{name}")
+        if not path.exists():
+            continue
+        document = lxml_etree.fromstring(path.read_text(encoding="utf-8"))
+        assert not schema.validate(document), f"{name} unexpectedly validates"

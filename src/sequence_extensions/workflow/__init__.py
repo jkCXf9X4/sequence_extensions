@@ -23,8 +23,8 @@ Modules:
 * :mod:`~sequence_extensions.workflow.params` — parameter normalization
   (XML string form -> Python form).
 * :mod:`~sequence_extensions.workflow.engine` — the execution engine
-  (``run_workflow`` / ``Test_Framework``) and the dynamic-adaptation scope
-  check (``check_splice_scope``).
+  (``run_workflow`` / ``Test_Framework`` / ``run_python_workflow``) and the
+  dynamic-adaptation scope check (``check_splice_scope``).
 * :mod:`~sequence_extensions.workflow.adaptation` — the scoped DAG handle
   (``DAGHandle``, a
   :class:`~sequence_extensions.graph.handle.TreeHandle` specialization)
@@ -49,6 +49,7 @@ from sequence_extensions.workflow.engine import (
     Test_Framework,
     WalkContext,
     check_splice_scope,
+    run_python_workflow,
     run_workflow,
 )
 from sequence_extensions.workflow.registry import (
@@ -81,6 +82,7 @@ __all__ = [
     "WalkContext",
     "check_splice_scope",
     "parse_workflow",
+    "run_python_workflow",
     "run_workflow",
     "workflow_function",
 ]

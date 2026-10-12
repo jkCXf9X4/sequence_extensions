@@ -8,7 +8,7 @@ status: current
 ---
 # 00-intent — Vision & Goals
 
-Source: `docs/references/paper_44_yBqbPyj1.pdf` — *"Automation Nation: Taming Complex V&V Workflows"*, Rosenlund, Hällqvist, Braun, Krus (Saab Aeronautics / Linköping University), 16th International Modelica & FMI Conference 2025, DOI 10.3384/ecp218741.
+Source: `docs/references/paper_44_yBqbPyj1.pdf` — *"Automation Nation: Taming Complex V&V Workflows"*, Rosenlund, Hällqvist, Braun, Krus (Saab Aeronautics / Linköping University), 16th International Modelica & FMI Conference 2025, DOI 10.3384/ecp218751.
 
 ## Vision
 

@@ -8,23 +8,31 @@ final result; this module supplies the missing evidence layer:
 
 * :class:`ExecutionRecord` — per-action evidence: the action's registry
   name, the resolved function, the parameters the function was ACTUALLY
-  called with, its return value (or exception), start/end timestamps, a
-  deterministic completion-order index, and the action's path in the
-  workflow tree (e.g. ``root/parallel[1]/action[0]``).
+  called with (globals, upstream results and the action's own parameters,
+  merged in the engine's precedence order, minus the engine's reserved
+  kwarg names — their evidence lives in dedicated fields), its return
+  value (or exception), start/end timestamps, a monotonic duration, the
+  run's id, a deterministic completion-order index, and the action's path
+  in the workflow tree (e.g. ``root/parallel[1]/action[0]``).
 * :class:`RunHistory` — a thread-safe collector the engine appends to as
   each action's function call completes.  Because records are added at
   call completion, the history captures what ACTUALLY executed — including
   actions spliced in at runtime by dynamic adaptation (marked
-  ``dynamic=True``) — in true completion order.
+  ``dynamic=True``) — in true completion order.  The collector carries the
+  run's identity: a fresh ``run_id`` per history, and the ``source``
+  workflow digest the engine stamps at run start.  ``final_order`` is set
+  by the engine after a successful run to the ``order`` of the workflow's
+  final action, which is the value :func:`replay` returns.
 * :func:`replay` / :func:`replay_records` — deterministic re-execution of
   a recorded run: every recorded action is re-resolved through the function
   registry and called again with its recorded parameters, sequentially, in
   recorded order.  :func:`replay` returns the same final result as the
   original run (the replayed value of the run's final action, which the
   engine marks on the history), proving reproducibility rather than
-  echoing stored results.  A function that adapted through a ``dag``
-  handle is re-invoked with the recorded ``dag`` kwarg stripped and a
-  :class:`ReplayHandle` re-injected: reads are served from a fake tree
+  echoing stored results.  A function whose signature declares a ``dag``
+  parameter (the registry's cached flag — the same signal the engine used
+  at run time) is re-invoked with a :class:`ReplayHandle` re-injected:
+  reads are served from a fake tree
   materialized from the record's ``scope`` snapshot and write ops are
   no-ops, so replaying an adapting run is deterministic and never mutates
   the live tree.
@@ -51,7 +59,10 @@ Semantics worth knowing:
 
 from __future__ import annotations
 
+import hashlib
 import threading
+import uuid
+import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, Union
@@ -92,16 +103,23 @@ class ExecutionRecord:
     * ``function`` — the name of the resolved callable (``fn.__name__``).
     * ``params`` — the resolved keyword arguments the function was
       actually called with (globals, upstream results and the action's
-      own parameters, merged in the engine's precedence order).
+      own parameters, merged in the engine's precedence order), minus the
+      engine's reserved kwarg names (``dag`` / ``walk_context``) when the
+      engine injected them — their evidence lives in ``scope`` and the
+      store's manifest, so the record holds plain, comparable data.
     * ``result`` — the function's return value; a dynamic-adaptation
       return (workflow node(s)) is stored as the plain descriptor produced
       by :func:`recordable_result`.  ``None`` when the function raised.
     * ``exception`` — the exception the function raised, if any.
     * ``started_at`` / ``ended_at`` — wall-clock timestamps
-      (``time.time()``) taken around the function call.
+      (``time.time()``) taken around the function call (the audit stamps).
+    * ``duration`` — the call's duration (``time.monotonic()``, so it is
+      immune to wall-clock adjustments between the stamps).
     * ``order`` — deterministic completion-order index, assigned by
       :meth:`RunHistory.add` (records are numbered 0, 1, 2, ... in the
       order their function calls completed).
+    * ``run_id`` — the run's identity: the run history's ``run_id`` (a
+      fresh uuid4 hex per history), so a record can be matched to its run.
     * ``group_path`` — the action's path in the workflow tree at call
       completion, e.g. ``"root/parallel[1]/action[0]"``.
     * ``dynamic`` — ``True`` when the action was spliced into the workflow
@@ -113,6 +131,14 @@ class ExecutionRecord:
     * ``artifacts`` — the action's minted artifact-store address (the
       root-relative node directory, the join key into the run's manifest
       entries); ``None`` when the run had no artifact store (IMP-005).
+    * ``description`` — the action node's plain-data ``description`` label
+      (set from the XML ``description`` attribute, or by assignment from the
+      Python API); ``None`` unless labeled.  It does not execute.
+    * ``run_id`` — the run's identity: the run history's ``run_id`` (a
+      fresh uuid4 hex per history), so a record can be matched to its run.
+    * ``duration`` — the call's duration (``time.monotonic()``); immune to
+      wall-clock adjustments between the ``started_at`` / ``ended_at``
+      stamps.
     """
 
     name: str
@@ -128,6 +154,9 @@ class ExecutionRecord:
     adaptations: list[dict] = field(default_factory=list)
     scope: dict | None = None
     artifacts: str | None = None
+    description: str | None = None
+    run_id: str = ""
+    duration: float = 0.0
 
 
 # --------------------------------------------------------------------------- #
@@ -145,16 +174,26 @@ class RunHistory:
     completion order.  ``final_order`` is set by the engine after a
     successful run to the ``order`` of the workflow's final action, which
     is the value :func:`replay` returns.
+
+    Run identity (IMP-011): ``run_id`` is a fresh uuid4 hex created with
+    the history and stamped on every record the engine appends to it;
+    ``source`` is the workflow digest (sha256 of the XML source, or of the
+    Python-API root tree's repr) the engine stamps at run start (``None``
+    until then, and for a history never used for a run).
     """
 
     def __init__(self) -> None:
-        """Create an empty history."""
+        """Create an empty history with its run identity."""
         self._records: list[ExecutionRecord] = []
         self._lock = threading.Lock()
         self._next_order = 0
         # Order index of the run's final action; None until the engine
         # marks it (and for an empty or failed run).
         self.final_order: int | None = None
+        # Run identity: a fresh uuid4 hex per history, and the workflow
+        # digest stamped by the engine at run start.
+        self.run_id: str = uuid.uuid4().hex
+        self.source: str | None = None
 
     def add(self, record: ExecutionRecord) -> ExecutionRecord:
         """
@@ -483,10 +522,27 @@ def replay_records(
     for record in history.records:
         params = dict(record.params)
         params.pop("walk_context", None)
-        if "dag" in params:
-            params.pop("dag")
-            params["dag"] = ReplayHandle(record.scope)
         fn = reg.get(record.name)
+        # Registry drift check (IMP-010): the record stores the resolved
+        # function's name, so a re-registration between run and replay (the
+        # same registry name now resolving to a different callable) is
+        # visible instead of silently diverging the replay.
+        resolved_name = getattr(fn, "__name__", type(fn).__name__)
+        if resolved_name != record.function:
+            warnings.warn(
+                f"replay: record {record.order} ({record.name!r}) resolves to "
+                f"{resolved_name!r} but was recorded as {record.function!r}; "
+                "the registry changed between run and replay",
+                UserWarning,
+                stacklevel=2,
+            )
+        if reg.adapts(record.name):
+            # The engine injects the handle for a dag-declaring function
+            # (the registry's cached flag, the same signal the engine used
+            # at run time); replay re-injects a read-only stand-in.  A
+            # record whose params still carry a ``dag`` kwarg (user data
+            # under the reserved name) keeps it.
+            params["dag"] = ReplayHandle(record.scope)
         if record.artifacts is not None and wants_artifacts(fn):
             params.pop("artifacts", None)
             if artifacts is None:
@@ -525,3 +581,21 @@ def replay(
     if history.final_order is None:
         return None
     return results[history.final_order]
+
+
+def _workflow_digest(
+    xml_source: str | bytes | None = None, root: _Group | None = None
+) -> str:
+    """
+    The run's workflow digest (sha256 hex): of the XML source when given
+    (the ``run_workflow`` path), else of the root tree's repr (the
+    ``Test_Framework`` path, where no XML exists — the repr of a tree built
+    the same way is stable, so identical trees digest identically).
+    """
+    if xml_source is not None:
+        data = (
+            xml_source if isinstance(xml_source, bytes) else xml_source.encode("utf-8")
+        )
+    else:
+        data = repr(root).encode("utf-8")
+    return hashlib.sha256(data).hexdigest()

@@ -3,7 +3,7 @@ Node classes and XML parser for the V&V workflow schema.
 
 The schema is specified by the paper "Automation Nation: Taming Complex V&V
 Workflows" (16th International Modelica & FMI Conference, September 2025,
-Lucerne, Switzerland; DOI 10.3384/ecp12076741), section 4.1.
+Lucerne, Switzerland; DOI 10.3384/ecp218751), section 4.1.
 
 A workflow is a tree of three node types:
 
@@ -29,7 +29,10 @@ these nodes:
   grouping: ``type`` is required and must be ``sequential`` or
   ``parallel``; an optional ``name`` attribute labels the group (it does
   not appear in history path labels, which are derived from the group
-  type).  ``<sequential>`` / ``<parallel>`` are aliases for
+  type) and an optional ``description`` attribute (also on
+  ``<sequential>`` / ``<parallel>`` / ``<action>``) labels the node for
+  the history (an action's description is recorded on its history record;
+  it does not execute).  ``<sequential>`` / ``<parallel>`` are aliases for
   ``<scope type="...">`` and parse exactly as before.  ``<scope>`` is
   allowed everywhere a group is allowed: as the root, as the
   ``<VerificationWorkflow>`` top-level grouping, nested inside other
@@ -75,9 +78,15 @@ limiting duplication between workflows):
   instantiated body, so the returned tree contains only ``Action`` /
   ``Sequential`` / ``Parallel`` nodes and is exactly the tree the
   equivalent inline workflow produces.  The engine never sees a template.
+  Placeholders also resolve against the run-time parameters passed to
+  ``run_workflow`` / ``Test_Framework``: the engine re-parses with them
+  merged over the XML globals, so they join the global tier — below a
+  template default, above an XML global on a name clash.
 * Placeholder binding precedence: the use site's binding wins over the
   template's default, which wins over a workflow GLOBAL parameter of the
-  same name (so a template can refer to a global without every use site
+  same name (an XML global parameter, or a run-time parameter passed to
+  ``run_workflow`` / ``Test_Framework``, which win over an XML global on a
+  name clash; so a template can refer to a global without every use site
   re-binding it).  A use site must bind every declared parameter that has
   no default and no same-named global, and must not bind a parameter the
   template does not declare.
@@ -139,8 +148,16 @@ class Action(Node):
     are its custom keyword parameters (e.g. ``Action("simulate",
     file="case_1.csv")``).  An action is a LEAF node: it inherits the
     generic node's ``name`` (always ``None``) and keeps its ``children``
-    list empty.
+    list empty.  ``description`` is an optional plain-data label (set from
+    the XML ``description`` attribute, or by attribute assignment from the
+    Python API — deliberately NOT an ``__init__`` parameter, so a data
+    parameter named ``description`` cannot collide with it); it does not
+    affect execution — the engine records it on the action's history record.
     """
+
+    #: An optional plain-data label (see the class docstring); ``None`` unless
+    #: set from the XML ``description`` attribute or by assignment.
+    description: str | None = None
 
     def __init__(self, function: str, **params) -> None:
         """Create an action node; ``params`` are stored as a plain dict."""
@@ -156,7 +173,9 @@ class Action(Node):
         """Clone hook: a fresh action with ``overrides`` merged into ``params``."""
         params = dict(self.params)
         params.update(overrides)
-        return Action(self.function, **params)
+        copy = Action(self.function, **params)
+        copy.description = self.description
+        return copy
 
 
 class _Group(Group):
@@ -173,15 +192,23 @@ class _Group(Group):
     type.
     """
 
-    def __init__(self, *children: Action | Sequential | Parallel, name: str | None = None) -> None:
+    def __init__(
+        self,
+        *children: Action | Sequential | Parallel,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> None:
         """Create a group with the given child nodes, in order.
 
         ``name`` is an optional label (set from a ``<scope name=...>``
         attribute); it is not part of history path labels, which are derived
-        from the group type.
+        from the group type.  ``description`` is an optional plain-data label
+        (set from a ``description`` attribute); like ``name`` it does not
+        affect execution — it is metadata for the history layer.
         """
         super().__init__(*children, name=name)
         self.globals: dict[str, str] = {}
+        self.description = description
 
     def __repr__(self) -> str:
         """One-liner with the group type and its children."""
@@ -189,7 +216,7 @@ class _Group(Group):
 
     def _copy(self, children: list, overrides: dict) -> Node:
         """Clone hook: same group type, cloned children, copied ``globals``."""
-        clone = type(self)(*children, name=self.name)
+        clone = type(self)(*children, name=self.name, description=self.description)
         clone.globals = dict(self.globals)
         return clone
 
@@ -330,10 +357,12 @@ def _substitute(
         # (e.g. <argument key="class" value="..."/>) cannot break a
         # ``**params`` call.
         copy.params = {key: _substitute_value(value, values) for key, value in node.params.items()}
+        copy.description = node.description
         return copy
     copy = type(node)()
     copy.children = [_substitute(child, values) for child in node.children]
     copy.name = node.name
+    copy.description = node.description
     return copy
 
 
@@ -358,7 +387,9 @@ def _substitute_value(value: Any, values: dict[str, Any]) -> Any:
 # --------------------------------------------------------------------------- #
 
 
-def parse_workflow(xml_source: str | bytes) -> Sequential | Parallel:
+def parse_workflow(
+    xml_source: str | bytes, globals_: dict[str, str] | None = None
+) -> Sequential | Parallel:
     """
     Parse a workflow XML document and return its root group.
 
@@ -372,6 +403,14 @@ def parse_workflow(xml_source: str | bytes) -> Sequential | Parallel:
     ``Sequential`` / ``Parallel`` nodes — exactly the tree the equivalent
     inline workflow produces.
 
+    ``globals_`` optionally overrides the XML's global parameters (merged over
+    them, the override winning on a name clash) before template expansion, and
+    is stored on the returned group's ``.globals``; the run-time parameters
+    passed to ``run_workflow`` / ``Test_Framework`` land here (the engine
+    re-parses with them merged, so ``<use-template>`` placeholders resolve
+    against them).  Template binding precedence is unchanged: a use site's
+    binding wins over the template's default, which wins over these globals.
+
     Raises ``ValueError`` for any invalid structure (see the module
     docstring for the full list).
     """
@@ -381,7 +420,7 @@ def parse_workflow(xml_source: str | bytes) -> Sequential | Parallel:
         raise ValueError(f"workflow XML is not well-formed: {exc}") from exc
 
     if root.tag == "VerificationWorkflow":
-        return _parse_wrapped(root)
+        return _parse_wrapped(root, globals_)
     if root.tag in _GROUP_TAGS or root.tag == _SCOPE_TAG:
         return _parse_group(root, {}, {})
     raise ValueError(
@@ -390,7 +429,9 @@ def parse_workflow(xml_source: str | bytes) -> Sequential | Parallel:
     )
 
 
-def _parse_wrapped(root: ET.Element) -> Sequential | Parallel:
+def _parse_wrapped(
+    root: ET.Element, globals_: dict[str, str] | None = None
+) -> Sequential | Parallel:
     """
     Parse a ``<VerificationWorkflow>`` wrapper: globals, templates, one group.
 
@@ -398,16 +439,22 @@ def _parse_wrapped(root: ET.Element) -> Sequential | Parallel:
     document order) so both are available to every template body and to the
     top-level grouping, wherever in the wrapper they appear; then the
     single top-level grouping is parsed with the template table.
+
+    ``globals_`` optionally overrides the XML's global parameters (merged over
+    them, the override winning on a name clash) before template expansion; the
+    merged dict is stored on the returned group's ``.globals``.
     """
-    globals_: dict[str, str] = {}
+    globals_dict: dict[str, str] = {}
     for child in root:
         if child.tag == _ARGUMENT_TAG:
             key, value = _argument(child)
-            globals_[key] = value
+            globals_dict[key] = value
+    if globals_:
+        globals_dict.update(globals_)
     templates: dict[str, Template] = {}
     for child in root:
         if child.tag == _TEMPLATE_TAG:
-            template = _parse_template(child, templates, globals_)
+            template = _parse_template(child, templates, globals_dict)
             if template.name in templates:
                 raise ValueError(
                     f"duplicate template name {template.name!r} in <VerificationWorkflow>"
@@ -421,7 +468,7 @@ def _parse_wrapped(root: ET.Element) -> Sequential | Parallel:
                     "<VerificationWorkflow> must contain exactly one top-level "
                     f"grouping, found <{child.tag}> after an earlier one"
                 )
-            group = _parse_group(child, templates, globals_)
+            group = _parse_group(child, templates, globals_dict)
         elif child.tag not in (_ARGUMENT_TAG, _TEMPLATE_TAG):
             raise ValueError(
                 f"unknown element <{child.tag}> inside <VerificationWorkflow>; "
@@ -433,7 +480,7 @@ def _parse_wrapped(root: ET.Element) -> Sequential | Parallel:
             "<VerificationWorkflow> must contain exactly one top-level "
             "grouping (<sequential>, <parallel> or <scope>), found none"
         )
-    group.globals = globals_
+    group.globals = globals_dict
     return group
 
 
@@ -445,9 +492,9 @@ def _parse_group(
 
     ``<sequential>`` / ``<parallel>`` are aliases for
     ``<scope type="sequential">`` / ``<scope type="parallel">``: the
-    ``type`` attribute is required on ``<scope>`` and validated, and an
-    optional ``name`` attribute labels the group (history path labels stay
-    derived from the group type).
+    ``type`` attribute is required on ``<scope>`` and validated, and optional
+    ``name`` and ``description`` attributes label the group (history path
+    labels stay derived from the group type).
     """
     if element.tag == _SCOPE_TAG:
         scope_type = element.attrib.get("type")
@@ -461,10 +508,11 @@ def _parse_group(
     else:
         scope_type = element.tag
     name = element.attrib.get("name")
+    description = element.attrib.get("description")
     children = [_parse_child(child, templates, globals_) for child in element]
     if scope_type == "sequential":
-        return Sequential(*children, name=name)
-    return Parallel(*children, name=name)
+        return Sequential(*children, name=name, description=description)
+    return Parallel(*children, name=name, description=description)
 
 
 def _parse_child(
@@ -508,6 +556,10 @@ def _parse_action(element: ET.Element) -> Action:
     # (e.g. <argument key="class" value="..."/>) cannot break a ``**params``
     # call.
     action.params = params
+    # The optional description attribute: plain metadata for the history
+    # layer (it does not execute).  Set as an attribute, not an ``__init__``
+    # parameter, so a data parameter named ``description`` cannot collide.
+    action.description = element.attrib.get("description")
     return action
 
 

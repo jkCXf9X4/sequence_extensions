@@ -7,7 +7,7 @@ The engine executes the node tree produced by
 (``GraphFuture`` / ``GraphPool``).  The semantics follow the paper
 "Automation Nation: Taming Complex V&V Workflows" (16th International
 Modelica & FMI Conference, September 2025, Lucerne, Switzerland;
-DOI 10.3384/ecp12076741), section 4.2:
+DOI 10.3384/ecp218751), section 4.2:
 
 * **Sequential** — children execute in strict order: child ``i + 1`` depends
   on child ``i``.
@@ -16,9 +16,13 @@ DOI 10.3384/ecp12076741), section 4.2:
   children's results, and each child's result is also passed to the next
   sibling as its own keyword argument (fan-in).
 * **Global parameters** — the root group's ``.globals`` (the
-  ``<VerificationWorkflow>`` wrapper's parameter elements) are passed as
-  default keyword arguments to EVERY function; an action's own ``.params``
-  win over globals, and upstream results win over both.
+  ``<VerificationWorkflow>`` wrapper's parameter elements, overridden by the
+  run-time ``parameters`` of ``run_workflow`` / ``Test_Framework``, which win
+  on a name clash) are passed as default keyword arguments to EVERY function;
+  an action's own ``.params`` win over globals, and upstream results win over
+  both.  (Template placeholders also resolve against the merged globals — the
+  engine re-parses the XML with them merged before executing, so a run-time
+  parameter joins the global tier of template binding.)
 * **Dynamic adaptation** — a registered function may return an
   ``Action`` / ``Sequential`` / ``Parallel`` node (or a list of them); the
   returned node(s) are spliced into the workflow in place of the action's
@@ -50,6 +54,17 @@ and replay it deterministically with
 :func:`sequence_extensions.workflow.history.replay`.  Without a
 ``history`` argument the engine behaves exactly as before.
 
+Run options (all keyword-only on ``run_workflow`` / ``Test_Framework``,
+all defaulting to the current behavior): ``params_mode`` ("full" |
+"summary" — recorded param payloads become item counts), ``max_workers``
+(the ``GraphPool`` size), ``adaptation_bound`` (the dynamic-node bound),
+``executor`` (a caller-owned ``GraphPool``) and ``dry_run`` (plan mode:
+validate and walk with no-op functions, and return the tree instead of a
+result — the answer to the paper's opacity criticism, "it is not possible
+to determine how the function find_files will alter the downstream actions
+by only looking at the representation").  See the two functions'
+docstrings.
+
 Opt-in artifact store (IMP-005, IMP-007): pass ``artifacts=ArtifactStore(root)``
 (see :mod:`sequence_extensions.workflow.artifacts`) to give the run a
 by-reference data plane.  The ENGINE carries no store knowledge: the
@@ -71,7 +86,13 @@ from typing import TYPE_CHECKING, Any, Callable, Union
 
 from ..graph import GraphFuture, GraphPool
 from .adaptation import ADAPTATION_BOUND, AdaptationOp, DAGHandle
-from .history import ExecutionRecord, RunHistory, recordable_result, resolve_group_path
+from .history import (
+    ExecutionRecord,
+    RunHistory,
+    _workflow_digest,
+    recordable_result,
+    resolve_group_path,
+)
 from .params import normalize_params
 from .registry import DEFAULT_REGISTRY, FunctionRegistry
 from .schema import Action, Parallel, Sequential, parse_workflow
@@ -85,6 +106,7 @@ __all__ = [
     "Test_Framework",
     "WalkContext",
     "check_splice_scope",
+    "run_python_workflow",
     "run_workflow",
 ]
 
@@ -248,8 +270,15 @@ class _Engine:
         registry: FunctionRegistry,
         parameters: dict[str, Any] | None = None,
         history: RunHistory | None = None,
+        *,
+        source: str | None = None,
+        params_mode: str = "full",
+        max_workers: int | None = None,
+        adaptation_bound: int | None = None,
+        executor: GraphPool | None = None,
+        dry_run: bool = False,
     ) -> None:
-        """Create an engine for ``root``; ``parameters`` override XML globals."""
+        """Create an engine for ``root``; the keyword options mirror ``run_workflow``'s."""
         self._registry = registry
         self._globals: dict[str, Any] = dict(root.globals)
         if parameters:
@@ -261,10 +290,34 @@ class _Engine:
         # added by handle commits; exceeding the bound raises a
         # deterministic ValueError (a runaway adaptation terminates).
         self._dynamic_count = 0
-        self._adaptation_bound = ADAPTATION_BOUND
+        self._adaptation_bound = (
+            ADAPTATION_BOUND if adaptation_bound is None else adaptation_bound
+        )
+        if self._adaptation_bound < 0:
+            raise ValueError(
+                f"adaptation bound must be >= 0, got {adaptation_bound}"
+            )
         # Opt-in execution history (None = record nothing; the engine then
         # behaves exactly as if this feature did not exist).
         self._history = history
+        # Run identity (IMP-011): the workflow digest stamped on the history
+        # at run start (None only when no history was requested).
+        self._source = source
+        if params_mode not in ("full", "summary"):
+            raise ValueError(
+                f"unknown params_mode {params_mode!r} (expected 'full' or 'summary')"
+            )
+        # The recorded-params shape ("full" keeps the resolved kwargs as
+        # before; "summary" records bulk payloads as their item counts —
+        # the call itself is unchanged).
+        self._params_mode = params_mode
+        self._max_workers = max_workers
+        # A caller-supplied pool wins over ``max_workers`` and is NOT shut
+        # down at run end (it stays owned by the caller).
+        self._executor = executor
+        # Plan mode (IMP-013): the walk runs with no-op functions, so nothing
+        # executes and nothing is spliced or adapted; the tree is the result.
+        self._dry_run = dry_run
 
     # ------------------------------------------------------------ #
     # Public entry point
@@ -279,12 +332,29 @@ class _Engine:
         out-of-scope splice attempt, and propagates any exception raised by
         a function.
         """
-        with GraphPool() as pool:
-            self._pool = pool
+        pool = (
+            self._executor
+            if self._executor is not None
+            else GraphPool(
+                max_workers=16 if self._max_workers is None else self._max_workers
+            )
+        )
+        owned = self._executor is None
+        self._pool = pool
+        try:
+            if self._history is not None:
+                # Run identity (IMP-011): the workflow digest, stamped at run
+                # start (the history's ``run_id`` was created with it).
+                self._history.source = self._source
             # Eager validation: every action's function name must resolve
             # BEFORE any execution starts (parity with the old build pass).
             self._validate_node(self._root)
             self._walk_group(self._root, [], ())
+            if self._dry_run:
+                # Plan mode: the walk ran with no-op functions, so there is no
+                # final result to resolve — the effective plan tree (the tree
+                # as it stood at the end of the walk) is the return value.
+                return self._root
             # The tree may have been spliced during execution, so the final
             # action is resolved AFTER the run (the last child of the root,
             # resolved recursively into groups).
@@ -295,6 +365,13 @@ class _Engine:
             if self._history is not None:
                 self._mark_final(final_action)
             return result
+        finally:
+            self._pool = None
+            if owned:
+                # An engine-owned pool is shut down here (the with-statement
+                # equivalent); a caller-supplied executor stays owned by the
+                # caller and is NOT shut down.
+                pool.__exit__(None, None, None)
 
     # ------------------------------------------------------------ #
     # Pre-validation (eager unknown-function errors)
@@ -442,7 +519,11 @@ class _Engine:
                     results[position] = self._handle_result(
                         action, group, position, raw, upstream, ancestry
                     )
-                except Exception as exc:
+                except BaseException as exc:
+                    # BaseException (matching _walk_child_thread): a
+                    # KeyboardInterrupt from an action is collected too, so
+                    # every child still settles, and the first failure in
+                    # child order is re-raised below.
                     errors.append((position, exc))
         for _, thread, _ in threads:
             thread.join()
@@ -841,13 +922,21 @@ class _Engine:
 
         The record captures what ACTUALLY executed: the action's registry
         name, the resolved function's name, the resolved parameters (the
-        exact ``kwargs`` the function received), the result (a dynamic-
-        adaptation return normalized by ``recordable_result``) or the
-        exception, timestamps taken around the call, the group path at
-        call time, and whether the action was spliced in at runtime.  The
-        record is appended to the history when the call completes, so the
-        history is in true completion order.  An exception is re-raised
-        after being recorded.
+        exact ``kwargs`` the function received, minus the engine's reserved
+        kwarg names — see below), the result (a dynamic-adaptation return
+        normalized by ``recordable_result``) or the exception, timestamps
+        taken around the call, the group path at call time, and whether the
+        action was spliced in at runtime.  The record is appended to the
+        history when the call completes, so the history is in true completion
+        order.  An exception is re-raised after being recorded.
+
+        The engine's reserved kwarg names (``dag``, ``walk_context``) carry
+        engine-injected handles, not user data — their evidence lives in
+        ``record.scope`` and the store's manifest — so exactly the injected
+        names are stripped from the recorded ``params`` and the record holds
+        plain, comparable data.  A same-named parameter that the engine did
+        NOT inject (no ``dag``-declaring function, no store) is user data and
+        stays.
 
         The artifact address (``record.artifacts``) is read AFTER the
         call: a wrapped registry view mints at call entry (IMP-007), so
@@ -855,26 +944,47 @@ class _Engine:
         success and the exception path.  ``None`` when the run has no
         store.
         """
+        params = dict(kwargs)
+        # Strip exactly the engine-injected reserved kwargs: their evidence
+        # lives structurally in record.scope / the store's manifest.
+        if self._registry.adapts(action.function):
+            params.pop("dag", None)
+        if self._registry.wants_context(action.function):
+            params.pop("walk_context", None)
+        if self._params_mode == "summary":
+            # Summary mode: bulk dict/list/tuple payloads become item counts
+            # (the shape library functions emit); the call itself is
+            # unchanged — this is the history-side half of the by-reference
+            # split (the artifact store is the by-reference plane).
+            params = {
+                key: len(value) if isinstance(value, (dict, list, tuple)) else value
+                for key, value in params.items()
+            }
         record = ExecutionRecord(
             name=action.function,
             function=getattr(fn, "__name__", type(fn).__name__),
-            params=dict(kwargs),
+            params=params,
+            run_id=self._history.run_id,
             group_path=self._path_of(action),
             dynamic=getattr(action, "_engine_dynamic", False),
+            description=getattr(action, "description", None),
         )
         # Identity-keyed link so the final action's record can be found
         # exactly, even if a later splice shifts tree positions.
         action._engine_record = record
+        mono_start = time.monotonic()
         record.started_at = time.time()
         try:
             result = fn(**kwargs)
         except BaseException as exc:
             record.ended_at = time.time()
+            record.duration = time.monotonic() - mono_start
             record.exception = exc
             record.artifacts = _action_address(action)
             self._history.add(record)
             raise
         record.ended_at = time.time()
+        record.duration = time.monotonic() - mono_start
         record.artifacts = _action_address(action)
         record.result = recordable_result(result)
         self._history.add(record)
@@ -951,6 +1061,27 @@ def _wire_store(
     return artifacts.wrap_registry(registry)
 
 
+def _dry_noop(**kwargs: Any) -> None:
+    """A dry-run function stub: it runs nothing and returns ``None``."""
+    return None
+
+
+def _dry_run_registry(registry: FunctionRegistry) -> FunctionRegistry:
+    """
+    The dry-run registry view: every registered name maps to a no-op stub.
+
+    The NAME SET matches the real registry, so the engine's eager
+    unknown-function validation still rejects an unknown name in plan mode.
+    Nothing else does: the stubs declare no reserved kwarg names, so nothing
+    is injected, and they return ``None`` — a plan run splices nothing,
+    adapts nothing and mints nothing.
+    """
+    dry = FunctionRegistry()
+    for name in registry.names():
+        dry.register(name, _dry_noop)
+    return dry
+
+
 def _apply_params(target: _Node, params: dict[str, Any]) -> None:
     """
     Apply an ``adjust`` op's parameter overrides to ``target`` in place.
@@ -997,6 +1128,12 @@ def run_workflow(
     parameters: dict[str, Any] | None = None,
     history: RunHistory | None = None,
     artifacts: ArtifactStore | None = None,
+    *,
+    params_mode: str = "full",
+    max_workers: int | None = None,
+    adaptation_bound: int | None = None,
+    executor: GraphPool | None = None,
+    dry_run: bool = False,
 ) -> Any:
     """
     Parse a workflow XML document and execute it; return the final result.
@@ -1008,6 +1145,8 @@ def run_workflow(
     XML's global parameters (``<VerificationWorkflow>`` wrapper elements),
     with ``parameters`` winning on a name clash.  The final result is the
     return value of the last action in the root group's execution order.
+    ``parameters`` also reach ``<use-template>`` placeholders: the workflow
+    is re-parsed with them merged over the XML globals before executing.
 
     ``history`` is OPT-IN execution recording (default ``None`` = record
     nothing, zero behavior change): pass a
@@ -1030,17 +1169,59 @@ def run_workflow(
     their addressing at call time from the engine's injected walk
     context.  See :mod:`sequence_extensions.workflow.artifacts`.
 
+    Run options (keyword-only):
+
+    * ``params_mode`` — the recorded-params shape: ``"full"`` (the
+      default) records the resolved kwargs as before; ``"summary"``
+      records each dict/list/tuple payload as its item count (the call
+      itself is unchanged — the by-reference plane for bulk payloads is
+      the artifact store).  Unknown values raise ``ValueError``.
+    * ``max_workers`` — the ``GraphPool`` worker count (default 16).
+    * ``adaptation_bound`` — the dynamic-node bound (default
+      ``ADAPTATION_BOUND``); must be >= 0.
+    * ``executor`` — a caller-owned :class:`GraphPool` (it wins over
+      ``max_workers`` and is NOT shut down at run end — the caller keeps
+      its lifecycle).  The pool is thread-based: CPU-bound Python
+      functions (a GIL-bound simulation) see no speed-up from it — see
+      :mod:`sequence_extensions.graph`.
+    * ``dry_run`` — plan mode: the workflow is parsed (templates
+      expanded), every function name is validated, and the walk runs with
+      no-op functions; ``run_workflow`` returns the workflow tree (the
+      effective plan) instead of a result, and ``history`` still records
+      (each record shows what the action WOULD have been called with).
+      Nothing executes: no side effects, no splices, no store directories
+      (``artifacts`` is ignored — a plan mints nothing).
+
     Raises ``ValueError`` for invalid XML, an unknown function name (naming
-    the function), or an out-of-scope dynamic-adaptation splice attempt.
+    the function), an out-of-scope dynamic-adaptation splice attempt, an
+    unknown ``params_mode``, or a negative ``adaptation_bound``.
     """
     root = parse_workflow(xml_source)
+    if parameters:
+        merged = {**root.globals, **parameters}
+        if merged != root.globals:
+            # Run-time parameters reach template placeholders: re-parse with
+            # the merged globals (two cheap, deterministic parses; template
+            # expansion sees the run-time overrides).
+            root = parse_workflow(xml_source, merged)
+    effective_registry = (
+        registry if registry is not None else DEFAULT_REGISTRY
+    )
     engine = _Engine(
         root,
-        _wire_store(
-            registry if registry is not None else DEFAULT_REGISTRY, artifacts
+        (
+            _dry_run_registry(effective_registry)
+            if dry_run
+            else _wire_store(effective_registry, artifacts)
         ),
         parameters,
         history,
+        source=_workflow_digest(xml_source=xml_source),
+        params_mode=params_mode,
+        max_workers=max_workers,
+        adaptation_bound=adaptation_bound,
+        executor=executor,
+        dry_run=dry_run,
     )
     return engine.run()
 
@@ -1051,6 +1232,12 @@ def Test_Framework(
     registry: FunctionRegistry | None = None,
     history: RunHistory | None = None,
     artifacts: ArtifactStore | None = None,
+    *,
+    params_mode: str = "full",
+    max_workers: int | None = None,
+    adaptation_bound: int | None = None,
+    executor: GraphPool | None = None,
+    dry_run: bool = False,
 ) -> Any:
     """
     Execute a workflow built via the Python API (the paper's Listing 10).
@@ -1067,15 +1254,36 @@ def Test_Framework(
     ``artifacts`` is the OPT-IN by-reference artifact store (default
     ``None`` = no store, zero behavior change); see :func:`run_workflow`.
 
+    The keyword-only run options mirror :func:`run_workflow` (``params_mode``,
+    ``max_workers``, ``adaptation_bound``, ``executor``, ``dry_run`` — with
+    ``dry_run=True`` returning the workflow tree instead of a result).
+
     The paper's call form ``Test_Framework(parameters=common_parameters,
     seq=top_seq)`` executes the workflow and returns its final result.
     """
+    effective_registry = (
+        registry if registry is not None else DEFAULT_REGISTRY
+    )
     engine = _Engine(
         seq,
-        _wire_store(
-            registry if registry is not None else DEFAULT_REGISTRY, artifacts
+        (
+            _dry_run_registry(effective_registry)
+            if dry_run
+            else _wire_store(effective_registry, artifacts)
         ),
         parameters,
         history,
+        source=_workflow_digest(root=seq),
+        params_mode=params_mode,
+        max_workers=max_workers,
+        adaptation_bound=adaptation_bound,
+        executor=executor,
+        dry_run=dry_run,
     )
     return engine.run()
+
+
+#: The Python-API run entry point under a name that does not read as a test
+#: utility (the paper's Listing 10 call form; ``Test_Framework`` is kept for
+#: paper parity).
+run_python_workflow = Test_Framework

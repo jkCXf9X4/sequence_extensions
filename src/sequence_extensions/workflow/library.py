@@ -4,7 +4,7 @@ The V&V workflow library: the paper's library functions, shipped.
 This module is the concrete home of the deterministic library functions
 specified by the paper "Automation Nation: Taming Complex V&V Workflows"
 (16th International Modelica & FMI Conference, September 2025, Lucerne,
-Switzerland; DOI 10.3384/ecp12076741).  It is the embodiment of the
+Switzerland; DOI 10.3384/ecp218751).  It is the embodiment of the
 package's design principle that *complexity lives in the library, not the
 schema*: the schema (``Action`` / ``Sequential`` / ``Parallel``) stays
 minimal, and the reusable, deterministic building blocks of a V&V workflow
@@ -104,6 +104,7 @@ registration, for use outside the engine.
 from __future__ import annotations
 
 import time
+import warnings
 from pathlib import Path
 from typing import Any, Callable
 
@@ -659,7 +660,13 @@ def aggregate(
                         "value": _reduce(op, group_values),
                     }
                     for group, group_values in sorted(
-                        keyed.items(), key=lambda item: str(item[0])
+                        keyed.items(),
+                        # Sort groups by (type name, value): same-type
+                        # groups sort naturally (ints numerically), and
+                        # mixed-type groups never compare values across
+                        # types (a str key and an int key do not raise a
+                        # TypeError).
+                        key=lambda item: (type(item[0]).__name__, item[0]),
                     )
                 },
             }
@@ -838,8 +845,14 @@ def register_library(registry: FunctionRegistry | None = None) -> FunctionRegist
     engine's default registry path (or into their own ``FunctionRegistry``).
     """
     target = registry if registry is not None else DEFAULT_REGISTRY
+    # The library functions' reserved-name declarations (``dag`` on the
+    # drivers, ``artifacts`` / ``walk_context`` on the store-integration
+    # paths) are the documented injection contract, not a collision — the
+    # registry's reserved-name warning is silenced for this batch
+    # registration (pass warn_reserved=False for the same effect on your
+    # own batch registrations).
     for fn in LIBRARY_FUNCTIONS:
-        target.register(fn.__name__, fn)
+        target.register(fn.__name__, fn, warn_reserved=False)
     return target
 
 
@@ -866,6 +879,27 @@ def _summary(results: dict[str, Any]) -> dict[str, int]:
     return {k: len(v) for k, v in sorted(results.items())}
 
 
+def _upstream_suffix(key: str, upstream: str) -> int | None:
+    """
+    The collision suffix of result key ``key`` for upstream ``upstream``
+    (``1`` for the plain name, ``n`` for ``upstream_n``), or ``None`` when
+    ``key`` is not one of the engine's result names for ``upstream``.
+
+    The match is STRICT: only the plain name and the engine's own collision
+    suffixes (``name``, ``name_2``, ...) match.  A same-prefixed kwarg that is
+    neither — ``simulate_note``, ``simulate_backup``, ... — is user data and
+    is never treated as a result (a non-numeric tail is not a suffix, so it
+    is never parsed with a bare ``int``).
+    """
+    if key == upstream:
+        return 1
+    prefix = upstream + "_"
+    if not key.startswith(prefix):
+        return None
+    tail = key[len(prefix) :]
+    return int(tail) if tail.isdigit() else None
+
+
 def _upstream_field(kwargs: dict[str, Any], upstream: str, field: str) -> Any:
     """
     Read ``field`` from the LATEST upstream result named ``upstream``.
@@ -879,10 +913,9 @@ def _upstream_field(kwargs: dict[str, Any], upstream: str, field: str) -> Any:
     best_key: str | None = None
     best_suffix = 0
     for key in kwargs:
-        if key == upstream or key.startswith(upstream + "_"):
-            suffix = 1 if key == upstream else int(key.rsplit("_", 1)[1])
-            if suffix > best_suffix:
-                best_key, best_suffix = key, suffix
+        suffix = _upstream_suffix(key, upstream)
+        if suffix is not None and suffix > best_suffix:
+            best_key, best_suffix = key, suffix
     if best_key is None:
         raise ValueError(
             f"check/evaluate: no upstream result named {upstream!r} is "
@@ -902,12 +935,14 @@ def _upstream_count(kwargs: dict[str, Any], upstream: str) -> int:
     Count the upstream results named ``upstream`` (collision-suffixed).
 
     When the producing action runs once per iteration (the intended use),
-    this count is the number of iterations so far.
+    this count is the number of iterations so far.  Same-prefix kwargs that
+    are not result names (a ``<name>_note`` parameter, e.g.) are not results
+    and are not counted.
     """
     return sum(
         1
         for key in kwargs
-        if key == upstream or key.startswith(upstream + "_")
+        if _upstream_suffix(key, upstream) is not None
     )
 
 
@@ -964,10 +999,9 @@ def _upstream_latest(kwargs: dict[str, Any], upstream: str) -> Any:
     best_key: str | None = None
     best_suffix = 0
     for key in kwargs:
-        if key == upstream or key.startswith(upstream + "_"):
-            suffix = 1 if key == upstream else int(key.rsplit("_", 1)[1])
-            if suffix > best_suffix:
-                best_key, best_suffix = key, suffix
+        suffix = _upstream_suffix(key, upstream)
+        if suffix is not None and suffix > best_suffix:
+            best_key, best_suffix = key, suffix
     if best_key is None:
         raise ValueError(
             f"check/evaluate: no upstream result named {upstream!r} is "

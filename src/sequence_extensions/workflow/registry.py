@@ -30,6 +30,23 @@ __all__ = [
 ]
 
 
+#: The engine's reserved kwarg names: for a function that declares one, the
+#: engine injects its own value (the adaptation handle, the walk context, the
+#: artifact handle) and it wins over any same-named parameter.  Declaring one
+#: of these names emits a ``UserWarning`` at registration time (the warning
+#: tells a registrant who meant the name as data).
+_RESERVED_KWARGS = ("artifacts", "dag", "walk_context")
+
+
+def _declared_reserved(fn: Callable[..., Any]) -> tuple[str, ...]:
+    """The reserved kwarg names ``fn``'s signature declares, sorted."""
+    try:
+        parameters = inspect.signature(fn).parameters
+    except (TypeError, ValueError):  # non-introspectable callable: nothing declared
+        return ()
+    return sorted(_RESERVED_KWARGS & parameters.keys())
+
+
 def wants_dag(fn: Callable[..., Any]) -> bool:
     """
     True when ``fn``'s signature declares an explicit ``dag`` parameter.
@@ -127,7 +144,9 @@ class FunctionRegistry:
         # (plain structural position data) into its calls.
         self._wants_context: dict[str, bool] = {}
 
-    def register(self, name: str, fn: Callable[..., Any]) -> None:
+    def register(
+        self, name: str, fn: Callable[..., Any], *, warn_reserved: bool = True
+    ) -> None:
         """
         Register ``fn`` under ``name`` (replacing any earlier registration).
 
@@ -138,12 +157,21 @@ class FunctionRegistry:
         registration time, so the engine never inspects a signature on the
         hot path.
 
+        ``warn_reserved`` (default ``True``) silences the reserved-kwarg
+        warning below for a batch registration whose reserved-name
+        declarations ARE the documented injection contract (the library's own
+        registration does this).
+
         Raises ``ValueError`` if ``name`` is empty or ``fn`` is not callable.
 
         Emits a ``UserWarning`` if ``name`` is already registered with a
         different function — the earlier registration is then replaced.
         Re-registering the same function object is a silent no-op
-        (idempotent, e.g. a decorator applied more than once).
+        (idempotent, e.g. a decorator applied more than once).  Also emits a
+        ``UserWarning`` when ``fn`` declares one of the engine's reserved
+        kwarg names (``dag`` / ``walk_context`` / ``artifacts``): the engine
+        injects its own value for such a parameter, winning over any
+        same-named parameter — rename the parameter if it is meant as data.
         """
         if not name:
             raise ValueError("function name must be a non-empty string")
@@ -162,6 +190,17 @@ class FunctionRegistry:
         self._wants_dag[name] = wants_dag(fn)
         self._wants_artifacts[name] = wants_artifacts(fn)
         self._wants_context[name] = wants_context(fn)
+        if warn_reserved:
+            declared = _declared_reserved(fn)
+            if declared:
+                warnings.warn(
+                    f"function {name!r} declares the reserved kwarg name(s) "
+                    f"{', '.join(repr(reserved) for reserved in declared)}; "
+                    "the engine injects its own value(s) over any same-named "
+                    "parameter (rename the parameter if it is meant as data)",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
     def get(self, name: str) -> Callable[..., Any]:
         """
