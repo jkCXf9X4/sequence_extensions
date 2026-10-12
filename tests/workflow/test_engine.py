@@ -8,13 +8,20 @@ dynamic adaptation (splicing), scope restriction, and single execution.
 import threading
 from pathlib import Path
 
+import pytest
+
 from sequence_extensions import (
     Action,
     FunctionRegistry,
+    Parallel,
     Sequential,
     Test_Framework,
+    run_python_workflow,
     run_workflow,
 )
+from sequence_extensions.graph import GraphPool
+from sequence_extensions.workflow.artifacts import ArtifactStore
+from sequence_extensions.workflow.history import RunHistory
 
 from . import LISTING_7, LISTING_9, _make_recorder, _names_in_order
 
@@ -372,3 +379,161 @@ def test_run_workflow_listing_9_end_to_end(tmp_path):
     xml = LISTING_9.replace("./test", str(test_dir))
     result = run_workflow(xml, parameters={"model": "./model_1"})
     assert result is not None
+
+
+# --------------------------------------------------------------------------- #
+# 5. RUN OPTIONS (IMP-012 / IMP-013)
+# --------------------------------------------------------------------------- #
+
+
+def test_dry_run_returns_the_plan_and_executes_nothing():
+    """``dry_run=True`` walks with no-op functions and returns the tree.
+
+    The answer to the paper's opacity criticism: the plan shows the effective
+    tree (templates already expanded at parse time) without executing anything.
+    """
+    ran = []
+    registry = FunctionRegistry()
+    registry.register("probe", lambda **kwargs: ran.append(kwargs) or "real")
+    history = RunHistory()
+    plan = run_workflow(
+        "<sequential><action function='probe'><argument key='x' value='1'/></action></sequential>",
+        registry=registry,
+        history=history,
+        dry_run=True,
+    )
+    assert ran == []  # nothing executed
+    assert isinstance(plan, Sequential)  # the plan tree is the result
+    # The history still records what the action WOULD have been called with.
+    assert history.records[0].params == {"x": "1"}
+    assert history.records[0].result is None
+    # Unknown functions still fail eagerly in plan mode.
+    with pytest.raises(ValueError, match="unknown function"):
+        run_workflow(
+            "<sequential><action function='nope'/></sequential>",
+            registry=registry,
+            dry_run=True,
+        )
+
+
+def test_max_workers_sizes_the_pool():
+    """``max_workers`` reaches the ``GraphPool`` (IMP-012).
+
+    One worker serializes a parallel group (the two-child barrier cannot
+    form); two workers run the children concurrently and the barrier
+    releases.
+    """
+    registry = FunctionRegistry()
+    registry.register("w", lambda **kwargs: "ok")
+    with pytest.raises(threading.BrokenBarrierError):
+        barrier = threading.Barrier(2, timeout=2)
+        registry.register("b", lambda **kwargs: (barrier.wait(), "ok")[1])
+        xml = "<parallel><action function='b'/><action function='b'/></parallel>"
+        run_workflow(xml, registry=registry, max_workers=1)
+    barrier = threading.Barrier(2, timeout=5)
+    registry.register("c", lambda **kwargs: (barrier.wait(), "ok")[1])
+    xml2 = "<parallel><action function='c'/><action function='c'/></parallel>"
+    assert run_workflow(xml2, registry=registry, max_workers=2) == "ok"
+
+
+def test_caller_owned_executor_is_not_shut_down():
+    """A caller-supplied ``GraphPool`` wins over ``max_workers`` and stays owned."""
+    ran = []
+    registry = FunctionRegistry()
+    registry.register("w", lambda **kwargs: ran.append(1) or "ok")
+    pool = GraphPool(max_workers=3)
+    seq = Parallel(Action("w"), Action("w"))
+    assert run_python_workflow(seq, registry=registry, executor=pool) == "ok"
+    assert not pool._shutdown  # the caller keeps the lifecycle
+    pool.__exit__(None, None, None)  # ... and shuts it down itself
+    assert pool._shutdown
+    assert len(ran) == 2
+
+
+def test_negative_adaptation_bound_and_unknown_params_mode_raise():
+    """Invalid run options raise a deterministic ``ValueError`` (IMP-012/011)."""
+    registry = FunctionRegistry()
+    registry.register("p", lambda **kwargs: "ok")
+    xml = "<sequential><action function='p'/></sequential>"
+    with pytest.raises(ValueError, match=">= 0"):
+        run_workflow(xml, registry=registry, adaptation_bound=-1)
+    with pytest.raises(ValueError, match="params_mode"):
+        run_workflow(xml, registry=registry, params_mode="oops")
+
+
+def test_zero_adaptation_bound_is_accepted():
+    """``adaptation_bound=0`` is a valid (splice-free) configuration."""
+    ran = []
+    registry = FunctionRegistry()
+    registry.register("p", lambda **kwargs: ran.append(1) or "ok")
+    assert run_workflow(
+        "<sequential><action function='p'/></sequential>",
+        registry=registry,
+        adaptation_bound=0,
+    ) == "ok"
+    assert len(ran) == 1
+
+
+def test_run_python_workflow_is_the_test_framework_alias():
+    """``run_python_workflow`` is the paper-parity name for ``Test_Framework``."""
+    assert run_python_workflow is Test_Framework
+
+
+# --------------------------------------------------------------------------- #
+# Wiring: run history <-> artifact store (run identity, params_mode)
+# --------------------------------------------------------------------------- #
+
+
+def test_store_header_carries_run_id_when_history_and_store_passed(tmp_path):
+    """Given both a history and a store, the store's manifest run header
+    carries the run's identity (``run_id``) — even when the store was
+    constructed WITHOUT a history (the engine wires the run's history in)."""
+    registry = FunctionRegistry()
+    registry.register("p", lambda **kwargs: "ok")
+    history = RunHistory()
+    store = ArtifactStore(tmp_path / "run")  # constructed without a history
+    run_workflow(
+        "<sequential><action function='p'/></sequential>",
+        registry=registry,
+        history=history,
+        artifacts=store,
+    )
+    header = store.header()
+    assert header is not None
+    assert header["run_id"] == history.run_id  # the SAME identity
+
+
+def test_store_header_keeps_caller_owned_history(tmp_path):
+    """A store the caller constructed WITH a history keeps it: the engine
+    does not override caller ownership with the run's history."""
+    registry = FunctionRegistry()
+    registry.register("p", lambda **kwargs: "ok")
+    caller_history = RunHistory()
+    run_history = RunHistory()
+    store = ArtifactStore(tmp_path / "run", history=caller_history)
+    run_workflow(
+        "<sequential><action function='p'/></sequential>",
+        registry=registry,
+        history=run_history,
+        artifacts=store,
+    )
+    header = store.header()
+    assert header is not None
+    assert header["run_id"] == caller_history.run_id
+    assert header["run_id"] != run_history.run_id
+
+
+def test_params_mode_stamped_on_history_at_run_start():
+    """The run's ``params_mode`` option is stamped on the history at run
+    start, so the recorded history reflects the actual mode used."""
+    registry = FunctionRegistry()
+    registry.register("p", lambda **kwargs: "ok")
+    history = RunHistory()
+    assert history.params_mode == "full"  # the default
+    run_workflow(
+        "<sequential><action function='p'/></sequential>",
+        registry=registry,
+        history=history,
+        params_mode="summary",
+    )
+    assert history.params_mode == "summary"

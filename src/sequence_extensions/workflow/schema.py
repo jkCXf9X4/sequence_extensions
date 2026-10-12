@@ -26,8 +26,10 @@ these nodes:
 * A bare ``<sequential>`` or ``<parallel>`` root (no wrapper) is also
   accepted; its ``.globals`` is an empty dict.
 * ``<scope type="sequential|parallel">`` is the explicit form of a
-  grouping: ``type`` is required and must be ``sequential`` or
-  ``parallel``; an optional ``name`` attribute labels the group (it does
+  grouping: ``type`` must be ``sequential`` or ``parallel`` and may be
+  OMITTED when the scope holds exactly one child — one child carries no
+  ordering, so the parser then builds a sequential group (the default);
+  an optional ``name`` attribute labels the group (it does
   not appear in history path labels, which are derived from the group
   type) and an optional ``description`` attribute (also on
   ``<sequential>`` / ``<parallel>`` / ``<action>``) labels the node for
@@ -93,9 +95,9 @@ limiting duplication between workflows):
 
 Invalid structure raises ``ValueError`` with a message naming the problem:
 a root element that is not ``<VerificationWorkflow>`` / ``<sequential>``
-/ ``<parallel>`` / ``<scope>``, a ``<scope>`` missing its ``type``
-attribute or carrying a ``type`` other than ``sequential`` / ``parallel``,
-zero or multiple top-level groupings inside
+/ ``<parallel>`` / ``<scope>``, a ``<scope>`` carrying a ``type`` other
+than ``sequential`` / ``parallel``, or omitting ``type`` while holding
+zero or several children, zero or multiple top-level groupings inside
 ``<VerificationWorkflow>``, an unknown element name anywhere (including a
 non-``<argument>`` child of an ``<action>`` or of the
 ``<VerificationWorkflow>`` wrapper), an ``<action>`` without a ``function``
@@ -492,19 +494,28 @@ def _parse_group(
 
     ``<sequential>`` / ``<parallel>`` are aliases for
     ``<scope type="sequential">`` / ``<scope type="parallel">``: the
-    ``type`` attribute is required on ``<scope>`` and validated, and optional
+    ``type`` attribute on ``<scope>`` is validated and may be omitted when
+    the scope holds exactly one child — one child carries no ordering, so
+    the parser builds a sequential group (the default).  Optional
     ``name`` and ``description`` attributes label the group (history path
     labels stay derived from the group type).
     """
     if element.tag == _SCOPE_TAG:
         scope_type = element.attrib.get("type")
-        if not scope_type:
-            raise ValueError("<scope> element is missing its 'type' attribute")
-        if scope_type not in _GROUP_TAGS:
+        if scope_type:
+            if scope_type not in _GROUP_TAGS:
+                raise ValueError(
+                    f"<scope> element has invalid 'type' attribute {scope_type!r}; "
+                    "must be 'sequential' or 'parallel'"
+                )
+        elif len(element) != 1:
             raise ValueError(
-                f"<scope> element has invalid 'type' attribute {scope_type!r}; "
-                "must be 'sequential' or 'parallel'"
+                "<scope> element without a 'type' attribute must hold "
+                "exactly one child; with zero or several children the "
+                "'type' attribute is required"
             )
+        else:
+            scope_type = "sequential"
     else:
         scope_type = element.tag
     name = element.attrib.get("name")

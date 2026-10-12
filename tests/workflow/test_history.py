@@ -562,3 +562,342 @@ def test_run_history_snapshot_semantics():
     snapshot = history.records
     snapshot.append("mutated")
     assert len(history) == 3
+
+
+# --------------------------------------------------------------------------- #
+# 4. EVIDENCE CORRECTNESS (IMP-010 / IMP-011 / IMP-013)
+# --------------------------------------------------------------------------- #
+
+
+def test_record_params_hold_plain_data_not_injected_handles():
+    """A dag-declaring action's record.params carries plain data only.
+
+    The engine's injected ``dag`` kwarg (the adaptation handle) is engine
+    plumbing, not call evidence: it is stripped from the recorded params and
+    its evidence lives in ``record.scope``.
+    """
+    seen = {}
+
+    def adapter(dag=None, **kwargs):
+        seen["dag"] = dag
+        return "ok"
+
+    registry = _registry(adapter=adapter)
+    history = RunHistory()
+    run_workflow(
+        "<sequential><action function='adapter'/></sequential>",
+        registry=registry,
+        history=history,
+    )
+    assert seen["dag"] is not None  # the handle WAS injected into the call
+    record = history.records[0]
+    assert "dag" not in record.params  # ... and NOT recorded as a param
+    assert record.scope is not None  # its evidence lives in record.scope
+    assert record.params == {}  # no globals, no upstreams: plain data only
+
+
+def test_replay_warns_when_the_registry_drifted():
+    """A re-registered name resolving to a different callable warns at replay.
+
+    The record stores the resolved function's name, so a re-registration
+    between run and replay (the same registry name now resolving to a
+    different callable) is visible instead of silently diverging.
+    """
+    registry, _ = _counter_registry()
+    history = RunHistory()
+    run_workflow(
+        "<sequential><action function='a'/></sequential>",
+        registry=registry,
+        history=history,
+    )
+    drifted = _registry()
+    drifted.register("a", lambda **kwargs: "different")
+    with pytest.warns(UserWarning, match="registry changed"):
+        replayed = replay(history, drifted)
+    assert replayed == "different"  # the replay re-runs the drifted callable
+
+
+def test_record_duration_is_monotonic_and_bounded_by_the_wall_stamps():
+    """``duration`` is a time.monotonic() measurement (IMP-010).
+
+    The wall-clock ``started_at`` / ``ended_at`` stamps remain the audit
+    record; the duration is taken from a monotonic clock so a wall-clock
+    adjustment between the stamps cannot corrupt it.
+    """
+    gate = threading.Event()
+
+    def work(**kwargs):
+        assert gate.wait(timeout=5)
+        return "done"
+
+    registry = _registry(work=work)
+    threading.Timer(0.05, gate.set).start()
+    history = RunHistory()
+    run_workflow(
+        "<sequential><action function='work'/></sequential>",
+        registry=registry,
+        history=history,
+    )
+    record = history.records[0]
+    wall = record.ended_at - record.started_at
+    assert record.duration > 0.0
+    assert record.duration <= wall + 0.2
+
+
+def test_history_carries_the_run_identity():
+    """Records carry the history's ``run_id``; ``source`` is the digest (IMP-011).
+
+    ``run_id`` is a fresh uuid4 hex per history; ``source`` is the sha256 of
+    the workflow XML the engine stamps at run start (``None`` before a run).
+    """
+    import hashlib
+
+    registry, _ = _counter_registry()
+    history = RunHistory()
+    assert history.source is None  # nothing stamped before a run
+    xml = "<sequential><action function='a'/></sequential>"
+    run_workflow(xml, registry=registry, history=history)
+    assert len(history.run_id) == 32  # a uuid4 hex
+    assert history.source == hashlib.sha256(xml.encode("utf-8")).hexdigest()
+    assert all(record.run_id == history.run_id for record in history)
+
+
+def test_params_mode_summary_records_bulk_payloads_as_item_counts():
+    """``params_mode="summary"`` records dict/list/tuple params as counts (IMP-011).
+
+    The call itself is unchanged — the record is the history-side half of the
+    by-reference split (the artifact store is the by-reference plane).
+    """
+    received = {}
+
+    def bulk(**kwargs):
+        received.update(kwargs)
+        return "ok"
+
+    registry = _registry(bulk=bulk)
+    history = RunHistory()
+    Test_Framework(
+        Sequential(Action("bulk", payload=[1, 2, 3], note="x")),
+        registry=registry,
+        history=history,
+        params_mode="summary",
+    )
+    assert received["payload"] == [1, 2, 3]  # the call got the full value
+    assert history.records[0].params == {"payload": 3, "note": "x"}
+    # Full mode (the default) records the resolved value as before.
+    full = RunHistory()
+    Test_Framework(
+        Sequential(Action("bulk", payload=[1, 2, 3])),
+        registry=registry,
+        history=full,
+    )
+    assert full.records[0].params == {"payload": [1, 2, 3]}
+
+
+def test_action_description_is_recorded():
+    """The XML ``description`` attribute lands on the record (IMP-013)."""
+    registry = _registry()
+    registry.register("labeled", lambda **kwargs: "ok")
+    history = RunHistory()
+    run_workflow(
+        "<sequential><action function='labeled' description='check the model'/></sequential>",
+        registry=registry,
+        history=history,
+    )
+    assert history.records[0].description == "check the model"
+    # A node without one records None.
+    run_workflow(
+        "<sequential><action function='labeled'/></sequential>",
+        registry=registry,
+        history=history,
+    )
+    assert history.records[1].description is None
+
+
+# --------------------------------------------------------------------------- #
+# 5. PERSISTENCE: to_json / from_json round-trip (finding 4d)
+# --------------------------------------------------------------------------- #
+
+
+def test_to_json_from_json_round_trips_the_fields_that_matter():
+    """A run history serializes to JSON and back, preserving everything
+    that matters: records (in completion order), run_id, source,
+    params_mode, final_order, and every record field."""
+    registry, _ = _counter_registry()
+    history = RunHistory()
+    xml = "<sequential><action function='a'/><action function='b'/></sequential>"
+    run_workflow(xml, registry=registry, history=history)
+    assert history.final_order is not None
+
+    document = history.to_json()
+    restored = RunHistory.from_json(document)
+
+    # Run-level identity.
+    assert restored.run_id == history.run_id
+    assert restored.source == history.source
+    assert restored.params_mode == history.params_mode
+    assert restored.final_order == history.final_order
+    # Records: same count, same completion order, same fields.
+    assert len(restored) == len(history)
+    for original, back in zip(history, restored):
+        assert back.name == original.name
+        assert back.function == original.function
+        assert back.params == original.params
+        assert back.result == original.result
+        assert back.exception is None
+        assert back.started_at == original.started_at
+        assert back.ended_at == original.ended_at
+        assert back.order == original.order
+        assert back.group_path == original.group_path
+        assert back.dynamic == original.dynamic
+        assert back.adaptations == original.adaptations
+        assert back.scope == original.scope
+        assert back.artifacts == original.artifacts
+        assert back.description == original.description
+        assert back.run_id == original.run_id
+        assert back.duration == original.duration
+
+
+def test_round_trip_preserves_dynamic_and_failed_records():
+    """Spliced (dynamic) records and a recorded exception survive the
+    round-trip: the exception becomes a typed placeholder (its type name
+    and message preserved), the dynamic flag and order indices stay."""
+    registry = _registry()
+    registry.register("boom", lambda **kwargs: 1 / 0)
+    history = RunHistory()
+    with pytest.raises(ZeroDivisionError):
+        run_workflow(
+            "<sequential><action function='boom'/></sequential>",
+            registry=registry,
+            history=history,
+        )
+    restored = RunHistory.from_json(history.to_json())
+    assert len(restored) == 1
+    record = restored.records[0]
+    assert record.name == "boom"
+    assert record.exception is not None
+    assert record.exception.type_name == "ZeroDivisionError"
+    assert record.exception.repr  # the repr survived
+    assert record.exception.message  # str(exc) survived
+    assert record.result is None
+    assert restored.final_order is None  # a failed run marks no final
+
+
+def test_round_trip_of_a_plain_history_is_byte_stable():
+    """Serializing the same history twice yields the same document
+    (deterministic), and a double round-trip is a fixed point."""
+    registry, _ = _counter_registry()
+    history = RunHistory()
+    run_workflow(
+        "<sequential><action function='a'/></sequential>",
+        registry=registry,
+        history=history,
+    )
+    once = history.to_json()
+    twice = history.to_json()
+    assert once == twice
+    assert RunHistory.from_json(once).to_json() == once
+
+
+def test_non_json_params_serialize_as_placeholders_never_crash():
+    """The documented policy for non-JSON-serializable params: a live
+    object (the IMP-010 ``dag``-handle shape) becomes a typed
+    placeholder — the serializer never crashes, and plain data in the
+    SAME params dict is never dropped or altered."""
+
+    class LiveHandle:
+        """A stand-in for a live dag handle kept in a record's params."""
+
+        def __repr__(self):
+            return "<live-handle>"
+
+    history = RunHistory()
+    handle = LiveHandle()
+    record = ExecutionRecord(
+        name="keep",
+        function="keep",
+        params={"handle": handle, "count": 3, "label": "x", "nested": {"a": [1, 2]}},
+        result="ok",
+        run_id=history.run_id,
+    )
+    history.add(record)
+
+    document = history.to_json()  # must not raise
+    restored = RunHistory.from_json(document)
+    params = restored.records[0].params
+    # The live object comes back as its placeholder (a reference, not a
+    # handle): the type name and repr survive.
+    placeholder = params["handle"]
+    assert placeholder.type_name == "LiveHandle"
+    assert placeholder.repr == "<live-handle>"
+    # Plain data in the same dict round-trips exactly.
+    assert params["count"] == 3
+    assert params["label"] == "x"
+    assert params["nested"] == {"a": [1, 2]}
+    # The placeholder is deterministic: re-serializing the restored
+    # history yields the same document.
+    assert restored.to_json() == document
+
+
+def test_non_json_result_and_exception_serialize_as_placeholders():
+    """The policy applies to every value, not just params: a non-JSON
+    result and a non-JSON exception both become typed placeholders."""
+    history = RunHistory()
+    record = ExecutionRecord(
+        name="weird",
+        function="weird",
+        result=object(),
+        exception=ValueError("bad input"),
+        run_id=history.run_id,
+    )
+    history.add(record)
+    restored = RunHistory.from_json(history.to_json())
+    back = restored.records[0]
+    assert back.result.type_name == "object"
+    assert back.exception.type_name == "ValueError"
+    assert back.exception.message == "bad input"
+
+
+def test_from_json_rejects_invalid_documents():
+    """``from_json`` raises ``ValueError`` for documents that are not
+    ``to_json`` documents (not JSON, not an object, missing keys)."""
+    with pytest.raises(ValueError):
+        RunHistory.from_json("not json at all")
+    with pytest.raises(ValueError):
+        RunHistory.from_json("[1, 2, 3]")
+    with pytest.raises(ValueError):
+        RunHistory.from_json('{"run_id": "x"}')  # no records
+    with pytest.raises(ValueError):
+        RunHistory.from_json('{"records": []}')  # no run_id
+
+
+def test_run_level_seed_survives_the_json_round_trip():
+    """The run-level ``seed`` (finding 4e) serializes and deserializes.
+
+    A randomized campaign stamps its seed on the run history (the caller
+    sets ``history.seed``); the serializer preserves it so a deserialized
+    history still names the seed its scenarios were drawn from.  A history
+    that used no randomization round-trips ``seed=None``.
+    """
+    registry, _ = _counter_registry()
+    history = RunHistory()
+    history.seed = 1234  # the caller stamps the campaign's seed
+    run_workflow(
+        "<sequential><action function='a'/></sequential>",
+        registry=registry,
+        history=history,
+    )
+    document = history.to_json()
+    restored = RunHistory.from_json(document)
+    assert restored.seed == 1234
+    # A double round-trip is a fixed point (the seed is plain data).
+    assert RunHistory.from_json(restored.to_json()).seed == 1234
+    # No randomization: the seed stays None through the round-trip.
+    plain = RunHistory()
+    run_workflow(
+        "<sequential><action function='a'/></sequential>",
+        registry=registry,
+        history=plain,
+    )
+    assert plain.seed is None
+    assert RunHistory.from_json(plain.to_json()).seed is None

@@ -278,10 +278,36 @@ def test_parse_scope_name_attribute_labels_group():
     assert alias_root.name is None
 
 
-def test_parse_scope_missing_type_rejected():
-    """A <scope> missing its type attribute is rejected with ValueError."""
+def test_parse_scope_without_type_single_child_defaults_sequential():
+    """A <scope> holding exactly one child may omit the type: one child
+    carries no ordering, so the parser builds a sequential group."""
+    root = parse_workflow('<scope><action function="a"/></scope>')
+    assert isinstance(root, Sequential)
+    assert len(_children(root)) == 1
+    assert _function(_children(root)[0]) == "a"
+    # The type-less form is allowed everywhere a group is allowed (nested).
+    nested = parse_workflow(
+        '<scope type="sequential"><scope><action function="b"/></scope></scope>'
+    )
+    inner = _children(nested)[0]
+    assert isinstance(inner, Sequential)
+    assert _function(_children(inner)[0]) == "b"
+
+
+@pytest.mark.parametrize(
+    "xml",
+    [
+        # Several children: the type is what orders or parallelizes them.
+        '<scope><action function="a"/><action function="b"/></scope>',
+        # Zero children: nothing to walk, the type is still required.
+        "<scope/>",
+    ],
+)
+def test_parse_scope_missing_type_rejected(xml):
+    """A <scope> omitting its type while holding zero or several children
+    is rejected with ValueError."""
     with pytest.raises(ValueError, match="type"):
-        parse_workflow('<scope><action function="a"/></scope>')
+        parse_workflow(xml)
 
 
 def test_parse_scope_invalid_type_rejected():

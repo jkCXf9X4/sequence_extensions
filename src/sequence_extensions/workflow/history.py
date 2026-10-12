@@ -36,6 +36,16 @@ final result; this module supplies the missing evidence layer:
   materialized from the record's ``scope`` snapshot and write ops are
   no-ops, so replaying an adapting run is deterministic and never mutates
   the live tree.
+* :meth:`RunHistory.to_json` / :meth:`RunHistory.from_json` — plain-data
+  persistence: the run's identity (``run_id``, ``source``,
+  ``params_mode``, ``seed``, ``final_order``) and every record serialize
+  to a JSON document and back, so a finished run can be analyzed or
+  audited OFFLINE (traceability that lives only in process memory is not
+  traceability for regression campaigns).  Non-JSON-serializable values
+  (a live ``dag`` handle that a user function kept in its params, an
+  exception object, a workflow node) become typed placeholder dicts —
+  the serializer never crashes and never drops data that IS plain
+  (see :meth:`RunHistory.to_json` for the full policy).
 
 Recording is opt-in: ``run_workflow`` / ``Test_Framework`` accept a
 ``history`` argument (default ``None``); when no history is requested the
@@ -62,6 +72,7 @@ from __future__ import annotations
 import hashlib
 import threading
 import uuid
+import json
 import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -160,6 +171,158 @@ class ExecutionRecord:
 
 
 # --------------------------------------------------------------------------- #
+# Plain-data serialization (to_json / from_json)
+# --------------------------------------------------------------------------- #
+
+#: The key a serialized non-JSON value's placeholder dict carries.
+_PLACEHOLDER_KEY = "__placeholder__"
+
+
+class _Placeholder:
+    """
+    The deserialized form of a serialized non-JSON value.
+
+    A live object that cannot be JSON-serialized (a ``dag`` handle, an
+    exception, a workflow node) serializes to a typed placeholder dict
+    (``{"__placeholder__": "<type>", "repr": ...}``); :meth:`RunHistory.from_json`
+    restores it as a :class:`_Placeholder` — the type name and repr
+    survive the round-trip, the live object does not (a serialized
+    handle is a reference, not a handle).  The class is private: it is
+    the serializer's contract, not a public API.
+    """
+
+    __slots__ = ("type_name", "repr", "message")
+
+    def __init__(self, type_name: str, repr: str, message: str | None = None) -> None:
+        """Bind the placeholder to the serialized value's type and repr."""
+        self.type_name = type_name
+        self.repr = repr
+        self.message = message
+
+    def __repr__(self) -> str:
+        """The ORIGINAL value's repr (so a re-serialization of a
+        restored history is byte-identical to the first one)."""
+        return self.repr
+
+    def __eq__(self, other: Any) -> bool:
+        """Structural equality (type name, repr, message)."""
+        if not isinstance(other, _Placeholder):
+            return NotImplemented
+        return (
+            self.type_name == other.type_name
+            and self.repr == other.repr
+            and self.message == other.message
+        )
+
+
+def _to_plain(value: Any) -> Any:
+    """
+    Recursively turn ``value`` into plain JSON data (the serializer's
+    policy — see :meth:`RunHistory.to_json`).
+
+    Plain JSON data (``None`` / bool / int / float / str / list / dict)
+    passes through unchanged (dicts keep their key order; non-str keys
+    are stringified, the one case ``json`` itself would reject).  A
+    value that is not JSON-serializable becomes a typed placeholder
+    dict: ``{"__placeholder__": "<type>", "repr": "<repr>"}`` — for an
+    exception, plus ``"message"`` (``str(exc)``).  Never raises, never
+    drops plain data.
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, _Placeholder):
+        # A restored placeholder re-serializes to its own dict (the
+        # round-trip is a fixed point: the type name and repr are the
+        # ORIGINAL value's, not the placeholder's).
+        placeholder = {
+            _PLACEHOLDER_KEY: value.type_name,
+            "repr": value.repr,
+        }
+        if value.message is not None:
+            placeholder["message"] = value.message
+        return placeholder
+    if isinstance(value, (list, tuple)):
+        return [_to_plain(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key if isinstance(key, str) else str(key): _to_plain(item)
+            for key, item in value.items()
+        }
+    placeholder: dict[str, Any] = {
+        _PLACEHOLDER_KEY: type(value).__name__,
+        "repr": repr(value),
+    }
+    if isinstance(value, BaseException):
+        placeholder["message"] = str(value)
+    return placeholder
+
+
+def _from_plain(value: Any) -> Any:
+    """
+    Recursively restore a :func:`_to_plain` value (the deserializer's
+    policy — see :meth:`RunHistory.from_json`).
+
+    Plain data comes back unchanged; a placeholder dict comes back as a
+    :class:`_Placeholder` (its type name and repr preserved).
+    """
+    if isinstance(value, list):
+        return [_from_plain(item) for item in value]
+    if isinstance(value, dict):
+        if _PLACEHOLDER_KEY in value:
+            return _Placeholder(
+                value[_PLACEHOLDER_KEY],
+                value.get("repr", ""),
+                value.get("message"),
+            )
+        return {key: _from_plain(item) for key, item in value.items()}
+    return value
+
+
+def _record_to_plain(record: ExecutionRecord) -> dict[str, Any]:
+    """One record as a plain JSON object (every field, policy-applied)."""
+    return {
+        "name": record.name,
+        "function": record.function,
+        "params": _to_plain(record.params),
+        "result": _to_plain(record.result),
+        "exception": _to_plain(record.exception),
+        "started_at": record.started_at,
+        "ended_at": record.ended_at,
+        "order": record.order,
+        "group_path": record.group_path,
+        "dynamic": record.dynamic,
+        "adaptations": _to_plain(record.adaptations),
+        "scope": _to_plain(record.scope),
+        "artifacts": record.artifacts,
+        "description": record.description,
+        "run_id": record.run_id,
+        "duration": record.duration,
+    }
+
+
+def _record_from_plain(data: dict[str, Any]) -> ExecutionRecord:
+    """Rebuild one record from its plain JSON object (policy-applied)."""
+    return ExecutionRecord(
+        name=data["name"],
+        function=data["function"],
+        params=_from_plain(data.get("params", {})),
+        result=_from_plain(data.get("result")),
+        exception=_from_plain(data.get("exception")),
+        started_at=data.get("started_at", 0.0),
+        ended_at=data.get("ended_at", 0.0),
+        order=data.get("order", -1),
+        group_path=data.get("group_path", ""),
+        dynamic=data.get("dynamic", False),
+        adaptations=_from_plain(data.get("adaptations", [])),
+        scope=_from_plain(data.get("scope")),
+        artifacts=data.get("artifacts"),
+        description=data.get("description"),
+        run_id=data.get("run_id", ""),
+        duration=data.get("duration", 0.0),
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Thread-safe collector
 # --------------------------------------------------------------------------- #
 
@@ -179,7 +342,21 @@ class RunHistory:
     the history and stamped on every record the engine appends to it;
     ``source`` is the workflow digest (sha256 of the XML source, or of the
     Python-API root tree's repr) the engine stamps at run start (``None``
-    until then, and for a history never used for a run).
+    until then, and for a history never used for a run); ``params_mode``
+    is the recorded-params shape the run used (``"full"`` /
+    ``"summary"``), ``"full"`` by default — the serializer preserves it
+    so a deserialized history records the shape its params were
+    recorded in.
+
+    Randomization identity (finding 4e / paper P16-UC2): ``seed`` is the
+    campaign's randomization seed (``None`` for a run that used no
+    randomization).  The engine does not stamp it — the seed is caller
+    knowledge, not engine-derivable — so the caller sets it when running
+    a randomized campaign (``history.seed = seed``); the per-action
+    evidence (the driver's declared ``seed`` parameter) is recorded by
+    the engine in each record's ``params``.  The serializer preserves the
+    run-level seed so a deserialized history still names the seed its
+    scenarios were drawn from.
     """
 
     def __init__(self) -> None:
@@ -194,6 +371,18 @@ class RunHistory:
         # digest stamped by the engine at run start.
         self.run_id: str = uuid.uuid4().hex
         self.source: str | None = None
+        # The recorded-params shape the run used ("full" / "summary");
+        # stamped by the engine at run start, "full" until then.
+        self.params_mode: str = "full"
+        # The campaign's randomization seed (finding 4e / paper P16-UC2):
+        # the seed a randomized run drew its scenarios from, so the run is
+        # reproducible.  ``None`` for a run that used no randomization.
+        # The engine does not stamp it (it is caller knowledge, not
+        # engine-derivable), so the caller sets it when running a
+        # randomized campaign (``history.seed = seed``); the per-action
+        # evidence also lands in each record's ``params`` (the driver's
+        # declared ``seed`` parameter is recorded by the engine).
+        self.seed: int | None = None
 
     def add(self, record: ExecutionRecord) -> ExecutionRecord:
         """
@@ -227,6 +416,116 @@ class RunHistory:
     def __getitem__(self, index: int | slice) -> Any:
         """Index (or slice) the completion-ordered records."""
         return self.records[index]
+
+    # ------------------------------------------------------------ #
+    # Persistence (plain-data JSON round-trip)
+    # ------------------------------------------------------------ #
+    def to_json(self) -> str:
+        """
+        Serialize the run history to a JSON document (a string).
+
+        The document is a plain JSON object:
+
+        * ``"run_id"`` — the run's identity (a uuid4 hex).
+        * ``"source"`` — the workflow digest the engine stamped at run
+          start (``null`` for a history never used for a run).
+        * ``"params_mode"`` — the recorded-params shape the run used
+          (``"full"`` / ``"summary"``).
+        * ``"seed"`` — the campaign's randomization seed (``null`` for a
+          run that used no randomization; finding 4e / paper P16-UC2).
+        * ``"final_order"`` — the completion-order index of the run's
+          final action (``null`` for an empty or failed run).
+        * ``"records"`` — the records, in completion order, each a plain
+          object with the record's fields (``name``, ``function``,
+          ``params``, ``result``, ``exception``, ``started_at``,
+          ``ended_at``, ``order``, ``group_path``, ``dynamic``,
+          ``adaptations``, ``scope``, ``artifacts``, ``description``,
+          ``run_id``, ``duration``).
+
+        **Non-JSON-serializable policy.**  The serializer walks every
+        value recursively.  Plain JSON data (``None`` / bool / int /
+        float / str / list / dict) passes through UNCHANGED — plain data
+        is never dropped or altered.  A value that is not JSON-
+        serializable becomes a typed placeholder dict
+        ``{"__placeholder__": "<type>", "repr": "<repr>"}`` — a
+        reference to what was there, never a crash and never a silent
+        drop.  The known cases:
+
+        * a live ``dag`` handle (the engine strips the INJECTED one from
+          recorded params, but a user function that keeps a handle under
+          its own parameter name — the known IMP-010 issue — records it)
+          serializes as ``{"__placeholder__": "DAGHandle", ...}`` (or the
+          handle's concrete type name);
+        * a recorded ``exception`` object serializes as
+          ``{"__placeholder__": "<ExcType>", "repr": ..., "message": ...}``
+          (the exception's type name and ``str(exc)`` — enough to audit
+          what failed without re-raising it);
+        * a workflow node (an adapting function's return value that was
+          not normalized by :func:`recordable_result`) serializes as
+          ``{"__placeholder__": "<NodeType>", ...}``.
+
+        The placeholder is deterministic for a given value (its type
+        name and repr), so two serializations of the same history
+        produce the same document.  :meth:`from_json` restores the
+        placeholders as :class:`_Placeholder` objects (the type name and
+        repr survive the round-trip; the live object does not — a
+        serialized handle is a reference, not a handle).
+        """
+        return json.dumps(
+            {
+                "run_id": self.run_id,
+                "source": self.source,
+                "params_mode": self.params_mode,
+                "seed": self.seed,
+                "final_order": self.final_order,
+                "records": [_record_to_plain(record) for record in self.records],
+            }
+        )
+
+    @classmethod
+    def from_json(cls, document: str) -> "RunHistory":
+        """
+        Rebuild a :class:`RunHistory` from a :meth:`to_json` document.
+
+        The rebuilt history carries the same ``run_id``, ``source``,
+        ``params_mode``, ``seed``, ``final_order`` and records (in
+        completion order, with their ``order`` indices) as the serialized
+        one.
+        Plain data round-trips exactly; a serialized placeholder comes
+        back as a :class:`_Placeholder` (its type name and repr
+        preserved), so a round-trip of a history whose params held a
+        live ``dag`` handle yields a history whose params hold the
+        handle's PLACEHOLDER — the reference survives, the live object
+        does not (it cannot: a serialized handle is not a handle).
+
+        Raises ``ValueError`` when the document is not a valid
+        :meth:`to_json` document (not a JSON object, or missing the
+        ``run_id`` / ``records`` keys).
+        """
+        try:
+            data = json.loads(document)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"RunHistory.from_json: not a JSON document: {exc}") from None
+        if not isinstance(data, dict) or "run_id" not in data or "records" not in data:
+            raise ValueError(
+                "RunHistory.from_json: not a RunHistory.to_json document "
+                "(expected a JSON object with 'run_id' and 'records')"
+            )
+        history = cls()
+        history.run_id = data["run_id"]
+        history.source = data.get("source")
+        history.params_mode = data.get("params_mode", "full")
+        history.seed = data.get("seed")
+        history.final_order = data.get("final_order")
+        for record_data in data["records"]:
+            record = _record_from_plain(record_data)
+            # Rebuild the completion-order numbering exactly (the
+            # serialized order indices are authoritative; add() would
+            # renumber from 0, which is the same sequence, but the
+            # explicit assignment keeps the invariant visible).
+            history._records.append(record)
+            history._next_order = max(history._next_order, record.order + 1)
+        return history
 
 
 # --------------------------------------------------------------------------- #

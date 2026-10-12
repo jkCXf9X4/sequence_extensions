@@ -177,7 +177,7 @@ def test_handle_copy_and_append_through_engine():
         tags.append(tag)
         return "worked"
 
-    registry, calls = _registry_with(["driver", "work"], driver=driver, work=work)
+    registry, _ = _registry_with(["driver", "work"], driver=driver, work=work)
     xml = (
         "<sequential>"
         '<action function="driver"/>'
@@ -613,6 +613,40 @@ def test_handle_parallel_read_only_replace_and_adjust_raise():
         )
         with pytest.raises(ValueError, match="read-only"):
             run_workflow(xml, registry=registry)
+
+
+def test_handle_inner_sequential_scope_in_parallel_is_writable():
+    """The inner-scope idiom: per-branch adaptation inside a parallel group.
+
+    The read-only rule is structural, not recursive: it applies to the
+    parallel group's DIRECT children.  A driver whose direct parent is an
+    inner <scope type="sequential"> nested in the parallel group gets a
+    WRITABLE handle and may adapt its following siblings inside the
+    branch (review finding 6a, probe 4 / verify2.py xml2).
+    """
+    seen: dict = {}
+
+    def driver(dag, **kwargs):
+        seen["read_only"] = dag.read_only
+        dag.adjust(dag.following()[0], level="tuned")
+        return "driver_done"
+
+    def work(level=None, **kwargs):
+        seen["level"] = level
+        return "work_done"
+
+    registry, calls = _registry_with(["driver", "work"], driver=driver, work=work)
+    xml = (
+        "<parallel>"
+        "<sequential>"
+        '<action function="driver"/>'
+        '<action function="work"/>'
+        "</sequential>"
+        "</parallel>"
+    )
+    run_workflow(xml, registry=registry)  # no error: the idiom works
+    assert seen["read_only"] is False
+    assert seen["level"] == "tuned"
 
 
 def test_one_mechanism_dag_and_return_nodes_raises():

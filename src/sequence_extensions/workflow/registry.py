@@ -20,6 +20,8 @@ import inspect
 import warnings
 from typing import Any, Callable
 
+from .params import coerce_params
+
 __all__ = [
     "DEFAULT_REGISTRY",
     "FunctionRegistry",
@@ -118,6 +120,39 @@ def wants_context(fn: Callable[..., Any]) -> bool:
     return "walk_context" in parameters
 
 
+def _coercing_wrapper(
+    fn: Callable[..., Any], types: dict[str, type], name: str
+) -> Callable[..., Any]:
+    """
+    Build a signature-transparent coercion wrapper for a schema-registered
+    function.
+
+    The wrapper coerces the function's declared parameters (the keys of
+    ``types``) to their types at call time via
+    :func:`.params.coerce_params`, then calls ``fn`` with the coerced
+    kwargs.  Parameters without a declared type pass through unchanged, so
+    the wrapper is transparent to the engine's other injected kwargs
+    (``dag`` / ``walk_context`` / ``artifacts``) and to upstream results.
+
+    The wrapper copies ``__name__`` / ``__qualname__`` / ``__doc__`` from
+    ``fn`` and sets ``__wrapped__`` to it, so ``inspect.signature`` resolves
+    to the original signature (the ``wants_dag`` / ``wants_artifacts`` /
+    ``wants_context`` flags are computed from the original at registration
+    time and are unaffected) and history records the original function's
+    name.
+    """
+
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        coerced = coerce_params(kwargs, types, function_name=name)
+        return fn(*args, **coerced)
+
+    wrapper.__name__ = getattr(fn, "__name__", "wrapped")
+    wrapper.__qualname__ = getattr(fn, "__qualname__", wrapper.__name__)
+    wrapper.__doc__ = getattr(fn, "__doc__", None)
+    wrapper.__wrapped__ = fn
+    return wrapper
+
+
 class FunctionRegistry:
     """
     A name -> function registry for workflow actions.
@@ -143,9 +178,22 @@ class FunctionRegistry:
         # parameter, so the engine injects its per-action walk context
         # (plain structural position data) into its calls.
         self._wants_context: dict[str, bool] = {}
+        # Cached per-function parameter schema (opt-in): a mapping of
+        # parameter name -> declared type, or ``None`` when the function was
+        # registered without a schema (the default, fully backward
+        # compatible).  When present, :meth:`get` returns a signature-
+        # transparent wrapper that coerces the function's declared
+        # parameters to their types at injection time (see
+        # :func:`.params.coerce_params`).
+        self._param_types: dict[str, dict[str, type] | None] = {}
 
     def register(
-        self, name: str, fn: Callable[..., Any], *, warn_reserved: bool = True
+        self,
+        name: str,
+        fn: Callable[..., Any],
+        *,
+        warn_reserved: bool = True,
+        param_types: dict[str, type] | None = None,
     ) -> None:
         """
         Register ``fn`` under ``name`` (replacing any earlier registration).
@@ -161,6 +209,21 @@ class FunctionRegistry:
         warning below for a batch registration whose reserved-name
         declarations ARE the documented injection contract (the library's own
         registration does this).
+
+        ``param_types`` (default ``None``) is an OPTIONAL per-function
+        parameter schema: a mapping of parameter name -> declared type
+        (e.g. ``{"duration": int, "tolerance": float, "verbose": bool,
+        "label": str}``).  When given, :meth:`get` returns a signature-
+        transparent wrapper that coerces the function's declared parameters
+        to their types at injection time, so a function driven from XML
+        (where every attribute value is a string) receives typed values —
+        ``"10"`` → ``int 10``, ``"true"`` → ``bool True`` — without
+        hand-rolling coercion.  The coercion rules are documented on
+        :func:`.params.coerce_param`; a value that cannot be coerced raises
+        :class:`.params.ParameterCoercionError` naming the parameter and the
+        function.  When ``None`` (the default), the function is returned
+        from :meth:`get` unchanged and keeps the exact current behavior —
+        the schema is opt-in and fully backward compatible.
 
         Raises ``ValueError`` if ``name`` is empty or ``fn`` is not callable.
 
@@ -190,6 +253,7 @@ class FunctionRegistry:
         self._wants_dag[name] = wants_dag(fn)
         self._wants_artifacts[name] = wants_artifacts(fn)
         self._wants_context[name] = wants_context(fn)
+        self._param_types[name] = dict(param_types) if param_types else None
         if warn_reserved:
             declared = _declared_reserved(fn)
             if declared:
@@ -206,12 +270,36 @@ class FunctionRegistry:
         """
         Return the function registered under ``name``.
 
+        When the function was registered with a parameter schema
+        (``param_types``), the returned callable is a signature-transparent
+        wrapper that coerces the function's declared parameters to their
+        types at call time (see :func:`.params.coerce_params`); the wrapper
+        exposes the same ``__name__`` / ``__qualname__`` / ``__doc__`` /
+        ``__wrapped__`` as the original, so signature inspection (the
+        ``wants_dag`` / ``wants_artifacts`` / ``wants_context`` flags) and
+        history record fidelity are unaffected.  A function registered
+        without a schema is returned unchanged (the exact current behavior).
+
         Raises ``ValueError`` naming the function if it is not registered.
         """
         try:
-            return self._functions[name]
+            fn = self._functions[name]
         except KeyError:
             raise ValueError(f"unknown function: {name!r}") from None
+        types = self._param_types.get(name)
+        if not types:
+            return fn
+        return _coercing_wrapper(fn, types, name)
+
+    def param_types(self, name: str) -> dict[str, type] | None:
+        """
+        The parameter schema (name -> type) registered for ``name``, or
+        ``None`` when the function was registered without one.
+
+        Raises ``ValueError`` (via :meth:`get`) for an unknown name.
+        """
+        self.get(name)  # unknown-name parity with get()
+        return self._param_types.get(name)
 
     def adapts(self, name: str) -> bool:
         """
@@ -260,6 +348,7 @@ class FunctionRegistry:
         fn: Callable[..., Any] | None = None,
         *,
         name: str | None = None,
+        param_types: dict[str, type] | None = None,
     ) -> Any:
         """
         Return a decorator that registers a function in this registry.
@@ -276,6 +365,11 @@ class FunctionRegistry:
             def _run_model(**kwargs):
                 ...
 
+        ``param_types`` is the optional per-function parameter schema
+        (parameter name -> declared type) passed through to
+        :meth:`register`; when given, the function's declared parameters are
+        coerced to their types at injection time (see :meth:`register`).
+
         The decorated function is returned unchanged; see
         :func:`workflow_function` for the module-level equivalent that
         targets ``DEFAULT_REGISTRY`` by default.  Registering a name that
@@ -284,7 +378,11 @@ class FunctionRegistry:
         """
 
         def decorator(f: Callable[..., Any]) -> Callable[..., Any]:
-            self.register(name if name is not None else getattr(f, "__name__", None), f)
+            self.register(
+                name if name is not None else getattr(f, "__name__", None),
+                f,
+                param_types=param_types,
+            )
             return f
 
         if fn is None:
@@ -316,6 +414,7 @@ def workflow_function(
     *,
     name: str | None = None,
     registry: FunctionRegistry | None = None,
+    param_types: dict[str, type] | None = None,
 ) -> Any:
     """
     Register a function so the workflow schema can address it by name.
@@ -333,6 +432,12 @@ def workflow_function(
         def _run_model(**kwargs):
             ...
 
+    ``param_types`` is the optional per-function parameter schema
+    (parameter name -> declared type) passed through to
+    :meth:`FunctionRegistry.register`; when given, the function's declared
+    parameters are coerced to their types at injection time, so a function
+    driven from XML receives typed values (see :meth:`FunctionRegistry.register`).
+
     The function is returned unchanged: it stays directly callable and its
     behavior is not modified.  Once registered, it is addressable from the
     workflow schema — ``Action("simulate")`` via the Python API and
@@ -348,7 +453,11 @@ def workflow_function(
 
     def decorator(f: Callable[..., Any]) -> Callable[..., Any]:
         target = registry if registry is not None else DEFAULT_REGISTRY
-        target.register(name if name is not None else getattr(f, "__name__", None), f)
+        target.register(
+            name if name is not None else getattr(f, "__name__", None),
+            f,
+            param_types=param_types,
+        )
         return f
 
     if fn is None:

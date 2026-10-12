@@ -28,6 +28,7 @@ so they are independent of the paper's test stubs (which self-register in
 additionally proves the engine's default-registry path.
 """
 
+import json
 import subprocess
 import sys
 import warnings
@@ -43,6 +44,7 @@ from sequence_extensions import (
 )
 from sequence_extensions.workflow import library
 from sequence_extensions.workflow.adaptation import DAGHandle
+from sequence_extensions.workflow.history import RunHistory
 from sequence_extensions.workflow.library import (
     aggregate,
     compare_parameter_sweep,
@@ -53,6 +55,7 @@ from sequence_extensions.workflow.library import (
     find_test_cases,
     guard,
     parameter_sweep,
+    randomize_scenarios,
     register_library,
     regression_gate,
     retry,
@@ -85,6 +88,7 @@ PAPER_NAMES = [
     "retry",
     "fallback",
     "regression_gate",
+    "randomize_scenarios",
 ]
 
 
@@ -1918,3 +1922,469 @@ def test_regression_gate_sweep_all_within_passes():
     assert result == {
         "saw": {"regression_gate": {"passed": True, "count": 3, "deviations": {}}}
     }
+
+
+def test_check_convergence_ignores_same_prefixed_note_kwargs():
+    """A same-prefixed kwarg that is not a result name is user data (IMP-009).
+
+    ``check_convergence`` reads the LATEST upstream result and counts the
+    collision-suffixed ones; a same-prefixed OWN PARAM on the check action
+    (``iterate_note`` below) matched the loose prefix scan and crashed
+    ``int('note')`` before the strict suffix matching.
+    """
+    state = {"n": 0}
+
+    def iterate(**kwargs):
+        state["n"] += 1
+        return {"converged": state["n"] >= 2}
+
+    registry = FunctionRegistry()
+    registry.register("iterate", iterate)
+    registry.register("check_convergence", library.check_convergence)
+    xml = (
+        "<sequential>"
+        '<action function="iterate"/>'
+        '<action function="iterate"/>'
+        '<action function="check_convergence">'
+        '<argument key="upstream" value="iterate"/>'
+        '<argument key="field" value="converged"/>'
+        '<argument key="iterate_note" value="x"/>'
+        "</action>"
+        "</sequential>"
+    )
+    result = run_workflow(xml, registry=registry)
+    assert result == {"converged": True, "iterations": 2}
+
+
+# --------------------------------------------------------------------------- #
+# Finding 2 regression tests (data-plane kwargs, IMP-009 verification pass)
+#
+# The engine keys upstream results by the producing action's function name
+# with CONTIGUOUS collision suffixes (``name``, ``name_2``, ... — the first
+# collision suffix is ``_2``).  These tests lock the strict-suffix contract:
+# a same-prefixed kwarg that is not one of those exact names is user data
+# and is never parsed, counted, or selected as a result.
+# --------------------------------------------------------------------------- #
+
+
+def test_upstream_helpers_ignore_non_numeric_same_prefixed_kwargs():
+    """A same-prefixed kwarg without a numeric tail is user data (IMP-009).
+
+    The original bug: ``_upstream_field`` parsed the tail with a bare
+    ``int``, so ``evaluate_results`` alongside ``evaluate`` crashed every
+    driver with ``ValueError: invalid literal for int()``.
+    """
+    kwargs = {
+        "evaluate": {"g": 1},
+        "evaluate_results": {"n": 1},
+        "evaluate_seed": 42,
+        "evaluate_x": "junk",
+    }
+    assert library._upstream_field(kwargs, "evaluate", "g") == 1
+    assert library._upstream_count(kwargs, "evaluate") == 1
+    assert library._upstream_all(kwargs, "evaluate") == [{"g": 1}]
+    assert library._upstream_keys(kwargs, "evaluate") == ["evaluate"]
+    assert library._upstream_latest(kwargs, "evaluate") == {"g": 1}
+
+
+def test_upstream_count_ignores_same_prefixed_seed_kwargs():
+    """The review's miscount probe: simulate/simulate_2/simulate_seed -> 2."""
+    kwargs = {"simulate": {"v": 1}, "simulate_2": {"v": 2}, "simulate_seed": 42}
+    assert library._upstream_count(kwargs, "simulate") == 2
+    assert library._upstream_field(kwargs, "simulate", "v") == 2
+    assert library._upstream_all(kwargs, "simulate") == [{"v": 1}, {"v": 2}]
+
+
+def test_upstream_helpers_ignore_unicode_digit_tails():
+    """A numeric-looking unicode tail is user data, never parsed (crash class).
+
+    ``str.isdigit()`` accepts superscripts (``"²"``) that ``int()`` rejects —
+    the exact ``invalid literal for int()`` crash class of Finding 2.  The
+    helpers must not raise on any same-prefixed key.
+    """
+    kwargs = {"sim": {"v": 1}, "sim_²": "user", "sim_٣": "user", "sim_𝟙": "user"}
+    assert library._upstream_count(kwargs, "sim") == 1
+    assert library._upstream_field(kwargs, "sim", "v") == 1
+    assert library._upstream_all(kwargs, "sim") == [{"v": 1}]
+
+
+def test_upstream_helpers_ignore_engine_impossible_suffixes():
+    """``sim_1`` / ``sim_0`` / ``sim_007`` are user data: the engine's first
+    collision suffix is ``_2``, so those names are never result keys."""
+    kwargs = {"sim": {"v": 1}, "sim_1": "user", "sim_0": "user", "sim_007": "user"}
+    assert library._upstream_count(kwargs, "sim") == 1
+    assert library._upstream_field(kwargs, "sim", "v") == 1
+    assert library._upstream_all(kwargs, "sim") == [{"v": 1}]
+    assert library._upstream_keys(kwargs, "sim") == ["sim"]
+
+
+def test_upstream_latest_is_insertion_order_independent():
+    """A tie at suffix 1 (plain name vs ``sim_1``) must not flip the winner.
+
+    Before the fix, ``sim_1`` tied the plain name's suffix and the scan
+    picked whichever came last in dict order — an own parameter named
+    ``decide_1`` could silently override the branch decision.
+    """
+    a = {"sim": {"v": "plain"}, "sim_1": {"v": "one"}}
+    b = {"sim_1": {"v": "one"}, "sim": {"v": "plain"}}
+    assert library._upstream_field(a, "sim", "v") == "plain"
+    assert library._upstream_field(b, "sim", "v") == "plain"
+    assert library._upstream_latest(a, "sim") == {"v": "plain"}
+    assert library._upstream_latest(b, "sim") == {"v": "plain"}
+
+
+def test_upstream_helpers_gapped_suffix_is_user_data():
+    """A key beyond a gap (``sim_3`` without ``sim_2``) is user data.
+
+    The engine emits a contiguous run, so the walk stops at the gap —
+    count/field/all agree (the pre-fix scan counted ``sim_3`` and read it
+    as the latest result, miscounting iterations and reading user data).
+    """
+    kwargs = {"sim": {"v": 1}, "sim_3": {"v": 3}, "sim_7": {"v": 7}}
+    assert library._upstream_count(kwargs, "sim") == 1
+    assert library._upstream_field(kwargs, "sim", "v") == 1
+    assert library._upstream_all(kwargs, "sim") == [{"v": 1}]
+    assert library._upstream_keys(kwargs, "sim") == ["sim"]
+
+
+def test_upstream_helpers_prefix_is_substring_not_a_result():
+    """``upstream="sim"`` must not match the kwarg ``simulate``."""
+    kwargs = {"sim": {"v": 1}, "simulate": {"v": 99}, "sim_2": {"v": 2}}
+    assert library._upstream_count(kwargs, "sim") == 2
+    assert library._upstream_field(kwargs, "sim", "v") == 2
+    assert library._upstream_all(kwargs, "sim") == [{"v": 1}, {"v": 2}]
+    # And the reverse: upstream "simulate" ignores "sim".
+    kwargs2 = {"sim": {"v": 1}, "simulate": {"v": 99}}
+    assert library._upstream_count(kwargs2, "simulate") == 1
+    assert library._upstream_field(kwargs2, "simulate", "v") == 99
+
+
+def test_upstream_helpers_empty_kwargs():
+    """Empty kwargs: count 0, all empty, field/latest raise a clear error."""
+    assert library._upstream_count({}, "sim") == 0
+    assert library._upstream_all({}, "sim") == []
+    assert library._upstream_keys({}, "sim") == []
+    with pytest.raises(ValueError, match="no upstream result named 'sim'"):
+        library._upstream_field({}, "sim", "v")
+    with pytest.raises(ValueError, match="no upstream result named 'sim'"):
+        library._upstream_latest({}, "sim")
+
+
+def test_aggregate_ignores_same_prefixed_junk_kwargs():
+    """aggregate's all-suffixed scan ignores same-prefixed user data."""
+    result = aggregate(
+        "sim",
+        "v",
+        "mean",
+        sim={"v": 1.0},
+        sim_note="user note",
+        sim_seed=7,
+        sim_results={"v": 9.0},
+        simulate={"v": 99.0},
+        sim_2={"v": 3.0},
+    )
+    assert result == {"aggregate": {"op": "mean", "count": 2, "value": 2.0}}
+
+
+def test_regression_gate_ignores_same_prefixed_junk_kwargs():
+    """regression_gate's all-suffixed scan ignores same-prefixed user data."""
+    result = regression_gate(
+        "sim",
+        1.0,
+        "v",
+        tolerance=0.5,
+        on_regression="report",
+        sim={"v": 1.0},
+        sim_note="user note",
+        sim_seed=7,
+        sim_results={"v": 9.0},
+        simulate={"v": 99.0},
+        sim_2={"v": 3.0},
+    )
+    assert result == {
+        "regression_gate": {
+            "passed": False,
+            "count": 2,
+            "deviations": {"sim_2": 3.0},
+        }
+    }
+
+
+def test_evaluate_goal_ignores_same_prefixed_junk_kwargs():
+    """End-to-end: a same-prefixed own param never overrides the decision."""
+    registry, calls = _branch_registry("beta")
+    xml = (
+        "<sequential>"
+        '<action function="decide"/>'
+        '<action function="evaluate_goal">'
+        '<argument key="upstream" value="decide"/>'
+        '<argument key="field" value="goal"/>'
+        '<argument key="decide_note" value="user data"/>'
+        '<argument key="decide_1" value="gamma"/>'
+        "</action>"
+        '<sequential name="alternatives">'
+        '<sequential name="alpha"><action function="run_alpha"/></sequential>'
+        '<sequential name="beta"><action function="run_beta"/></sequential>'
+        '<sequential name="gamma"><action function="run_gamma"/></sequential>'
+        "</sequential>"
+        '<action function="report"/>'
+        "</sequential>"
+    )
+    result = run_workflow(xml, registry=registry)
+    # decide returned goal="beta"; the junk params must not redirect it.
+    assert result == "beta"
+    names = [c if isinstance(c, str) else c[0] for c in calls]
+    assert "run_beta" in names
+    assert "run_gamma" not in names
+
+
+def test_guard_ignores_same_prefixed_junk_kwargs():
+    """End-to-end: guard reads the real upstream despite junk params."""
+    registry, calls = _guard_registry(field_value=True)
+    xml = (
+        "<sequential>"
+        '<action function="probe"/>'
+        '<action function="guard">'
+        '<argument key="upstream" value="probe"/>'
+        '<argument key="field" value="ok"/>'
+        '<argument key="op" value="eq"/>'
+        '<argument key="value" value="True"/>'
+        '<argument key="probe_note" value="user data"/>'
+        '<argument key="probe_1" value="false"/>'
+        "</action>"
+        '<sequential><action function="body_ran"/></sequential>'
+        '<action function="report"/>'
+        "</sequential>"
+    )
+    result = run_workflow(xml, registry=registry)
+    # The predicate held on the REAL probe result; the junk params must not
+    # redirect the read (probe_1 would read "false" -> not a mapping error,
+    # probe_note would crash the old int() parse).
+    assert "body" in calls
+    assert result == {
+        "saw_guard": {"guard": {"passed": True, "op": "eq"}},
+        "body": "BODY RAN",
+    }
+
+
+def test_while_condition_ignores_same_prefixed_junk_kwargs():
+    """End-to-end: while_condition counts and reads only real results."""
+    state = {"n": 0}
+
+    def iterate(**kwargs):
+        state["n"] += 1
+        return {"residual": 0.0}
+
+    registry = FunctionRegistry()
+    registry.register("iterate", iterate)
+    registry.register("while_condition", library.while_condition)
+    xml = (
+        "<sequential>"
+        '<action function="iterate"/>'
+        '<action function="while_condition">'
+        '<argument key="upstream" value="iterate"/>'
+        '<argument key="field" value="residual"/>'
+        '<argument key="op" value="lt"/>'
+        '<argument key="threshold" value="1e-6"/>'
+        '<argument key="iterate_note" value="user data"/>'
+        '<argument key="iterate_3" value="user data"/>'
+        "</action>"
+        "</sequential>"
+    )
+    result = run_workflow(xml, registry=registry)
+    # One body run, converged: the junk params neither crash the field read
+    # nor inflate the iteration count.
+    assert result == {"converged": True, "iterations": 1}
+
+
+def test_retry_ignores_same_prefixed_junk_kwargs():
+    """retry's attempt count and latest-read ignore same-prefixed user data."""
+    dag = _retry_handle({"upstream": "flaky", "max_attempts": 3})
+    result = retry(
+        dag=dag,
+        upstream="flaky",
+        max_attempts=3,
+        flaky={"ok": True},
+        flaky_note="user data",
+        flaky_1="user data",
+        flaky_seed=7,
+    )
+    # One real result, acceptable: attempts 1, no adaptation.  The junk
+    # kwargs neither inflate the count nor redirect the latest read.
+    assert result == {"ok": True, "attempts": 1}
+    assert dag.ops == []
+
+
+def test_fallback_ignores_same_prefixed_junk_kwargs():
+    """fallback reads the real upstream despite same-prefixed junk params."""
+    alt_b = Action("alt_b")
+    check_b = Action("fallback", upstream="alt_b", field="ok", ok_value=True)
+    check_a = Action("fallback", upstream="alt_a", field="ok", ok_value=True)
+    root = Sequential(Action("alt_a"), check_a, alt_b, check_b)
+    dag = DAGHandle(root, 1)
+    result = fallback(
+        dag=dag,
+        upstream="alt_a",
+        field="ok",
+        ok_value=True,
+        alt_a={"ok": True},
+        alt_a_note="user data",
+        alt_a_1="user data",
+        alt_a_seed=7,
+    )
+    # The real alt_a result says ok: the rest of the chain is skipped.
+    assert result == {"fallback": {"ok": True}}
+    assert len(dag.ops) == 2
+
+
+# --------------------------------------------------------------------------- #
+# randomize_scenarios: seeded, deterministic scenario generation (finding 4e)
+# --------------------------------------------------------------------------- #
+
+
+def test_randomize_scenarios_uniform_is_deterministic_for_a_seed():
+    """The same (method, seed, count) yields the identical list, twice."""
+    first = randomize_scenarios("uniform", 42, 5)
+    second = randomize_scenarios("uniform", 42, 5)
+    assert first == second
+    assert len(first) == 5
+    assert all(0.0 <= v < 1.0 for v in first)
+
+
+def test_randomize_scenarios_different_seeds_differ():
+    """Different seeds yield different scenario lists (statistically)."""
+    a = randomize_scenarios("uniform", 1, 20)
+    b = randomize_scenarios("uniform", 2, 20)
+    assert a != b
+
+
+def test_randomize_scenarios_choice_draws_from_options():
+    """method='choice' draws count values from the options pool."""
+    values = randomize_scenarios("choice", 7, 10, options="a, b, c")
+    assert len(values) == 10
+    assert all(v in ("a", "b", "c") for v in values)
+    # Deterministic for the seed.
+    assert values == randomize_scenarios("choice", 7, 10, options="a, b, c")
+
+
+def test_randomize_scenarios_permutation_orders_options():
+    """method='permutation' returns a random ordering of all options."""
+    values = randomize_scenarios("permutation", 3, 0, options=["x", "y", "z"])
+    assert sorted(values) == ["x", "y", "z"]
+    assert values == randomize_scenarios("permutation", 3, 0, options=["x", "y", "z"])
+
+
+def test_randomize_scenarios_rejects_bad_inputs():
+    """Unknown method, non-positive count, and empty options raise ValueError."""
+    with pytest.raises(ValueError, match="unknown method"):
+        randomize_scenarios("bogus", 1, 3)
+    with pytest.raises(ValueError, match="count"):
+        randomize_scenarios("uniform", 1, 0)
+    with pytest.raises(ValueError, match="count"):
+        randomize_scenarios("uniform", 1, -2)
+    with pytest.raises(ValueError, match="options"):
+        randomize_scenarios("choice", 1, 3)
+    with pytest.raises(ValueError, match="options"):
+        randomize_scenarios("permutation", 1, 0, options="")
+
+
+def test_randomize_scenarios_coerces_xml_string_count():
+    """The XML string form count='5' is coerced to an int (5 draws)."""
+    values = randomize_scenarios("uniform", 9, "5")
+    assert len(values) == 5
+    assert values == randomize_scenarios("uniform", 9, 5)
+
+
+def test_randomize_scenarios_is_deterministic_across_interpreters():
+    """Same (method, seed) yields the same list in two separate processes.
+
+    The Mersenne Twister stream is stable across interpreter invocations
+    (and platforms) for the same seed, so a randomized campaign is
+    reproducible offline — the acceptance bar for finding 4e.  Checked in
+    two subprocesses (fresh interpreters, independent hash randomization).
+    """
+    code = (
+        "import json\n"
+        "from sequence_extensions.workflow.library import randomize_scenarios\n"
+        "print(json.dumps(randomize_scenarios('uniform', 1234, 8)))\n"
+    )
+    outputs = set()
+    for _ in range(2):
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert proc.returncode == 0, proc.stderr
+        outputs.add(proc.stdout.strip())
+    # Two fresh interpreters produced byte-identical scenario lists.
+    assert len(outputs) == 1
+    values = json.loads(next(iter(outputs)))
+    assert len(values) == 8
+
+
+def test_randomize_scenarios_usable_from_xml():
+    """randomize_scenarios runs end-to-end from XML and returns its list.
+
+    The driver is a plain function (no dag): it generates the scenario
+    values and returns them as its result, which flows downstream.  The
+    method and seed are declared parameters, so they are recorded in the
+    action's history record (the recreation metadata).
+    """
+    registry = _library_registry()
+    history = RunHistory()
+    xml = (
+        "<sequential>"
+        '<action function="randomize_scenarios">'
+        '<argument key="method" value="uniform"/>'
+        '<argument key="seed" value="42"/>'
+        '<argument key="count" value="4"/>'
+        "</action>"
+        "</sequential>"
+    )
+    result = run_workflow(xml, registry=registry, history=history)
+    # The generated list is the run's final result.
+    assert isinstance(result, list)
+    assert len(result) == 4
+    assert all(0.0 <= v < 1.0 for v in result)
+    # The seed and method are recorded in the action's params (recreation
+    # metadata), and the run-level seed is stamped by the caller.
+    (record,) = history.records
+    assert record.params["method"] == "uniform"
+    assert record.params["seed"] == "42"  # XML value stays a string
+    assert record.params["count"] == "4"
+    # A second run with the same XML (same seed) reproduces the list.
+    again = run_workflow(xml, registry=registry)
+    assert again == result
+
+
+def test_randomize_scenarios_records_seed_in_history():
+    """The run-level seed is captured in the history and survives JSON.
+
+    The caller stamps ``history.seed`` for a randomized campaign; the
+    per-action evidence (the driver's declared seed param) is recorded by
+    the engine.  Both survive the to_json / from_json round-trip.
+    """
+    registry = _library_registry()
+    history = RunHistory()
+    history.seed = 42  # the caller stamps the campaign's seed
+    xml = (
+        "<sequential>"
+        '<action function="randomize_scenarios">'
+        '<argument key="method" value="choice"/>'
+        '<argument key="seed" value="42"/>'
+        '<argument key="count" value="3"/>'
+        '<argument key="options" value="lo, mid, hi"/>'
+        "</action>"
+        "</sequential>"
+    )
+    run_workflow(xml, registry=registry, history=history)
+    # Run-level seed is set.
+    assert history.seed == 42
+    # Record-level seed (the driver's declared param) is recorded.
+    assert history.records[0].params["seed"] == "42"
+    # The run-level seed survives the JSON round-trip.
+    restored = RunHistory.from_json(history.to_json())
+    assert restored.seed == 42
+    assert restored.records[0].params["seed"] == "42"

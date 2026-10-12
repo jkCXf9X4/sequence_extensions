@@ -1103,3 +1103,102 @@ def test_template_bodies_mint_under_the_use_site(tmp_path):
     _, store = _run(xml, registry, tmp_path)
     assert (store.root / "sequential" / "write" / "payload.json").is_file()
     assert (store.root / "sequential_2" / "write" / "payload.json").is_file()
+
+
+# --------------------------------------------------------------------------- #
+# Traceability: manifest timestamps and the run header (finding 4c)
+# --------------------------------------------------------------------------- #
+
+
+def test_manifest_entries_carry_wall_clock_timestamps(tmp_path):
+    """Every manifest entry carries a ``timestamp`` (its call entry).
+
+    The manifest's per-action wall-clock evidence: the timestamp is a
+    ``time.time()`` stamp taken at the mint (call entry), so entries are
+    ordered by it within a sequential walk and bound the run's wall
+    clock between the header's ``started_at`` and derived ``ended_at``.
+    """
+    import time
+
+    registry = _writer_registry()
+    before = time.time()
+    _, store = _run(
+        "<sequential>"
+        '<action function="write"><argument key="case" value="one"/></action>'
+        '<action function="write"><argument key="case" value="two"/></action>'
+        "</sequential>",
+        registry,
+        tmp_path,
+    )
+    after = time.time()
+    entries = store.entries()
+    assert len(entries) == 2
+    for entry in entries:
+        assert "timestamp" in entry
+        assert before <= entry["timestamp"] <= after
+    # Sequential walk: mint order is call order, so the timestamps are
+    # non-decreasing in seq order.
+    assert entries[0]["timestamp"] <= entries[1]["timestamp"]
+
+
+def test_manifest_run_header_carries_run_identity_and_bounds(tmp_path):
+    """The manifest's first line is a run header: run_id + started_at.
+
+    The header reuses the run history's ``run_id`` (the same identity
+    the history stamps on its records), so the manifest and the history
+    name the same run.  ``ended_at`` is derived (the last entry's
+    timestamp) and bounds the run's wall clock.
+    """
+    registry = _writer_registry()
+    history = RunHistory()
+    store = ArtifactStore(tmp_path / "run", history=history)
+    run_workflow(
+        "<sequential>"
+        '<action function="write"><argument key="case" value="one"/></action>'
+        "</sequential>",
+        registry=registry,
+        artifacts=store,
+        history=history,
+    )
+    header = store.header()
+    assert header is not None
+    assert header["run_id"] == history.run_id  # the SAME identity
+    assert header["started_at"] is not None
+    assert header["ended_at"] is not None
+    assert header["started_at"] <= header["ended_at"]
+    entries = store.entries()
+    assert header["ended_at"] == entries[-1]["timestamp"]
+    # The header is the manifest's first line and is not an entry.
+    lines = (store.root / MANIFEST_NAME).read_text(encoding="utf-8").splitlines()
+    assert json.loads(lines[0])["run_id"] == history.run_id
+    assert "seq" not in json.loads(lines[0])
+    assert len(lines) == 1 + len(entries)
+
+
+def test_manifest_header_without_history_has_null_run_id(tmp_path):
+    """A standalone store (no history) still gets a header: run_id null."""
+    registry = _writer_registry()
+    store = ArtifactStore(tmp_path / "run")
+    run_workflow(
+        "<sequential><action function='write'/></sequential>",
+        registry=registry,
+        artifacts=store,
+    )
+    header = store.header()
+    assert header is not None
+    assert header["run_id"] is None
+    assert header["started_at"] is not None
+    assert header["ended_at"] is not None
+
+
+def test_manifest_header_exists_before_any_action_mints(tmp_path):
+    """The header is written at run start: a run that dies before any
+    action still leaves wall-clock evidence of when it started."""
+    store = ArtifactStore(tmp_path / "run")
+    store._begin()  # the engine's open call, before any walk
+    header = store.header()
+    assert header is not None
+    assert header["run_id"] is None
+    assert header["started_at"] is not None
+    assert header["ended_at"] is None  # nothing minted yet
+    assert store.entries() == []

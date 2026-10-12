@@ -814,3 +814,35 @@ def _describe(node):
         return {"function": node.function, "params": dict(node.params)}
     kind = "sequential" if isinstance(node, Sequential) else "parallel"
     return {kind: [_describe(child) for child in node.children]}
+
+
+# --------------------------------------------------------------------------- #
+# 4. Run-time parameters reach template placeholders (IMP-009)
+# --------------------------------------------------------------------------- #
+
+
+def test_template_placeholders_resolve_against_run_time_parameters():
+    """Run-time ``parameters`` reach ``<use-template>`` placeholders.
+
+    The engine re-parses the XML with the run-time parameters merged over the
+    XML globals before executing, so a placeholder resolves against them: the
+    run-time value wins over an XML global, and a template default wins over
+    both (the documented binding precedence).
+    """
+    registry = FunctionRegistry()
+    registry.register("echo", lambda file=None, **kwargs: file)
+    xml = (
+        "<VerificationWorkflow>"
+        "<argument key='file' value='xml_global.csv'/>"
+        "<template name='t'><sequential>"
+        "<action function='echo'><argument key='file' value='{file}'/></action>"
+        "</sequential></template>"
+        "<sequential><use-template name='t'/></sequential>"
+        "</VerificationWorkflow>"
+    )
+    # Run-time parameters join the global tier: the placeholder sees them.
+    assert run_workflow(xml, registry=registry, parameters={"file": "runtime.csv"}) == (
+        "runtime.csv"
+    )
+    # An XML global still applies when the run time does not override it.
+    assert run_workflow(xml, registry=registry) == "xml_global.csv"

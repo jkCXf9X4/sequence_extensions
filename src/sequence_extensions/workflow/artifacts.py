@@ -55,6 +55,16 @@ domain produces as files.  This module adds the missing reference plane
   action children) interleave, which the manifest records as executed
   (the SET of entries and every address are deterministic; only the
   interleaving of independent calls is not).
+* **Traceable** — the manifest is not only structural: it carries
+  wall-clock evidence.  A RUN HEADER (the first line of the manifest)
+  records the run's identity (``run_id`` — the run history's id, when a
+  history was passed to the store — and ``started_at``, the wall-clock
+  time the run began); every entry carries a ``timestamp`` (the
+  wall-clock time the action was minted, i.e. its call entry).  The
+  header's ``ended_at`` is the last entry's timestamp (the run's last
+  mint), exposed by :meth:`ArtifactStore.header`.  The header is
+  written at run start (``_begin``), so a run that dies before any
+  action still leaves a header behind.
 * **Replay** — :func:`.history.replay` re-invokes recorded calls; a
   function that declared ``artifacts`` is re-invoked with a
   :class:`ReplayArtifacts` handle injected instead: reads are served
@@ -74,12 +84,17 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Union
+from typing import TYPE_CHECKING, Any, Callable, Union
 
 from .params import normalize_params
 from .registry import FunctionRegistry, wants_artifacts
 from .schema import Action, Parallel, Sequential
+
+if TYPE_CHECKING:  # the store is history-free at runtime (IMP-007); the
+    # run header reuses the history's run identity without importing it.
+    from .history import RunHistory
 
 __all__ = [
     "ArtifactHandle",
@@ -135,6 +150,18 @@ def group_label(group: _Node) -> str:
 def _under(path: PurePosixPath, directory: str) -> bool:
     """True when ``path`` is ``directory`` or lies below it."""
     return path == PurePosixPath(directory) or path.is_relative_to(directory)
+
+
+def _is_header(entry: dict[str, Any]) -> bool:
+    """
+    True when a parsed manifest line is the run header, not an entry.
+
+    The header is the manifest's first line and is the only line without
+    a ``seq`` (entries are numbered 0, 1, 2, ... in mint order).  The
+    check is structural, so a header written by an older store version
+    (no ``run_id`` / ``started_at`` keys) is still recognized.
+    """
+    return "seq" not in entry
 
 
 # --------------------------------------------------------------------------- #
@@ -339,18 +366,32 @@ class ArtifactStore:
 
     After a run, the store is plain files: everything under ``root`` is
     readable by external tools with no engine involved, and
-    :meth:`entries` parses the manifest.  The handle APIs exist to make
-    the DURING-run discipline structural (write scope, causal reads,
+    :meth:`entries` parses the manifest (skipping the run header, which
+    :meth:`header` returns).  The handle APIs exist to make the
+    DURING-run discipline structural (write scope, causal reads,
     parallel barriers), not to gate post-run access.
     """
 
-    def __init__(self, root: str | Path) -> None:
-        """Create a store for the run directory ``root`` (nothing on disk yet)."""
+    def __init__(
+        self,
+        root: str | Path,
+        history: "RunHistory | None" = None,
+    ) -> None:
+        """
+        Create a store for the run directory ``root`` (nothing on disk yet).
+
+        ``history`` is the run's :class:`~.history.RunHistory` (optional):
+        when given, the manifest's run header reuses its ``run_id`` as the
+        run's identity, so the manifest and the history name the same run.
+        Without it the header's ``run_id`` is ``None`` (the store is a
+        standalone opt-in; the history is a separate one).
+        """
         self._root = Path(root)
         self._lock = threading.Lock()
         self._seq = 0
         self._opened = False
         self._addresses: set[str] = set()
+        self._history = history
 
     # ------------------------------------------------------------ #
     # Introspection
@@ -373,14 +414,54 @@ class ArtifactStore:
         ``address`` (the node's root-relative directory), ``function``
         (the registry name), ``params`` (the action's OWN declared
         parameters — not the merged kwargs, so the manifest never
-        echoes upstream results), and ``dynamic`` (spliced in at
-        runtime).  Returns an empty list before the run begins.
+        echoes upstream results), ``dynamic`` (spliced in at runtime),
+        and ``timestamp`` (the wall-clock time the action was minted —
+        its call entry; the run's wall-clock evidence).  The run header
+        (the manifest's first line) is not an entry and is skipped here
+        (see :meth:`header`).  Returns an empty list before the run
+        begins.
         """
         manifest = self.manifest_path
         if not manifest.exists():
             return []
         lines = manifest.read_text(encoding="utf-8").splitlines()
-        return [json.loads(line) for line in lines if line.strip()]
+        return [
+            json.loads(line)
+            for line in lines
+            if line.strip() and not _is_header(json.loads(line))
+        ]
+
+    def header(self) -> dict[str, Any] | None:
+        """
+        The manifest's run header, or ``None`` before the run begins.
+
+        The header is the manifest's first line: ``run_id`` (the run's
+        identity — the run history's ``run_id`` when a history was
+        passed to the store, else ``None``) and ``started_at`` (the
+        wall-clock time the run began, ``time.time()`` at ``_begin``).
+        The returned dict is AUGMENTED with ``ended_at``: the last
+        entry's ``timestamp`` (the run's last mint — the wall-clock
+        evidence of when the run's work finished), or ``None`` when the
+        run minted no entries.  The header itself is never rewritten
+        (the manifest is append-only); ``ended_at`` is derived, not
+        stored.
+        """
+        manifest = self.manifest_path
+        if not manifest.exists():
+            return None
+        lines = manifest.read_text(encoding="utf-8").splitlines()
+        for line in lines:
+            if not line.strip():
+                continue
+            parsed = json.loads(line)
+            if _is_header(parsed):
+                header = dict(parsed)
+                entries = self.entries()
+                header["ended_at"] = (
+                    entries[-1]["timestamp"] if entries else None
+                )
+                return header
+        return None
 
     def __repr__(self) -> str:
         """One-liner with the run root and the minted-address count."""
@@ -392,6 +473,13 @@ class ArtifactStore:
     def _begin(self) -> None:
         """
         Open the store for a run: create the root and a fresh manifest.
+
+        The manifest opens with the RUN HEADER (the first line): the
+        run's identity (``run_id`` — the run history's id when a history
+        was passed to the store, else ``None``) and ``started_at`` (the
+        wall-clock time the run began).  The header is written before
+        any entry, so a run that dies before any action still leaves
+        wall-clock evidence of when it started.
 
         Refuses a root that already holds a manifest (recorded evidence
         is never silently extended) and a store that already ran one
@@ -410,7 +498,15 @@ class ArtifactStore:
                     f"(recorded evidence is never appended to)"
                 )
             self._root.mkdir(parents=True, exist_ok=True)
-            self.manifest_path.write_text("", encoding="utf-8")
+            header = {
+                "run_id": (
+                    self._history.run_id if self._history is not None else None
+                ),
+                "started_at": time.time(),
+            }
+            self.manifest_path.write_text(
+                json.dumps(header) + "\n", encoding="utf-8"
+            )
             self._opened = True
 
     def _mint(
@@ -427,7 +523,10 @@ class ArtifactStore:
         global ``seq`` is CALL order (within a sequential walk identical
         to the walk order); the store lock makes concurrent branch
         entries unique and gapless, with an interleaving that reflects
-        execution.
+        execution.  The entry's ``timestamp`` is the wall-clock time of
+        the mint (the action's call entry) — the manifest's per-action
+        wall-clock evidence (the run header's ``started_at`` / derived
+        ``ended_at`` bound the whole run).
         """
         entry = {
             "seq": self._seq,
@@ -435,6 +534,7 @@ class ArtifactStore:
             "function": function,
             "params": dict(params),
             "dynamic": bool(dynamic),
+            "timestamp": time.time(),
         }
         with self._lock:
             self._seq += 1

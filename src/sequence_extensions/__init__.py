@@ -21,6 +21,7 @@ from sequence_extensions.workflow import (
     Test_Framework,
     WalkContext,
     parse_workflow,
+    run_python_workflow,
     run_workflow,
     workflow_function,
 )
@@ -49,6 +50,7 @@ __all__ = [
     "graph_future",
     "list_ext",
     "parse_workflow",
+    "run_python_workflow",
     "run_workflow",
     "workflow_function",
 ]

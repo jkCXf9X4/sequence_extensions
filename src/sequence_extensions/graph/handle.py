@@ -307,6 +307,61 @@ class TreeHandle:
             clones.append(self.copy(body, **item))
         self.replace(body, clones)
 
+    def fan_out_parallel(self, overrides: Any) -> None:
+        """
+        Clone the declared downstream scope's children once per override
+        set, in place (the CONCURRENT MAP pattern).
+
+        The declared downstream scope (the first following group) is the
+        concurrency contract: each of its children is replaced by one
+        clone per override set, so the clones run as direct children of
+        the declared group.  When that group is concurrent in the domain
+        (a workflow ``Parallel`` scope), the clones run concurrently and
+        each clone keeps the declared child's data-plane position —
+        clones of an action child deliver their results downstream
+        exactly as :meth:`fan_out`'s clones do, while clones of a group
+        child become independent branches.
+
+        ``overrides`` is a non-empty iterable of mappings, exactly as
+        for :meth:`fan_out`; each mapping is the overrides for one clone
+        of every declared child.  An empty iterable raises
+        ``ValueError``.
+
+        Which groups accept a concurrent fan-out is the domain's rule
+        (:meth:`_check_parallel_body`); the generic layer imposes none.
+        """
+        self._check_writable()
+        items = list(overrides)
+        if not items:
+            raise ValueError(
+                "fan_out_parallel() needs at least one override set "
+                "(an empty map is not a body)"
+            )
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError(
+                    f"fan_out_parallel() overrides must be mappings, "
+                    f"got {type(item).__name__}"
+                )
+        body = self.following_group()
+        self._check_parallel_body(body)
+        for child in list(body.children):
+            clones = [self.copy(child, **item) for item in items]
+            self.replace(child, clones)
+
+    def _check_parallel_body(self, group: Group) -> None:
+        """
+        The domain hook for :meth:`fan_out_parallel`: may ``group``'s
+        children be fanned out concurrently?
+
+        The generic layer has no concurrency semantics, so the default
+        imposes no rule; a domain whose groups carry execution semantics
+        overrides this with its own contract (the workflow's
+        :class:`~sequence_extensions.workflow.adaptation.DAGHandle`
+        requires a ``Parallel`` scope).
+        """
+        return None
+
     def select(self, name: Any, default: Any = None) -> Node:
         """
         Pick the named child of the declared downstream group and replace

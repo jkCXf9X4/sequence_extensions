@@ -58,12 +58,14 @@ Run options (all keyword-only on ``run_workflow`` / ``Test_Framework``,
 all defaulting to the current behavior): ``params_mode`` ("full" |
 "summary" — recorded param payloads become item counts), ``max_workers``
 (the ``GraphPool`` size), ``adaptation_bound`` (the dynamic-node bound),
-``executor`` (a caller-owned ``GraphPool``) and ``dry_run`` (plan mode:
+``executor`` (a caller-owned ``GraphPool``), ``dry_run`` (plan mode:
 validate and walk with no-op functions, and return the tree instead of a
 result — the answer to the paper's opacity criticism, "it is not possible
 to determine how the function find_files will alter the downstream actions
-by only looking at the representation").  See the two functions'
-docstrings.
+by only looking at the representation") and ``action_timeout`` (the
+per-action wall-clock budget in seconds; expiry raises
+:class:`ActionTimeoutError`, so one hung simulator action cannot deadlock
+an unattended campaign).  See the two functions' docstrings.
 
 Opt-in artifact store (IMP-005, IMP-007): pass ``artifacts=ArtifactStore(root)``
 (see :mod:`sequence_extensions.workflow.artifacts`) to give the run a
@@ -82,9 +84,10 @@ from __future__ import annotations
 import concurrent.futures
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Callable, Union
+from typing import TYPE_CHECKING, Any, Callable, NoReturn, Union
 
 from ..graph import GraphFuture, GraphPool
+from ..graph.graph_future import _LIVE_NODES
 from .adaptation import ADAPTATION_BOUND, AdaptationOp, DAGHandle
 from .history import (
     ExecutionRecord,
@@ -103,6 +106,7 @@ if TYPE_CHECKING:  # the engine is store-free at runtime (IMP-007); the
     from .artifacts import ArtifactStore
 
 __all__ = [
+    "ActionTimeoutError",
     "Test_Framework",
     "WalkContext",
     "check_splice_scope",
@@ -200,6 +204,53 @@ def _as_node_list(returned: Any) -> list[_Node] | None:
 # --------------------------------------------------------------------------- #
 
 
+class _BaseExceptionCarrier(Exception):
+    """
+    Carries a ``BaseException`` (``KeyboardInterrupt`` / ``SystemExit``)
+    raised by an action across the :class:`GraphFuture` boundary.
+
+    ``GraphFuture._run`` only catches ``Exception``, so a ``BaseException``
+    raised by an action would otherwise escape the worker thread WITHOUT
+    settling the future — the parallel join (and any sequential wait) then
+    blocks forever (finding 5a: a child raising ``KeyboardInterrupt``
+    deadlocked the whole run).  The engine's action guard (see
+    ``_submit_action``) converts such a ``BaseException`` into this carrier
+    (an ``Exception``), which the future transports normally; the walker
+    unwraps it (see ``run``) and re-raises the ORIGINAL ``BaseException``
+    so the caller sees it — it is NOT swallowed.
+    """
+
+    def __init__(self, original: BaseException) -> None:
+        super().__init__(f"action raised {type(original).__name__}: {original}")
+        self.original = original
+
+
+# Sentinel RESULT (not an exception) returned by the action guard when a
+# sibling already failed under the fail-fast policy (finding 3e).  It is a
+# result, not a future-exception, so it does not trip
+# ``concurrent.futures.wait(FIRST_EXCEPTION)``; the walker treats it as
+# "skipped" (no result, no error) — it is NOT a real failure, so it is
+# never reported to the caller.
+_SKIPPED = object()
+
+
+class ActionTimeoutError(TimeoutError):
+    """
+    An action's function call exceeded the run's per-action timeout.
+
+    Raised by :func:`run_workflow` / :func:`Test_Framework` when an action
+    was still running after ``action_timeout`` seconds (the option's value
+    is in the message).  Subclasses the builtin :class:`TimeoutError` so a
+    caller catching ``TimeoutError`` (or ``OSError``) still matches, while
+    carrying the action's name and the timeout that fired.
+
+    The action's worker thread cannot be killed (Python threads are not
+    killable), so the run abandons it: the pool is shut down without
+    waiting for it and the process moves on.  See ``run_workflow``'s
+    ``action_timeout`` documentation for the full semantics.
+    """
+
+
 class WalkContext:
     """
     The per-action walk context: plain structural position data (IMP-007).
@@ -277,6 +328,8 @@ class _Engine:
         adaptation_bound: int | None = None,
         executor: GraphPool | None = None,
         dry_run: bool = False,
+        action_timeout: float | None = None,
+        fail_fast: bool = False,
     ) -> None:
         """Create an engine for ``root``; the keyword options mirror ``run_workflow``'s."""
         self._registry = registry
@@ -318,6 +371,35 @@ class _Engine:
         # Plan mode (IMP-013): the walk runs with no-op functions, so nothing
         # executes and nothing is spliced or adapted; the tree is the result.
         self._dry_run = dry_run
+        # Per-action wall-clock timeout (finding 3d): None = no timeout
+        # (the historical behavior — a hung action blocks its worker).  A
+        # positive number bounds every action's function call; expiry
+        # raises ActionTimeoutError naming the action.
+        if action_timeout is not None and action_timeout <= 0:
+            raise ValueError(
+                f"action_timeout must be > 0 seconds or None, got {action_timeout}"
+            )
+        self._action_timeout = action_timeout
+        # First action-timeout error observed in this run (first-wins): the
+        # walk unwinds through sibling waits, which re-raise THIS error so
+        # the caller sees one clear cause instead of a cascade of secondary
+        # timeouts from actions that were merely downstream of the hang.
+        self._timeout_error: ActionTimeoutError | None = None
+        # Fail-fast policy (finding 3e): when True, a parallel group stops
+        # waiting as soon as one child fails — not-yet-started siblings are
+        # cancelled and the first error is raised promptly instead of after
+        # every sibling has settled.  False (the default) keeps the
+        # historical drain-then-report behavior.
+        self._fail_fast = fail_fast
+        # Set when a fail-fast run abandons in-flight siblings: the pool is
+        # then torn down WITHOUT waiting for the abandoned workers (a thread
+        # cannot be killed), exactly like the action-timeout path.
+        self._abandoned_workers = False
+        # Run-level abort signal for the fail-fast policy (finding 3e): set
+        # the moment any action fails, so not-yet-run siblings (queued
+        # behind the pool) skip their function call instead of doing work.
+        # Inert unless ``fail_fast`` is True.
+        self._fail_fast_abort = threading.Event()
 
     # ------------------------------------------------------------ #
     # Public entry point
@@ -346,10 +428,20 @@ class _Engine:
                 # Run identity (IMP-011): the workflow digest, stamped at run
                 # start (the history's ``run_id`` was created with it).
                 self._history.source = self._source
+                # The recorded-params shape the run actually used (the
+                # history's default is "full"; the run's option wins).
+                self._history.params_mode = self._params_mode
             # Eager validation: every action's function name must resolve
             # BEFORE any execution starts (parity with the old build pass).
             self._validate_node(self._root)
-            self._walk_group(self._root, [], ())
+            try:
+                self._walk_group(self._root, [], ())
+            except _BaseExceptionCarrier as carrier:
+                # An action raised a BaseException (KeyboardInterrupt /
+                # SystemExit): the action guard carried it across the
+                # GraphFuture boundary (finding 5a) — re-raise the ORIGINAL
+                # so the caller sees it, not the transport wrapper.
+                raise carrier.original
             if self._dry_run:
                 # Plan mode: the walk ran with no-op functions, so there is no
                 # final result to resolve — the effective plan tree (the tree
@@ -368,10 +460,27 @@ class _Engine:
         finally:
             self._pool = None
             if owned:
-                # An engine-owned pool is shut down here (the with-statement
-                # equivalent); a caller-supplied executor stays owned by the
-                # caller and is NOT shut down.
-                pool.__exit__(None, None, None)
+                if self._timeout_error is not None or self._abandoned_workers:
+                    # A per-action timeout fired, or a fail-fast run
+                    # abandoned in-flight siblings: at least one worker is
+                    # still inside a function call, and a thread cannot be
+                    # killed — so the pool is shut down WITHOUT waiting
+                    # for it (pending nodes are cancelled, the abandoned
+                    # workers finish on their own).  GraphPool's
+                    # context-manager exit blocks on running workers, which
+                    # is exactly the deadlock this option exists to break.
+                    pool._shutdown = True
+                    for node in list(_LIVE_NODES):
+                        if not node.future.done():
+                            node.future.cancel()
+                    if pool._executor is not None:
+                        pool._executor.shutdown(wait=False, cancel_futures=True)
+                        pool._executor = None
+                else:
+                    # An engine-owned pool is shut down here (the
+                    # with-statement equivalent); a caller-supplied executor
+                    # stays owned by the caller and is NOT shut down.
+                    pool.__exit__(None, None, None)
 
     # ------------------------------------------------------------ #
     # Pre-validation (eager unknown-function errors)
@@ -435,7 +544,7 @@ class _Engine:
                 continue
             if isinstance(child, Action):
                 future = self._submit_action(child, chain, ancestry + ((group, i),))
-                raw = self._pool.result(future)
+                raw = self._wait_action(child, future)
                 result = self._handle_result(child, group, i, raw, chain, ancestry)
                 chain.append((child, result))
                 direct.append((child, result))
@@ -504,27 +613,55 @@ class _Engine:
         results: list[Any] = [None] * len(children)
         errors: list[tuple[int, BaseException]] = []
         if submitted:
-            join = GraphFuture(_join_results, *[f for _, _, f in submitted])
-            try:
-                self._pool.result(join)
-            except Exception:
-                # The join only runs once every dependency has settled, so
-                # the per-future result() calls below are non-blocking; the
-                # first in-order failure is re-raised after all children
-                # (threads included) have settled.
-                pass
-            for position, action, future in submitted:
+            if self._fail_fast:
+                # Fail-fast (finding 3e): raise the first action error
+                # promptly, abandoning the in-flight siblings (their queued
+                # actions skip via the abort event; running ones finish in
+                # the background — a thread cannot be killed).
+                self._await_fail_fast(
+                    submitted, results, errors, group, upstream, ancestry
+                )
+                if errors:
+                    self._abandoned_workers = True
+                    for _, exc in sorted(errors, key=lambda item: item[0]):
+                        raise exc
+            else:
+                join = GraphFuture(_join_results, *[f for _, _, f in submitted])
                 try:
-                    raw = future.result()
-                    results[position] = self._handle_result(
-                        action, group, position, raw, upstream, ancestry
-                    )
-                except BaseException as exc:
-                    # BaseException (matching _walk_child_thread): a
-                    # KeyboardInterrupt from an action is collected too, so
-                    # every child still settles, and the first failure in
-                    # child order is re-raised below.
-                    errors.append((position, exc))
+                    self._await_join(join, submitted)
+                except Exception:
+                    # The join settles once every dependency has settled —
+                    # EXCEPT under a per-action timeout, where a hung child
+                    # abandons its future and the join never settles.  The
+                    # per-future loop below then reports the recorded timeout
+                    # at the hung action's position (its guard replaces a
+                    # blocking wait); otherwise the result() calls there are
+                    # non-blocking and the first in-order failure is
+                    # re-raised after all children (threads included) have
+                    # settled.
+                    pass
+                for position, action, future in submitted:
+                    try:
+                        if (
+                            self._timeout_error is not None
+                            and not future.done()
+                        ):
+                            # A sibling's timeout already fired and this
+                            # future is still unsettled (hung or abandoned):
+                            # report the recorded error at this action's
+                            # position instead of blocking forever on its
+                            # result.
+                            self._raise_recorded_timeout()
+                        raw = future.result()
+                        results[position] = self._handle_result(
+                            action, group, position, raw, upstream, ancestry
+                        )
+                    except BaseException as exc:
+                        # BaseException (matching _walk_child_thread): a
+                        # KeyboardInterrupt from an action is collected too,
+                        # so every child still settles, and the first failure
+                        # in child order is re-raised below.
+                        errors.append((position, exc))
         for _, thread, _ in threads:
             thread.join()
         for position, _thread, holder in threads:
@@ -595,7 +732,7 @@ class _Engine:
                 continue
             if isinstance(node, Action):
                 future = self._submit_action(node, chain, ancestry + ((parent, position),))
-                raw = self._pool.result(future)
+                raw = self._wait_action(node, future)
                 result = self._handle_result(node, parent, position, raw, chain, ancestry)
                 chain.append((node, result))
                 results.append(result)
@@ -656,7 +793,7 @@ class _Engine:
             else None
         )
         return GraphFuture(
-            self._run_action,
+            self._guarded_action,
             *[result for _, result in upstream],
             fn=fn,
             params=params,
@@ -664,6 +801,194 @@ class _Engine:
             action=action,
             context=context,
         )
+
+    def _guarded_action(
+        self,
+        *upstream_results: Any,
+        fn: Callable[..., Any],
+        params: dict[str, Any],
+        actions: list[Action | None],
+        action: Action,
+        context: WalkContext | None = None,
+    ) -> Any:
+        """
+        The action guard: run ``_run_action`` with two engine-level policies.
+
+        * **Fail-fast skip (finding 3e)** — when ``fail_fast`` is on and a
+          sibling has already failed (the run-level abort event is set), a
+          not-yet-run action returns the ``_SKIPPED`` sentinel instead of
+          calling its function: the campaign stops paying for siblings
+          after the first failure.  Inert unless ``fail_fast`` is True.
+        * **BaseException carriage (finding 5a)** — ``GraphFuture._run``
+          only catches ``Exception``, so a ``KeyboardInterrupt`` /
+          ``SystemExit`` raised by an action would escape the worker
+          WITHOUT settling the future, deadlocking the join (and any
+          sequential wait).  The guard converts such a ``BaseException``
+          into a :class:`_BaseExceptionCarrier` (an ``Exception``) that the
+          future transports normally; the walker unwraps it and re-raises
+          the original.
+
+        On a real failure the guard sets the abort event (fail-fast only)
+        so the remaining queued siblings skip.
+        """
+        if self._fail_fast and self._fail_fast_abort.is_set():
+            return _SKIPPED
+        try:
+            return self._run_action(
+                *upstream_results,
+                fn=fn,
+                params=params,
+                actions=actions,
+                action=action,
+                context=context,
+            )
+        except BaseException as exc:
+            if self._fail_fast:
+                self._fail_fast_abort.set()
+            if not isinstance(exc, Exception):
+                # KeyboardInterrupt / SystemExit: carry across the future
+                # boundary (finding 5a) — the walker re-raises the original.
+                raise _BaseExceptionCarrier(exc) from exc
+            raise
+
+    # ------------------------------------------------------------ #
+    # Per-action timeout (finding 3d)
+    # ------------------------------------------------------------ #
+    def _wait_action(self, action: Action, future: GraphFuture) -> Any:
+        """
+        Wait for one action's result, honoring the run's per-action timeout.
+
+        This is the engine's wait point for a sequential or spliced action
+        (``pool.result`` without a timeout would block forever on a hung
+        function — the unattended-campaign deadlock of finding 3d).  With
+        ``action_timeout=None`` (the default) the wait is unbounded, so the
+        behavior is exactly the historical one.
+
+        The budget is measured from the action's worker-side start stamp
+        (``_engine_started``, set in ``_run_action``), not from submission:
+        an action queued behind others in a campaign larger than the pool
+        still gets its full per-action budget once it starts.  An action
+        that has not STARTED within one budget of waiting also fails: the
+        pool is then saturated (every worker inside a call that outlived
+        its own budget), so the campaign cannot proceed and an unattended
+        run must fail loudly rather than wait forever.
+
+        On expiry the still-running function is ABANDONED, not killed: a
+        Python thread cannot be killed, and :class:`GraphPool`'s
+        cancellation only reaches futures that have not started (its
+        ``__exit__`` cancels pending nodes but then BLOCKS on running
+        workers — the very deadlock this option exists to break).  The
+        engine records the error, lets the walk unwind, and tears its own
+        pool down without waiting (see ``run``).  Sibling waits re-raise
+        the recorded error so the caller sees one clear cause.
+        """
+        if self._action_timeout is None:
+            return self._pool.result(future)
+        if self._timeout_error is not None:
+            # A sibling already timed out: unwind instead of waiting (and
+            # possibly timing out again) on this action.
+            self._raise_recorded_timeout()
+        wait_start = time.monotonic()
+        while True:
+            started = getattr(action, "_engine_started", None)
+            if started is None:
+                # Not started yet: one full budget for it to start in.
+                remaining = self._action_timeout - (time.monotonic() - wait_start)
+            else:
+                remaining = self._action_timeout - (time.monotonic() - started)
+            if remaining <= 0:
+                raise self._action_timed_out(action) from None
+            try:
+                return self._pool.result(future, timeout=remaining)
+            except concurrent.futures.TimeoutError:
+                if future.done():
+                    # Settled in the race window between expiry and the
+                    # exception surfacing: return the settled outcome.
+                    return future.result()
+                # Not settled: re-evaluate the budget (an action that
+                # started late still has budget left; the loop is bounded
+                # because every round consumes wall-clock time).
+
+    def _await_join(self, join: GraphFuture, submitted: list) -> Any:
+        """
+        Wait for a parallel group's join future under the per-action timeout.
+
+        The join settles only when EVERY submitted action has settled, so
+        an unbounded wait would hang the whole group on one hung sibling —
+        the parallel form of the finding-3d deadlock.  The wait is a
+        deadline loop: each round waits only until the SOONEST expiry
+        among the group's still-unsettled actions (execution-based for
+        started actions, one budget from the wait's start for queued
+        ones — the same rule as ``_wait_action``), and the first action
+        past its deadline is named in the raised error.  With
+        ``action_timeout=None`` the wait is unbounded (historical
+        behavior).
+        """
+        if self._action_timeout is None:
+            return self._pool.result(join)
+        if self._timeout_error is not None:
+            self._raise_recorded_timeout()
+        wait_start = time.monotonic()
+
+        def _deadline(action: Action, future: GraphFuture) -> float | None:
+            """This action's expiry (monotonic), or None once settled."""
+            if future.done():
+                return None
+            started = getattr(action, "_engine_started", None)
+            if started is None:
+                return wait_start + self._action_timeout
+            return started + self._action_timeout
+
+        while True:
+            now = time.monotonic()
+            for _position, action, future in submitted:
+                deadline = _deadline(action, future)
+                if deadline is not None and deadline <= now:
+                    raise self._action_timed_out(action) from None
+            remaining = self._action_timeout
+            for _position, action, future in submitted:
+                deadline = _deadline(action, future)
+                if deadline is not None and deadline - now < remaining:
+                    remaining = deadline - now
+            if remaining <= 0:
+                # An expiry just passed between the scan and here; the
+                # next scan raises for it (bounded: the scan is re-run).
+                continue
+            try:
+                return self._pool.result(join, timeout=remaining)
+            except concurrent.futures.TimeoutError:
+                # Re-scan: a settled action may have unblocked the join, an
+                # expired one raises, and a late starter gets a new budget.
+                continue
+
+    def _action_timed_out(self, action: Action) -> ActionTimeoutError:
+        """
+        Build (and record, first-wins) the timeout error for ``action``.
+
+        The message names the action, the timeout and the option, and how
+        long the function had actually been executing, so an unattended
+        campaign's log says exactly which simulator call hung and under
+        which setting.
+        """
+        started = getattr(action, "_engine_started", None)
+        elapsed = time.monotonic() - started if started is not None else None
+        error = ActionTimeoutError(
+            f"action {action.function!r} timed out: its function call did not "
+            f"finish within the per-action timeout of {self._action_timeout} "
+            f"seconds (run option 'action_timeout')"
+            + (
+                f" after {elapsed:.3f} seconds of execution"
+                if elapsed is not None
+                else ""
+            )
+        )
+        if self._timeout_error is None:
+            self._timeout_error = error
+        return error
+
+    def _raise_recorded_timeout(self) -> NoReturn:
+        """Re-raise the run's recorded timeout error (sibling-wait unwind)."""
+        raise self._timeout_error from None
 
     def _handle_result(
         self,
@@ -761,6 +1086,11 @@ class _Engine:
                 key = name
             kwargs[key] = result
         kwargs.update(params)
+        # Worker-side start stamp for the per-action timeout (finding 3d):
+        # the budget is measured from when the function call actually
+        # begins, not from submission, so queued actions keep their full
+        # budget.  Inert when no timeout is configured.
+        action._engine_started = time.monotonic()
         handle = self._make_handle(action)
         if handle is not None:
             # Reserved kwarg name: the injected handle wins over any
@@ -1043,7 +1373,9 @@ def _join_results(*_results: Any) -> None:
 
 
 def _wire_store(
-    registry: FunctionRegistry, artifacts: ArtifactStore | None
+    registry: FunctionRegistry,
+    artifacts: ArtifactStore | None,
+    history: RunHistory | None = None,
 ) -> FunctionRegistry:
     """
     The artifact store's wiring point (IMP-007): the one place the engine
@@ -1054,9 +1386,17 @@ def _wire_store(
     derived at call time from the injected walk context.  With no store
     (``None``), the registry passes through unchanged and nothing happens
     — the opt-in contract.
+
+    When the run has a history and the store was constructed without
+    one, the history is attached before the store opens, so the
+    manifest's run header carries the run's identity (``run_id``).  A
+    store the caller constructed WITH a history keeps it (caller
+    ownership).
     """
     if artifacts is None:
         return registry
+    if history is not None and artifacts._history is None:
+        artifacts._history = history
     artifacts._begin()
     return artifacts.wrap_registry(registry)
 
@@ -1134,6 +1474,7 @@ def run_workflow(
     adaptation_bound: int | None = None,
     executor: GraphPool | None = None,
     dry_run: bool = False,
+    action_timeout: float | None = None,
 ) -> Any:
     """
     Parse a workflow XML document and execute it; return the final result.
@@ -1191,10 +1532,27 @@ def run_workflow(
       (each record shows what the action WOULD have been called with).
       Nothing executes: no side effects, no splices, no store directories
       (``artifacts`` is ignored — a plan mints nothing).
+    * ``action_timeout`` — per-action wall-clock budget in seconds
+      (default ``None`` = no timeout, the historical behavior: a hung
+      action blocks its worker forever).  A positive number bounds every
+      action's function call; an action still running past its budget
+      raises :class:`ActionTimeoutError` (a :class:`TimeoutError`
+      subclass) naming the action, the timeout and the option, so an
+      unattended campaign fails loudly instead of deadlocking.  The
+      budget is measured from when the call starts on its worker (an
+      action queued behind others keeps its full budget); an action that
+      cannot even START within one budget (a saturated pool) fails the
+      same way.  The hung function is abandoned, not killed — Python
+      threads cannot be killed — so the engine tears its own pool down
+      without waiting for it and the run unwinds; the abandoned worker
+      finishes in the background (a caller-owned ``executor`` is never
+      shut down by the engine).  Must be > 0 or ``None``.
 
     Raises ``ValueError`` for invalid XML, an unknown function name (naming
     the function), an out-of-scope dynamic-adaptation splice attempt, an
-    unknown ``params_mode``, or a negative ``adaptation_bound``.
+    unknown ``params_mode``, a negative ``adaptation_bound``, or a
+    non-positive ``action_timeout``.  Raises :class:`ActionTimeoutError`
+    when the ``action_timeout`` option fires.
     """
     root = parse_workflow(xml_source)
     if parameters:
@@ -1212,7 +1570,7 @@ def run_workflow(
         (
             _dry_run_registry(effective_registry)
             if dry_run
-            else _wire_store(effective_registry, artifacts)
+            else _wire_store(effective_registry, artifacts, history)
         ),
         parameters,
         history,
@@ -1222,6 +1580,7 @@ def run_workflow(
         adaptation_bound=adaptation_bound,
         executor=executor,
         dry_run=dry_run,
+        action_timeout=action_timeout,
     )
     return engine.run()
 
@@ -1238,6 +1597,7 @@ def Test_Framework(
     adaptation_bound: int | None = None,
     executor: GraphPool | None = None,
     dry_run: bool = False,
+    action_timeout: float | None = None,
 ) -> Any:
     """
     Execute a workflow built via the Python API (the paper's Listing 10).
@@ -1256,7 +1616,9 @@ def Test_Framework(
 
     The keyword-only run options mirror :func:`run_workflow` (``params_mode``,
     ``max_workers``, ``adaptation_bound``, ``executor``, ``dry_run`` — with
-    ``dry_run=True`` returning the workflow tree instead of a result).
+    ``dry_run=True`` returning the workflow tree instead of a result — and
+    ``action_timeout``, the per-action wall-clock budget in seconds whose
+    expiry raises :class:`ActionTimeoutError`; see :func:`run_workflow`).
 
     The paper's call form ``Test_Framework(parameters=common_parameters,
     seq=top_seq)`` executes the workflow and returns its final result.
@@ -1269,7 +1631,7 @@ def Test_Framework(
         (
             _dry_run_registry(effective_registry)
             if dry_run
-            else _wire_store(effective_registry, artifacts)
+            else _wire_store(effective_registry, artifacts, history)
         ),
         parameters,
         history,
@@ -1279,6 +1641,7 @@ def Test_Framework(
         adaptation_bound=adaptation_bound,
         executor=executor,
         dry_run=dry_run,
+        action_timeout=action_timeout,
     )
     return engine.run()
 

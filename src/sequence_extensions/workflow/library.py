@@ -63,12 +63,23 @@ The functions
 * :func:`regression_gate` — pure function (no ``dag``): compares each
   collision-suffixed upstream result's ``field`` to a ``baseline`` within
   ``tolerance`` and raises on regression (a V&V gate).
+* :func:`randomize_scenarios` — pure function (no ``dag``): generates
+  ``count`` randomized scenario values from a dedicated stdlib RNG seeded
+  with ``seed`` (the paper's P16 / UC2 randomization with stored
+  recreation metadata — the ``method`` and ``seed`` are declared
+  parameters, so they are recorded in the run history and the campaign
+  is repeatable).
 
-Every function is deterministic (no randomness, no I/O beyond the file
-discovery the paper's examples require) and stdlib-only.  Every function
-tolerates extra keyword arguments: the engine passes global parameters
-(e.g. ``model``) and upstream results alongside each action's own
-parameters, and the functions ignore what they do not need.
+Every function is deterministic (no unseeded randomness, no I/O beyond
+the file discovery the paper's examples require) and stdlib-only.
+:func:`randomize_scenarios` is the one seeded-randomness exception: it
+is deterministic FOR A GIVEN SEED (the same ``(method, seed, count,
+options)`` always yields the same list, in the same process or a fresh
+interpreter), which is exactly the reproducibility contract the paper's
+UC2 requires — the seed is the declared parameter, not hidden state.
+Every function tolerates extra keyword arguments: the engine passes
+global parameters (e.g. ``model``) and upstream results alongside each
+action's own parameters, and the functions ignore what they do not need.
 
 The eight adaptation drivers (``find_files``, ``parameter_sweep``,
 ``evaluate_goal``, ``check_convergence``, ``guard``, ``while_condition``,
@@ -103,8 +114,8 @@ registration, for use outside the engine.
 
 from __future__ import annotations
 
+import random
 import time
-import warnings
 from pathlib import Path
 from typing import Any, Callable
 
@@ -129,6 +140,7 @@ __all__ = [
     "retry",
     "fallback",
     "regression_gate",
+    "randomize_scenarios",
     "register_library",
 ]
 
@@ -142,6 +154,7 @@ def find_files(
     pattern: str = "*.csv",
     *,
     dag: DAGHandle,
+    parallel: bool | str = False,
     **kwargs: Any,
 ) -> list[str]:
     """
@@ -161,13 +174,26 @@ def find_files(
     pattern matched directly under ``path`` (default ``"*.csv"``).  Files
     are processed in sorted order for determinism.
 
+    ``parallel`` (default ``False``) runs the per-file clones
+    concurrently: the declared downstream scope must then be a
+    ``<scope type="parallel">`` group, and each of its declared children
+    is replaced by one clone per file (``dag.fan_out_parallel``), so the
+    clones run as direct children of the parallel group.  XML strings
+    ``"true"`` / ``"false"`` (any case) are accepted and normalized, so
+    the option can be set from an ``<argument>``.  With ``parallel=True``
+    the per-file clones run concurrently; with the default they run one
+    after another, in sorted file order.
+
     Returns the list of found file paths (the plain result that flows
     downstream as this action's result).  When no file matches, nothing is
     adapted and the declared scope runs once, as declared.
     """
     files = sorted(str(p) for p in Path(path).glob(pattern))
     if files:
-        dag.fan_out([{"file": f} for f in files])
+        if _as_bool(parallel, "find_files"):
+            dag.fan_out_parallel([{"file": f} for f in files])
+        else:
+            dag.fan_out([{"file": f} for f in files])
     return files
 
 
@@ -210,6 +236,7 @@ def parameter_sweep(
     values: str | list | tuple | None = None,
     *,
     dag: DAGHandle,
+    parallel: bool | str = False,
     **kwargs: Any,
 ) -> list[Any]:
     """
@@ -229,6 +256,16 @@ def parameter_sweep(
     list (``[5, 10, 15]``); string items are stripped, empty items are
     dropped, and numeric strings are converted to ``int`` (or ``float``).
 
+    ``parallel`` (default ``False``) runs the per-value clones
+    concurrently: the declared downstream scope must then be a
+    ``<scope type="parallel">`` group, and each of its declared children
+    is replaced by one clone per value (``dag.fan_out_parallel``), so the
+    clones run as direct children of the parallel group.  XML strings
+    ``"true"`` / ``"false"`` (any case) are accepted and normalized, so
+    the option can be set from an ``<argument>``.  With ``parallel=True``
+    the per-value clones run concurrently; with the default they run one
+    after another, in sweep order.
+
     Returns the list of sweep values (the plain result that flows
     downstream as this action's result).  When there are no values, nothing
     is adapted and the declared scope runs once, as declared.
@@ -239,7 +276,10 @@ def parameter_sweep(
         raise ValueError("parameter_sweep requires 'parameter_name'")
     sweep_values = normalize_values(values)
     if sweep_values:
-        dag.fan_out([{parameter_name: v} for v in sweep_values])
+        if _as_bool(parallel, "parameter_sweep"):
+            dag.fan_out_parallel([{parameter_name: v} for v in sweep_values])
+        else:
+            dag.fan_out([{parameter_name: v} for v in sweep_values])
     return sweep_values
 
 
@@ -602,6 +642,110 @@ def regression_gate(
     }
 
 
+def randomize_scenarios(
+    method: str,
+    seed: int,
+    count: int,
+    options: str | list | tuple | None = None,
+    **kwargs: Any,
+) -> list[Any]:
+    """
+    Generate ``count`` randomized scenario values from a seeded RNG
+    (a plain function — no ``dag``; the paper's P16 / UC2 randomization
+    with stored recreation metadata).
+
+    The function draws ``count`` values from a dedicated
+    :class:`random.Random` instance seeded with ``seed`` (the stdlib RNG,
+    explicitly seeded — no global RNG state is touched, so the campaign
+    is reproducible regardless of what else ran in the process).  The
+    same ``(method, seed, count, options)`` always yields the same
+    scenario list, in the same order, in the same process or a fresh
+    interpreter (the Mersenne Twister stream is stable across runs and
+    platforms for the same seed); different seeds yield different lists
+    (statistically — a given item is not guaranteed to differ).
+
+    ``method`` selects the generator (the recreation metadata the paper
+    requires to be stored alongside the seed, §3.1.2):
+
+    * ``"uniform"`` (the default) — ``count`` independent draws from the
+      unit interval ``[0.0, 1.0)`` (``rng.random()``);
+    * ``"choice"`` — ``count`` draws from ``options`` (``rng.choice``);
+      ``options`` is accepted as a comma-separated string (``"a, b, c"``,
+      the XML form) or a list/tuple (the Python API form);
+    * ``"permutation"`` — a random ordering of ``options``
+      (``rng.sample`` without replacement); ``count`` is ignored (the
+      result has ``len(options)`` items) and ``options`` is required.
+
+    ``method`` and ``seed`` are DECLARED parameters, so the engine
+    records them in the action's history record (``record.params``) —
+    the recreation metadata that makes a randomized run auditable and
+    repeatable.  For run-level traceability, the caller may also stamp
+    the seed on the run history (``history.seed = seed``); the run-level
+    field is the campaign's identity, the record-level params are the
+    per-action evidence.
+
+    The returned list is the plain result that flows downstream as this
+    action's result; to fan a campaign out over the generated values,
+    compose with a map-style driver (e.g. feed the list to
+    :func:`parameter_sweep`'s ``values`` parameter, or iterate it in a
+    user function) — this function itself never adapts the workflow.
+
+    Raises ``ValueError`` when ``method`` is unknown, when ``count`` is
+    not a positive integer, or when ``"choice"`` / ``"permutation"`` is
+    used without a non-empty ``options``.
+    """
+    rng = random.Random(seed)
+    if method == "uniform":
+        return [rng.random() for _ in range(_positive_count(count, "randomize_scenarios"))]
+    if method == "choice":
+        pool = _option_pool(options, "randomize_scenarios")
+        return [rng.choice(pool) for _ in range(_positive_count(count, "randomize_scenarios"))]
+    if method == "permutation":
+        pool = _option_pool(options, "randomize_scenarios")
+        return list(rng.sample(pool, len(pool)))
+    raise ValueError(
+        f"randomize_scenarios: unknown method {method!r} "
+        f"(expected 'uniform', 'choice' or 'permutation')"
+    )
+
+
+def _positive_count(count: Any, caller: str) -> int:
+    """
+    Normalize a ``count`` parameter to a positive int.
+
+    XML arguments arrive as strings (``count="5"``), so numeric strings
+    are coerced (the same normalization :func:`.params.coerce_value`
+    applies to sweep values).  Raises ``ValueError`` when the value is
+    not a positive integer.
+    """
+    value = coerce_value(count) if isinstance(count, str) else count
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(
+            f"{caller}: 'count' must be a positive integer, got {count!r}"
+        )
+    return value
+
+
+def _option_pool(options: Any, caller: str) -> list[Any]:
+    """
+    Normalize an ``options`` parameter to a non-empty list.
+
+    A comma-separated string (the XML form, ``"a, b, c"``) is split and
+    stripped; a list or tuple (the Python API form) is used as-is.
+    Empty items are dropped.  Raises ``ValueError`` when the pool is
+    empty (a draw from an empty pool is a workflow error, not a
+    silent empty campaign).
+    """
+    if options is None:
+        raise ValueError(f"{caller}: method requires a non-empty 'options'")
+    items = options.split(",") if isinstance(options, str) else list(options)
+    pool = [item.strip() if isinstance(item, str) else item for item in items]
+    pool = [item for item in pool if item != "" and item is not None]
+    if not pool:
+        raise ValueError(f"{caller}: 'options' must not be empty")
+    return pool
+
+
 def aggregate(
     upstream: str,
     field: str,
@@ -803,9 +947,9 @@ def while_condition(
 # --------------------------------------------------------------------------- #
 
 #: The library functions, in the paper's order (the seven paper functions
-#: first, then the objective-2 drivers, then the Tier 1 and Tier 2 generic
-#: functions from ``docs/dynamic_scenarios_analysis.md`` §5).  ``register_library``
-#: registers exactly these, under their own names.
+#: first, then the objective-2 drivers, then the Tier 1, Tier 2 and Tier 3
+#: generic functions from ``docs/dynamic_scenarios_analysis.md`` §5).
+#: ``register_library`` registers exactly these, under their own names.
 LIBRARY_FUNCTIONS: tuple[Callable[..., Any], ...] = (
     find_files,
     simulate,
@@ -823,6 +967,7 @@ LIBRARY_FUNCTIONS: tuple[Callable[..., Any], ...] = (
     retry,
     fallback,
     regression_gate,
+    randomize_scenarios,
 )
 
 
@@ -861,6 +1006,30 @@ def register_library(registry: FunctionRegistry | None = None) -> FunctionRegist
 # --------------------------------------------------------------------------- #
 
 
+def _as_bool(value: bool | str, caller: str) -> bool:
+    """
+    Normalize a boolean option that may arrive as an XML string.
+
+    XML ``<argument>`` values are plain strings, so a ``parallel`` option
+    set from XML arrives as ``"true"`` / ``"false"`` (any case); a real
+    ``bool`` (the Python API) passes through.  Anything else raises
+    ``ValueError`` — a mistyped option fails loudly instead of being
+    silently treated as ``False``.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "yes", "1"):
+            return True
+        if lowered in ("false", "no", "0", ""):
+            return False
+    raise ValueError(
+        f"{caller}: 'parallel' must be a boolean or 'true'/'false' "
+        f"(any case), got {value!r}"
+    )
+
+
 def _upstream_results(params: dict[str, Any]) -> dict[str, Any]:
     """
     Collect the upstream results from an action's keyword parameters.
@@ -879,27 +1048,6 @@ def _summary(results: dict[str, Any]) -> dict[str, int]:
     return {k: len(v) for k, v in sorted(results.items())}
 
 
-def _upstream_suffix(key: str, upstream: str) -> int | None:
-    """
-    The collision suffix of result key ``key`` for upstream ``upstream``
-    (``1`` for the plain name, ``n`` for ``upstream_n``), or ``None`` when
-    ``key`` is not one of the engine's result names for ``upstream``.
-
-    The match is STRICT: only the plain name and the engine's own collision
-    suffixes (``name``, ``name_2``, ...) match.  A same-prefixed kwarg that is
-    neither — ``simulate_note``, ``simulate_backup``, ... — is user data and
-    is never treated as a result (a non-numeric tail is not a suffix, so it
-    is never parsed with a bare ``int``).
-    """
-    if key == upstream:
-        return 1
-    prefix = upstream + "_"
-    if not key.startswith(prefix):
-        return None
-    tail = key[len(prefix) :]
-    return int(tail) if tail.isdigit() else None
-
-
 def _upstream_field(kwargs: dict[str, Any], upstream: str, field: str) -> Any:
     """
     Read ``field`` from the LATEST upstream result named ``upstream``.
@@ -910,18 +1058,13 @@ def _upstream_field(kwargs: dict[str, Any], upstream: str, field: str) -> Any:
     with the highest suffix (the plain name is suffix 1).  The result must
     be a mapping for ``field`` to be read from it.
     """
-    best_key: str | None = None
-    best_suffix = 0
-    for key in kwargs:
-        suffix = _upstream_suffix(key, upstream)
-        if suffix is not None and suffix > best_suffix:
-            best_key, best_suffix = key, suffix
-    if best_key is None:
+    keys = _upstream_keys(kwargs, upstream)
+    if not keys:
         raise ValueError(
             f"check/evaluate: no upstream result named {upstream!r} is "
             f"available to this action"
         )
-    result = kwargs[best_key]
+    result = kwargs[keys[-1]]
     if not isinstance(result, dict):
         raise ValueError(
             f"check/evaluate: the upstream result {upstream!r} is not a "
@@ -939,11 +1082,29 @@ def _upstream_count(kwargs: dict[str, Any], upstream: str) -> int:
     are not result names (a ``<name>_note`` parameter, e.g.) are not results
     and are not counted.
     """
-    return sum(
-        1
-        for key in kwargs
-        if _upstream_suffix(key, upstream) is not None
-    )
+    return len(_upstream_keys(kwargs, upstream))
+
+
+def _upstream_keys(kwargs: dict[str, Any], upstream: str) -> list[str]:
+    """
+    The engine's result names for ``upstream``, in suffix order.
+
+    The engine keys upstream results by the producing action's function
+    name, with collision suffixes (``name``, ``name_2``, ...) when the
+    name repeats (e.g. across copied iterations).  The results are
+    returned oldest first (suffix 1, 2, ...), so a reduction over them is
+    deterministic.  Unlike :func:`_upstream_field`, a missing name is not
+    an error: the caller gets an empty list (an empty aggregation).
+    """
+    keys: list[str] = []
+    suffix = 1
+    while True:
+        key = upstream if suffix == 1 else f"{upstream}_{suffix}"
+        if key not in kwargs:
+            break
+        keys.append(key)
+        suffix += 1
+    return keys
 
 
 def _upstream_all(kwargs: dict[str, Any], upstream: str) -> list[Any]:
@@ -957,34 +1118,7 @@ def _upstream_all(kwargs: dict[str, Any], upstream: str) -> list[Any]:
     deterministic.  Unlike :func:`_upstream_field`, a missing name is not
     an error: the caller gets an empty list (an empty aggregation).
     """
-    results: list[Any] = []
-    suffix = 1
-    while True:
-        key = upstream if suffix == 1 else f"{upstream}_{suffix}"
-        if key not in kwargs:
-            break
-        results.append(kwargs[key])
-        suffix += 1
-    return results
-
-
-def _upstream_keys(kwargs: dict[str, Any], upstream: str) -> list[str]:
-    """
-    The engine's result names for ``upstream``, in suffix order.
-
-    Companion to :func:`_upstream_all`: the same walk, returning the
-    kwargs keys (``name``, ``name_2``, ...) so a per-result report can
-    name the producing result.
-    """
-    keys: list[str] = []
-    suffix = 1
-    while True:
-        key = upstream if suffix == 1 else f"{upstream}_{suffix}"
-        if key not in kwargs:
-            break
-        keys.append(key)
-        suffix += 1
-    return keys
+    return [kwargs[key] for key in _upstream_keys(kwargs, upstream)]
 
 
 def _upstream_latest(kwargs: dict[str, Any], upstream: str) -> Any:
@@ -996,18 +1130,13 @@ def _upstream_latest(kwargs: dict[str, Any], upstream: str) -> Any:
     so a caller can inspect its shape (e.g. a :func:`try_action`
     outcome) before reading a field from it.
     """
-    best_key: str | None = None
-    best_suffix = 0
-    for key in kwargs:
-        suffix = _upstream_suffix(key, upstream)
-        if suffix is not None and suffix > best_suffix:
-            best_key, best_suffix = key, suffix
-    if best_key is None:
+    keys = _upstream_keys(kwargs, upstream)
+    if not keys:
         raise ValueError(
             f"check/evaluate: no upstream result named {upstream!r} is "
             f"available to this action"
         )
-    return kwargs[best_key]
+    return kwargs[keys[-1]]
 
 
 def _acceptable(

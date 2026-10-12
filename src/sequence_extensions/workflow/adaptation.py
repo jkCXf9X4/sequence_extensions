@@ -44,7 +44,11 @@ parameter-retuning op, which is workflow-specific).
 Parallel safety (finding F4): children of a ``Parallel`` scope get a
 READ-ONLY handle — every write op raises ``ValueError`` — because inside a
 parallel scope the sequential invariant ("every following position is
-unwalked") does not hold: siblings may already be running.
+unwalked") does not hold: siblings may already be running.  The rule is
+structural, not recursive: it applies to the group's DIRECT children.
+An action whose direct parent is an inner ``Sequential`` nested inside
+the parallel group gets a writable handle — wrapping a branch body in an
+inner scope is the supported idiom for per-branch adaptation.
 
 Termination (decision D5): the engine counts dynamic nodes added; exceeding
 the bound (default 10 000) raises a deterministic ``ValueError``.
@@ -157,10 +161,13 @@ class DAGHandle(TreeHandle):
     :class:`~sequence_extensions.graph.handle.TreeHandle`; this class
     supplies the workflow's policy:
 
-    * ``_check_writable`` — children of a ``Parallel`` scope get a
-      READ-ONLY handle: every write op raises ``ValueError`` (finding F4 —
-      inside a parallel scope the sequential invariant does not hold, so
-      writes are designed out rather than negotiated).
+    * ``_check_writable`` — a handle is READ-ONLY when the action's
+      DIRECT parent is a ``Parallel`` scope: every write op raises
+      ``ValueError`` (finding F4 — inside a parallel scope the sequential
+      invariant does not hold, so writes are designed out rather than
+      negotiated).  An action nested in an inner ``Sequential`` inside
+      the group is NOT read-only: its direct parent is sequential, so it
+      may adapt (the wrap-your-branch-in-a-scope idiom).
     * ``_check_target`` — a target must be a workflow node that has not
       started (``_engine_executed``), inside the action's own scope.
     * ``_check_nodes`` — replacement nodes must be workflow nodes
@@ -183,7 +190,8 @@ class DAGHandle(TreeHandle):
         """
         Create a handle for the action at ``parent.children[index]``.
 
-        ``read_only`` marks a parallel-scope child (all writes raise).
+        ``read_only`` marks a child of a ``Parallel`` scope (its direct
+        parent is the group; all writes raise).
         ``bound`` is the remaining dynamic-node budget this handle's ops
         may consume; the engine applies the recorded ops at commit time.
         """
@@ -195,12 +203,17 @@ class DAGHandle(TreeHandle):
     # The workflow policy (hooks over the generic flows)
     # ------------------------------------------------------------ #
     def _check_writable(self) -> None:
-        """Reject writes on a read-only (parallel-scope) handle (F4)."""
+        """Reject writes when the action's direct parent is a parallel scope (F4)."""
         if self._read_only:
             raise ValueError(
-                "dynamic adaptation: this action runs inside a parallel "
-                "scope, whose handle is read-only; parallel siblings may "
-                "already be executing, so the tree cannot be adapted here"
+                "dynamic adaptation: this action's direct parent is a "
+                "parallel scope, so its handle is read-only and every "
+                "write op raises; parallel siblings may already be "
+                "executing, so the tree cannot be adapted here. To adapt "
+                "inside a parallel branch, wrap the branch body in an "
+                "inner sequential scope (<scope type=\"sequential\">): "
+                "an action whose direct parent is that inner scope gets "
+                "a writable handle"
             )
 
     def _check_target(self, target: _Node, *, allow_preceding: bool) -> None:
@@ -277,6 +290,26 @@ class DAGHandle(TreeHandle):
                 f"dynamic adaptation: the dynamic-node bound ({self._bound}) "
                 f"was exceeded; a runaway adaptation is terminated "
                 f"deterministically instead of hanging"
+            )
+
+    def _check_parallel_body(self, group: _Group) -> None:
+        """
+        The workflow's rule for :meth:`fan_out_parallel`: the declared
+        downstream scope must be a ``Parallel`` group.
+
+        The declared scope's type IS the concurrency contract: cloning
+        its children in place makes the clones direct children of that
+        group, so a ``Parallel`` scope runs them concurrently (the
+        engine's parallel walk) while a ``Sequential`` scope would run
+        them one after another — which is what :meth:`fan_out` is for.
+        """
+        if not isinstance(group, Parallel):
+            raise ValueError(
+                "dynamic adaptation: fan_out_parallel() requires the "
+                "declared downstream scope to be a Parallel group "
+                "(<scope type=\"parallel\">); a sequential scope runs "
+                "its children one after another — use fan_out() for "
+                "the sequential map"
             )
 
     # ------------------------------------------------------------ #
