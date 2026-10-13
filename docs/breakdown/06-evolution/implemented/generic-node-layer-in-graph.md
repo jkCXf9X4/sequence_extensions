@@ -84,7 +84,7 @@ one-line list edits; a generic message catalog.
 
 ## Excludes
 
-- Engine commit protocol, op kinds, `AdaptationOp` shape — `INFO-004`.
+- Engine commit protocol, op kinds, `AdaptationOp` shape — the archived engine leaf.
 - Schema constructs (XML, templates) — `IMP-001`.
 - ReplayHandle's fake-tree materialization (history format).
 - Artifact store — `IMP-007`.

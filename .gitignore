@@ -168,3 +168,6 @@ cython_debug/
 
 # Custom set env script
 set_env*
+
+# Flow run logs (default @flow log directory)
+runs/

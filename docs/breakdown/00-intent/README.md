@@ -14,5 +14,5 @@ Source paper: `docs/references/paper_44_yBqbPyj1.pdf` — reference material, ou
 
 <!-- pb:index:start -->
 <!-- GENERATED FILE — do not edit. Regenerate with pb-registers. -->
-- **INFO-001** [00-intent — Vision & Goals](vision.md) — Vision, goal, requirements, design principles, and success criteria for sequence_extensions, distilled from the source paper
+- **INFO-001** [00-intent — Vision & Goals](vision.md) — Vision, goal, requirements, and success criteria for sequence_extensions — an audit-first mini flow engine
 <!-- pb:index:end -->

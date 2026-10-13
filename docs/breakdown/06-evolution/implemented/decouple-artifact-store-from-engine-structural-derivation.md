@@ -11,7 +11,7 @@ status: current
 
 ## Problem
 
-- INFO-009's decoupling is one-sided: the store imports schema only; the
+- The archived decoupling leaf's split is one-sided: the store imports schema only; the
   engine imports the store and threads its addressing state.
 - `_WalkState` (path, labels, mints, readable, groups) threaded through
   every walk, `_mint_address`, handle injection, `self._store`: 150 lines.
@@ -69,7 +69,7 @@ borrows it. The store relies on it — pin with a test.
 
 - Landed as designed: chain threading + `WalkContext` injection;
   store-side derivation + `WrappedRegistry`; engine store code
-  deleted; replay strips the context kwarg. `INFO-009` revised.
+  deleted; replay strips the context kwarg; the archived decoupling leaf revised.
 - Deltas: the reserved name is `walk_context` (unmistakably plumbing;
   a bare `context` data parameter would collide). Manifest `seq` is
   now call order (identical to walk order within a sequential walk;
@@ -90,9 +90,9 @@ borrows it. The store relies on it — pin with a test.
 ## Excludes
 
 - Unchanged: handle API, manifest shape, addresses, layout, opt-in,
-  paper parity — the `INFO-008` / `DR-004` contract.
+  paper parity — the archived artifacts leaf / `DR-004` contract.
 - Schema, `graph/graph_future.py`, walk semantics; `DAGHandle`
-  injection stays engine-side — `INFO-004`, `IMP-006`.
+  injection stays engine-side — the archived engine leaf, `IMP-006`.
 - P0 control-plane hygiene (`run_2` collision, D5 echo) — `IMP-005`.
 
 (The planned verification — derived-equals-minted across the driver

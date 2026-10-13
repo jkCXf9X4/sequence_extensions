@@ -29,7 +29,11 @@ Idea to IMP to decision to task, per the change pipeline:
 
 ## Open IMPs
 
-- `IMP-015` — scope-only XML vocabulary: drop the `<sequential>` / `<parallel>` aliases. Candidate, deferred for paper-listing parity.
+- `IMP-017` — process-pool executor for CPU-bound tasks (Phase 5 deferral).
+- `IMP-018` — pickle payload tier for run-log values (Phase 5 deferral).
+- `IMP-019` — pool-scoped cancellation in `graph_future` (substrate kept untouched).
+- `IMP-020` — split `ext` from `flow` at a future release (author kept them together for 1.0.0).
+- `IMP-021` — public `GraphPool.bind()` (substrate kept untouched; flow layer uses `_bind_graph` privately).
 
 ## Implemented (not tracked)
 

@@ -15,7 +15,7 @@ by-value-only, measures payload blowup under clone chains, and proposes a
 by-reference artifact store coupled to the DAG. Extends the evidence story of
 `INFO-001` (traceable, reproducible) from result values to run artifacts.
 Builds on the engine and handle of `IMP-001` (`DR-001`, `DR-002`).
-The store is implemented: `INFO-008` holds the design, `DR-004` the
+The store is implemented: the archived artifacts leaf holds the design, `DR-004` the
 decision, and P1 (store core) and P2 (fan-in enumeration) are done. P0
 (control-plane hygiene, the D5 echo contract) and P3 (comparison tooling,
 content hashes) remain open.
@@ -289,6 +289,7 @@ replay. Full suite: 433 passing at implementation time.
 dict results; bulk artifacts are implied by the V&V domain but never
 addressed (section 4.2, section 5).
 
-**Docs:** `INFO-001` (vision: traceable, reproducible), `INFO-004`
-(the walker that mints), `INFO-008` (the implemented data plane),
+**Docs:** `INFO-001` (vision: traceable, reproducible), the archived
+engine leaf (the walker that mints), the archived artifacts leaf
+(the implemented data plane),
 `DR-004` (the decision), `IMP-001` (dynamic adaptation investigation).

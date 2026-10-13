@@ -8,10 +8,10 @@ dynamic = ["version"]
 authors = [
   { name="jkCXf9X4"},
 ]
-description = "Higher-order function extensions for Python lists, dicts, generators, and dependency-graph futures."
+description = "Higher-order function extensions for Python lists, dicts, and generators, plus an audit-first mini flow engine (retry, timeout, parallelism, JSON-lines run log) on dependency-graph futures."
 readme = "README.md"
 requires-python = ">=3.9"
-keywords = ["list", "dict", "functional", "extensions", "generator", "graph"]
+keywords = ["list", "dict", "functional", "extensions", "generator", "graph", "flow", "parallel", "retry", "audit"]
 license = "MIT"
 license-files = ["LICENSE"]
 classifiers = [
@@ -27,9 +27,6 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9", "pytest-cov>=5,<7", "ruff>=0.6,<1"]
-
-[project.scripts]
-sequence-extensions = "sequence_extensions.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/jkCXf9X4/sequence_extensions"

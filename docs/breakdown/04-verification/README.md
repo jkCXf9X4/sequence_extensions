@@ -16,11 +16,11 @@ How we know it is true: how each claim is checked, the acceptance criteria, and 
 - Holds the proof only.
 - Not the thing under test: its owning layer.
 - Not routine build steps: `05-operation/`.
-- The engine under test: INFO-004; the product claims: INFO-002.
+- The engine under test: INFO-011; the product claims: INFO-002.
 
 ## Contents
 
 <!-- pb:index:start -->
 <!-- GENERATED FILE — do not edit. Regenerate with pb-registers. -->
-- **INFO-006** [Test strategy](testing.md) — How the pytest suite verifies the package: run commands, per-area coverage, and claim verification
+- **INFO-006** [Test strategy](testing.md) — How the pytest suite verifies the package — run commands, per-area coverage, and claim verification
 <!-- pb:index:end -->

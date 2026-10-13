@@ -75,7 +75,7 @@ Friction, by inspection of `workflow/library.py`:
 
 ## Excludes
 
-- Engine commit protocol, op kinds, `AdaptationOp` shape — `INFO-004`.
+- Engine commit protocol, op kinds, `AdaptationOp` shape — the archived engine leaf.
 - Schema constructs (no change) — `IMP-001`.
 - Return-nodes splice protocol (unchanged).
 - New drivers (Tier 3) — `docs/dynamic_scenarios_analysis.md` §5.

@@ -16,7 +16,7 @@ Where it is and what is in it: the concrete files, scripts, interfaces, and conf
 - Holds code-level facts only.
 - Not why a file exists: `00-intent/`, `02-architecture/`.
 - Not whether it is accepted: `04-verification/`.
-- The component design: INFO-003; the engine design: INFO-004.
+- The component design: INFO-003; the engine design: INFO-011.
 
 ## Contents
 

@@ -3,7 +3,7 @@ id: INFO-007
 type: info
 title: Install, run, and maintain
 summary: Install, run, test, lint, and release steps for sequence_extensions, as present in the repo
-date: 2026-10-09
+date: 2026-10-13
 status: current
 ---
 
@@ -20,8 +20,9 @@ The product is a library (`INFO-002`): there is no service to deploy and no CLI 
 
 ## Run
 
-- Use the Python API: `from sequence_extensions import list_ext, run_workflow, ...`
-- Workflows run through `run_workflow` / `Test_Framework` from XML or node trees
+- Use the Python API: `from sequence_extensions.flow import task, flow`
+- A flow call writes its run log to `runs/<run_id>.jsonl` under the working directory (default); pass `log=` to choose the directory
+- Flows run sequentially per process (accepted limit, `INFO-011`)
 
 ## Test and lint
 

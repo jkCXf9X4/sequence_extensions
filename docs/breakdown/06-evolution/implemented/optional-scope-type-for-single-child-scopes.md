@@ -16,7 +16,8 @@ Schema evolution, same family as `IMP-002` (the `<argument>` element).
 - A `<scope>` with one child forced a meaningless `type` label: one child
   carries no ordering, so sequential and parallel walk identically.
 - Driver declared bodies (single-action templates for `fan_out`) carried
-  the ambiguous label; the use-case review flagged it (`CP-001`, `CP-007`).
+  the ambiguous label; the 2026-10-13 use-case review flagged it
+  (use-case leaves now archived).
 
 ## Change
 
@@ -41,5 +42,5 @@ Schema evolution, same family as `IMP-002` (the `<argument>` element).
 
 ## Excludes
 
-- Dropping the `<sequential>` / `<parallel>` aliases: `IMP-015` (candidate,
-  deferred for paper-listing parity).
+- Dropping the `<sequential>` / `<parallel>` aliases: the removed
+  candidate (was deferred for paper-listing parity).

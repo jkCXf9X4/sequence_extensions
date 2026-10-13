@@ -1,27 +1,25 @@
 # sequence_extensions
 
-**Version:** 0.2.0 · **Python:** >=3.9
+**Version:** 1.0.0 · **Python:** >=3.9
 
-Higher-order function extensions for Python lists, dicts, generators, and dependency-graph futures.
+Higher-order function extensions for Python lists, dicts, and generators, plus an audit-first mini flow engine on dependency-graph futures: parallelism, retries, timeouts — and a JSON-lines run log that is the executed truth of every run.
 
 The package is organized into three subpackages:
 
 ```
 sequence_extensions/
 ├── ext/        # functional helpers for built-in sequences
-├── graph/      # generic nodes, scoped manipulation, and the execution substrate
-└── workflow/   # V&V workflow layer (schema, registry, engine)
+├── graph/      # the execution substrate (GraphFuture / GraphPool)
+└── flow/       # the audit-first mini flow engine (@task / @flow / run log)
 ```
 
 - `ext.list_ext` — an extended `list` class with functional helpers (`map`, `filter`, `reduce`, `window`, ...)
 - `ext.dict_ext` — an extended `dict` class with functional helpers (`map`, `filter`, `reduce`, ...)
 - `ext.gen_ext` — static helpers for generators (`to_list`, `recursive_gen`)
-- `graph.node` — generic tree nodes (`Node`, `Group`) with containment, location and deep-clone operations
-- `graph.handle` — `TreeHandle`: a scoped handle over a node tree with the intent-level manipulation patterns (map / branch / skip / skip-rest / iterate)
 - `graph.graph_future` — dependency-graph futures (`GraphFuture`, `GraphPool`)
-- `workflow` — the V&V workflow layer: `Action` / `Sequential` / `Parallel` nodes (specializing `graph.Node` / `graph.Group`), XML parsing, a function registry, and the execution engine (`run_workflow`, `Test_Framework`)
+- `flow` — the flow engine: `@task` (retry, backoff, timeout policy) and `@flow` (run identity, pool, audit log)
 
-Everything is also re-exported from the package root (`from sequence_extensions import list_ext, ...`). See [docs/API.md](docs/API.md) for the full API reference.
+`ext` and `graph` names are re-exported from the package root; `flow` is imported as its own package (`from sequence_extensions.flow import task, flow`). See [docs/API.md](docs/API.md) for the full API reference.
 
 ## Installation
 
@@ -234,51 +232,60 @@ Pool lifecycle:
 - Re-entering the same pool (`with pool:` twice) raises `RuntimeError`.
 - Lazy use without `with` is safe — the executor is created on first use and shut down at interpreter exit (atexit).
 
-## workflow
+## flow
 
-The V&V workflow layer: a small XML/Python schema of `Action` / `Sequential` / `Parallel` nodes, a named function registry, and a lazy tree-walking execution engine. A `<scope type="sequential|parallel">` element names each action's grouping scope (the `<sequential>` / `<parallel>` spellings are aliases); an action may declare a `dag` parameter to adapt its downstream scope at runtime, and a run may be given an `ArtifactStore` so bulk artifacts flow by reference (one minted directory per executed action) instead of through kwargs.
-
-```python
-from sequence_extensions import run_workflow
-from sequence_extensions.workflow import register_library
-
-register_library()  # opt in to the paper's library functions
-
-xml = """
-<VerificationWorkflow>
-  <argument key="model" value="./model_1"/>
-  <scope type="sequential">
-    <action function="find_files">
-      <argument key="path" value="file_storage/"/>
-    </action>
-    <scope type="parallel">
-      <action function="simulate"/>
-      <action function="evaluate_results"/>
-    </scope>
-  </scope>
-</VerificationWorkflow>
-"""
-
-result = run_workflow(xml)  # the last action's result
-```
-
-`find_files` declares a `dag` parameter, so the engine hands it a scoped handle: it clones the declared downstream `<scope type="parallel">` once per found file and splices the clones in (`dag.fan_out`), so each file gets its own `simulate` + `evaluate_results`. The handle's intent-level combinators (`fan_out` / `select` / `skip` / `skip_following` / `repeat`) cover the recurring driver patterns — map, branch, skip, first-success, copy-to-end iteration — so adapting functions never build nodes. See [docs/API.md](docs/API.md) for the full workflow reference (schema, engine, registry, library, history, the adaptation contract, and the artifact store).
-
-For campaigns that produce files (simulation outputs, reports, datasets), pass an `ArtifactStore` and let functions that declare an `artifacts` parameter write payloads to their own node directory and return the pointer:
+The audit-first mini flow engine. A task is a function; a flow is a function; a future passed as a submit argument is a dependency edge. Every run writes one JSON-lines audit log — the executed truth of what happened, complete the moment the flow returns.
 
 ```python
-from sequence_extensions import ArtifactStore, run_workflow, workflow_function
+from pathlib import Path
 
-@workflow_function
-def simulate(artifacts=None, **kwargs):
-    out = artifacts.out_dir() / "result.csv"   # this action's own directory
-    out.write_text(run_case(kwargs))           # the heavy payload stays on disk
-    return f"{artifacts.address}/result.csv"  # the pointer, by value
+from sequence_extensions.flow import flow, task
 
-result = run_workflow(xml, artifacts=ArtifactStore("runs/campaign-2026-10-11"))
+
+@task(retries=2, retry_delay_seconds=0.1, timeout=60.0)
+def simulate(case: Path) -> dict: ...  # one case; flakes are retried, hangs are bounded
+
+
+@task
+def evaluate(sim: dict, tolerance: float) -> dict: ...
+
+
+def aggregate(evaluations: list) -> dict:
+    return {
+        "count": len(evaluations),
+        "mean_score": sum(e["score"] for e in evaluations) / len(evaluations),
+        "passed": sum(1 for e in evaluations if e["passed"]),
+        "all_passed": all(e["passed"] for e in evaluations),
+    }
+
+
+@flow
+def campaign(cases_dir: Path, tolerance: float = 0.5) -> dict:
+    cases = sorted(cases_dir.glob("*.csv"))  # plain call: sequential
+    sims = [simulate.submit(c) for c in cases]  # concurrent map
+    evals = [evaluate.submit(s, tolerance) for s in sims]  # futures = edges
+    return aggregate([e.result() for e in evals])  # gather
+
+
+verdict = campaign(Path("cases/"))
 ```
 
-Every executed action is minted into `runs/campaign-2026-10-11/manifest.jsonl` (the executed truth; the XML is the declared truth), downstream actions read received pointers scope-checked, and a fan-in consumer can enumerate a completed parallel group's branch directories to compare them. Without `artifacts=` nothing changes.
+Semantics, in one list:
+
+- **Plain call = sequential** (runs inline); **`.submit()` = concurrent** (the run's bounded pool, default 16 workers; `@flow(max_workers=...)`).
+- **Retries and timeouts are task attributes**: `retries=2` means up to three attempts; `timeout=30` bounds one attempt and raises `TaskTimeoutError` (a `TimeoutError` naming the task). Every attempt is one record in the log.
+- **Futures as arguments are dependency edges** — any DAG shape, diamonds included; cycles raise at submit time.
+- **Drain-on-return**: the flow returns only after every submitted task settles. A failed flow cancels its pending tasks (recorded `skipped`), waits for the running ones, and re-raises.
+- **The run log** (default `runs/<run_id>.jsonl`, one JSON object per line) records `run_start`, every task attempt (`ok` / `error` / `timeout` / `skipped`), and `run_end`. Paths log as path plus sha256 — bulky payloads return a `Path` by convention and never bloat the log. Read it back with `RunLog.records(path)`.
+
+Two examples of the log's shape (from the acceptance test's campaign — six cases, one flaky):
+
+```json
+{"seq": 3, "schema": 1, "record": "task", "run_id": "campaign-20261013T101500-1a2b3c4d", "task": "simulate", "attempt": 1, "status": "error", "args": [{"path": "cases/case_3.csv", "sha256": "…"}], "error": {"type": "RuntimeError", "message": "transient simulator crash on case_3"}, "worker": "graph-worker_2"}
+{"seq": 4, "schema": 1, "record": "task", "run_id": "campaign-20261013T101500-1a2b3c4d", "task": "simulate", "attempt": 2, "status": "ok", "args": [{"path": "cases/case_3.csv", "sha256": "…"}], "result": {"case": "case_3", "score": 0.3}, "worker": "graph-worker_2"}
+```
+
+For wrapping real simulators (subprocess timeouts, `sbatch`-and-poll for HPC), see the recipes in [docs/API.md](docs/API.md).
 
 ## Development
 

@@ -2,14 +2,14 @@
 id: INFO-003
 type: info
 title: Components
-summary: Component decomposition of ext/, graph/, workflow/ — responsibilities, data flow, and interface contracts
-date: 2026-10-09
+summary: Component decomposition of ext/, graph/, flow/ — responsibilities, data flow, and interface contracts
+date: 2026-10-13
 status: current
 ---
 
 # Components
 
-The package decomposes into three subpackages with a strict dependency order: `workflow` depends on `graph`; `ext` is self-contained.
+The package decomposes into three subpackages with a strict dependency order: `flow` depends on `graph`; `ext` is self-contained.
 
 ## `ext` — sequence helpers
 
@@ -17,36 +17,31 @@ The package decomposes into three subpackages with a strict dependency order: `w
 - **`dict_ext`** — a `dict` subclass; helpers operate on `(key, value)` pairs.
 - **`gen_ext`** — static methods for generators and iterables.
 
-## `graph` — nodes, manipulation, and the execution substrate
+## `graph` — the execution substrate
 
-- **`node`** — the generic tree nodes: `Node` (ordered children + optional name; identity-based `contains`, depth-first `locate`, deep `clone` with a per-class `_copy` hook) and `Group` (the container specialization). Domain trees subclass these.
-- **`handle`** — `TreeHandle`: a scoped, read-mostly view over a node tree with the intent-level manipulation patterns (map / branch / skip / skip-rest / iterate). Never mutates; a domain supplies validation, op recording and empty-group policy through hooks.
 - **`graph_future`** — `GraphFuture`: one DAG node — a function, its arguments, and its dependencies.
   - Arguments may be other `GraphFuture` nodes; they resolve to results at run time.
   - `GraphPool` — owns a bounded `ThreadPoolExecutor`; wires, schedules, and evaluates a graph.
-  - Context manager; `result(gf, timeout)` blocks on one node.
+  - Context manager; `result(gf, timeout)` blocks on one node; cycle detection raises at bind time.
 
-## `workflow` — V&V workflow layer
+## `flow` — the audit-first engine
 
-- **`schema`** — node classes `Action`, `Sequential`, `Parallel` (specializing `graph.Node` / `graph.Group`), `Template`; `parse_workflow` turns XML into a node tree.
-- **`registry`** — `FunctionRegistry` maps names to callables; `workflow_function` registers; `DEFAULT_REGISTRY` is the default.
-- **`params`** — normalizes XML string parameters to Python values.
-- **`engine`** — walks the node tree, submits each `Action` as a `GraphFuture`, injects `walk_context` into functions that declare it (`IMP-007`), and returns the final result; enforces splice scope.
-- **`adaptation`** — `DAGHandle` (a `TreeHandle` specialization) gives a function a scoped view of the tree; writes are recorded as `AdaptationOp` and committed transactionally.
-- **`history`** — opt-in `RunHistory` records per-action evidence; `replay` re-runs it deterministically.
+- **`task`** — `@task` decorator and `TaskFunction`: attempt loop (retry, backoff), per-attempt timeout, `submit()`, `TaskTimeoutError`.
+- **`flow`** — `@flow` decorator: run identity, pool (owned or caller-supplied), drain, failure handling.
+- **`runlog`** — `RunLog` JSON-lines writer (thread-safe) and `jsonable` serialization policy.
+- **`_context`** — `RunContext` plus `ContextVar` plumbing; workers and attempt threads restore the run.
 
 ## Data flow
 
-- Input: workflow XML or a Python node tree.
-- `parse_workflow` builds the tree; `params` normalizes values.
-- The engine walks the tree and submits each `Action` as a `GraphFuture` to a `GraphPool`.
-- The pool runs functions on the thread pool as dependencies complete.
-- Output: the return value of the last action in the root group.
+- Input: a decorated Python function (the flow) calling tasks directly or via `.submit()`.
+- `submit()` creates a `GraphFuture` whose runner carries the attempt loop; the pool binds the reachable graph.
+- Results flow along edges; the flow gathers and returns.
+- Output: the flow's return value, plus `runs/<run_id>.jsonl`.
 
 ## Interface contracts
 
 - `ext`: the three classes; methods return extended types or plain values.
 - `graph`: `GraphFuture(function, *args, **kwargs)`, `result()`, `done()`; `GraphPool(max_workers)`, `result(gf)`.
-- `workflow`: `Action(function, **params)`, `Sequential`/`Parallel(*children)`, `parse_workflow(xml)`, `run_workflow(xml, registry, parameters, history, artifacts)`, `Test_Framework(seq, parameters, registry, history, artifacts)`.
+- `flow`: `@task(retries, retry_delay_seconds, timeout, name)`, `task.submit(...)`, `@flow(name, max_workers, log, summary, pool)`.
 
-Engine internals: `INFO-004`. Scope: `INFO-001`.
+Engine semantics: `INFO-011`. Scope: `INFO-001`.
