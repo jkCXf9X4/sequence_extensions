@@ -59,6 +59,19 @@ IMP-009 first, then IMP-010, IMP-011, IMP-012, IMP-013.
   `params.py`; `run_python_workflow` alias added for `Test_Framework`, paper
   name kept.
 
+## Deviations from the paper
+
+Ledger of where the implementation deviates from the paper. Structural rows are the documented design choices; the two behavioral rows are the biggest deviations from the paper's worked examples (added 2026-10-13, from the critical review).
+
+| Paper | Implementation | Reason |
+|---|---|---|
+| Full DAG passed to each action, merged back on return | Scoped `DAGHandle` (own grouping scope only), transactional commit | Deterministic; no merge negotiation (the paper's main complexity source) |
+| No template construct | Parse-time `<template>` expansion, self-reference rejected | Keeps the schema non-Turing-complete |
+| 7 library functions | 16 library functions | Library growth for the objective-2 drivers |
+| Start and end group nodes | No start and end group nodes | The schema's small construct set |
+| Dynamic fan-out runs clones in parallel (UC1 step 3) | Dynamic fan-out defaults to sequential; parallel is opt-in via `fan_out_parallel` / `parallel=True` | Behavioral — the paper's headline composition (dynamic adaptation + parallel grouping) was not wired by default |
+| Per-branch adaptation inside a parallel group | Requires wrapping the branch body in an inner sequential scope (direct parallel children get read-only handles) | Behavioral — the read-only parallel handle is narrower than the paper's examples suggest |
+
 ## Verification
 
 - `tests/workflow/test_engine.py`: dry-run plan tree equals the tree an

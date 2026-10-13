@@ -982,6 +982,8 @@ def run_workflow(
     adaptation_bound=None,
     executor=None,
     dry_run=False,
+    action_timeout=None,
+    fail_fast=False,
 )
 ```
 
@@ -998,6 +1000,8 @@ def Test_Framework(
     adaptation_bound=None,
     executor=None,
     dry_run=False,
+    action_timeout=None,
+    fail_fast=False,
 )
 ```
 
@@ -1021,12 +1025,71 @@ Run options (all keyword-only, all defaulting to the current behavior):
   instead of a result, and ``history`` still records.  Nothing executes:
   no side effects, no splices, no store directories (``artifacts`` is
   ignored — a plan mints nothing).
+- ``action_timeout`` — per-action wall-clock budget in seconds (default
+  ``None`` = no timeout: a hung action blocks its worker forever).  A
+  positive number bounds every action's function call; an action still
+  running past its budget raises ``ActionTimeoutError`` (a
+  ``TimeoutError`` subclass) naming the action, the timeout and the
+  option, so an unattended campaign fails loudly instead of
+  deadlocking.  The hung function is abandoned, not killed (Python
+  threads cannot be killed) — the engine tears its own pool down without
+  waiting for it.  Must be > 0 or ``None``.
+- ``fail_fast`` — the parallel failure policy (default ``False`` =
+  drain-then-report: a failing parallel group waits for every sibling to
+  settle before raising the first error in child order).  ``True`` stops
+  a parallel group at the FIRST failure: not-yet-run siblings skip their
+  function call, in-flight ones are abandoned (the pool is torn down
+  without waiting for them, exactly like the ``action_timeout`` path),
+  and the first error is raised promptly.  Composes with
+  ``action_timeout`` (a timed-out action is an error like any other).
+- ``on_error`` — **not a run option**; the error-capture policy is
+  per-scope (see [Error capture](#error-capture-on_errorcapture)).  It
+  is set on a ``<scope>`` element (or the ``Sequential`` / ``Parallel``
+  constructor), not passed to ``run_workflow``.
 
 The history's ``records`` gain ``description`` (the action's plain-data
 label from the workflow source) and ``duration`` (the call's
 ``time.monotonic()`` duration), and the collector exposes ``run_id`` (a
 fresh uuid4 hex per history) and ``source`` (the workflow's sha256 digest
 the engine stamps at run start).
+
+### Command-line interface
+
+`sequence_extensions.cli` (entry point `sequence-extensions`, also
+`python -m sequence_extensions`) runs a workflow XML file from the shell —
+the unattended entry point for campaigns. The library itself emits no
+logs, so the CLI configures logging (root logger, timestamped format,
+stderr) and emits campaign-level events around the run: a start line
+(workflow path + active options), a completion line (record count +
+duration + run id), and a failure line (the error).
+
+```console
+$ sequence-extensions wf.xml --artifacts-dir runs/campaign --history-out runs/campaign/history.json
+```
+
+Options (each maps one-to-one onto a `run_workflow` keyword):
+
+- `workflow` — the workflow XML file (positional).
+- `-v` / `--verbose` — log at DEBUG (default INFO); `-q` / `--quiet` —
+  warnings and errors only.
+- `--params-mode {full,summary}` — the recorded-params shape.
+- `--max-workers N` — the `GraphPool` worker count.
+- `--adaptation-bound N` — the dynamic-node bound.
+- `--action-timeout SECONDS` — the per-action wall-clock budget.
+- `--fail-fast` — stop a parallel group at the first failure.
+- `--dry-run` — plan mode: parse and validate, execute nothing.
+- `--history-out FILE` — write the run's `RunHistory.to_json()` document
+  (written on both success and failure — a failed run still leaves the
+  partial history as evidence).
+- `--artifacts-dir DIR` — run an `ArtifactStore` rooted at `DIR` (the
+  store is constructed with the run's history, so the manifest header and
+  the history name the same run).
+
+The CLI runs against its own `FunctionRegistry` with the built-in library
+registered — it never mutates the process-global `DEFAULT_REGISTRY`, so an
+embedding application's registrations are untouched. Exit codes: `0`
+success, `1` a failed run or an unreadable workflow file, `2` a usage
+error.
 
 ### `Test_Framework`
 
@@ -1070,7 +1133,7 @@ Groups nest arbitrarily. `name` is an optional label (set from a `<scope name=".
 
 - `<VerificationWorkflow>` wraps any number of global parameter `<argument>` elements (e.g. `<argument key="model" value="./model_1"/>`), optional `<template>` definitions, and exactly **one** top-level grouping. The globals are exposed on the returned root group as the `.globals` dict.
 - A bare `<sequential>` / `<parallel>` / `<scope>` root (no wrapper) is also accepted; its `.globals` is an empty dict.
-- **`<scope type="sequential|parallel">`** is the explicit form of a grouping: `type` must be `sequential` or `parallel` and may be **omitted when the scope holds exactly one child** — one child carries no ordering, so the parser then builds a sequential group (the default; a type-less scope is therefore not a valid body for `fan_out_parallel`, which requires an explicitly parallel host). An optional `name` attribute labels the group. `<sequential>` / `<parallel>` are **aliases** for `<scope type="...">` and parse exactly as before (no deprecation warnings). `<scope>` is allowed everywhere a group is allowed: as the root, as the `<VerificationWorkflow>` top-level grouping, nested inside other groups, and as a template body.
+- **`<scope type="sequential|parallel">`** is the explicit form of a grouping: `type` must be `sequential` or `parallel` and may be **omitted when the scope holds exactly one child** — one child carries no ordering, so the parser then builds a sequential group (the default; a type-less scope is therefore not a valid body for `fan_out_parallel`, which requires an explicitly parallel host). An optional `name` attribute labels the group. An optional `on_error` attribute sets the scope's error-capture policy — the only value is `capture` (see [Error capture](#error-capture-on_errorcapture)); any other value raises `ValueError` at parse time. `<sequential>` / `<parallel>` are **aliases** for `<scope type="...">` and parse exactly as before (no deprecation warnings). `<scope>` is allowed everywhere a group is allowed: as the root, as the `<VerificationWorkflow>` top-level grouping, nested inside other groups, and as a template body.
 - `<action function="name">` takes custom parameters as `<argument key="name" value="..."/>` child elements (the `key` attribute carries the parameter name, so a parameter can be any name without clashing with the structural element names).
 - `<template name="...">` / `<use-template name="...">` — named, parameterized subtrees (see `Template`); expansion happens at **parse time**, so the returned tree contains only `Action` / `Sequential` / `Parallel` nodes.
 
@@ -1096,6 +1159,19 @@ def parse_workflow(xml_source)
 - **`parameters`** — the template's declared parameter names, sorted.
 - **Binding precedence:** use-site binding > template default > same-named workflow global.
 - **Raises:** `ValueError` for a binding that names an undeclared parameter, or a placeholder that resolves to nothing.
+
+### Error capture (`on_error="capture"`)
+
+A scope can turn an exception from one of its actions into that action's **result** instead of a failed run — the engine-level error-capture policy (finding 3c). A V&V campaign then treats a scenario failure as data: the run completes, and the failure is inspectable downstream (paper P3: branch on failures).
+
+- **Where it is set.** On the scope element — `<scope type="sequential" on_error="capture">` (the `<sequential>` / `<parallel>` aliases accept it too) — or on the Python API's `Sequential` / `Parallel` constructors (`on_error="capture"`). It is **not** a `run_workflow` option: the policy is per-scope, so one workflow can capture in one branch and stay strict in another. The only value is `capture`; any other value raises `ValueError` at parse time. The default (`on_error=None`) is unchanged: an exception propagates and fails the run.
+- **What it captures.** Exceptions raised by the scope's **direct action children**. A nested scope's failures are not captured by the outer scope — capture is a property of the failing action's *direct* parent, so a strict inner scope stays strict inside a capturing outer one. `KeyboardInterrupt` / `SystemExit` are **never** captured (they are not `Exception` subclasses): control flow stays with the caller.
+- **The capture record.** The failing action's result becomes a `CapturedError` — a plain-data `dict` (also readable via attributes) with the keys `is_error` (always `True`), `ok` (always `False`), `function` (the failing action's registry name), `error_type` (the exception's class name, e.g. `"ValueError"`), `error` (`str()` of the exception), and `timeout` (`True` when the capture came from the per-action timeout). The `ok` / `error` keys deliberately match the `try_action` outcome shape, so the existing driver vocabulary reads a capture unchanged: `retry(on="error")` treats it as an unacceptable result to retry, and `fallback(field="ok")` reads it like any mapping.
+- **The data plane.** The capture flows exactly like any other result: downstream actions receive it as their kwarg keyed by the failing action's **function name** (with the usual collision suffixes), the scope's group result contains it in position, and the run's final result includes it. A downstream action or `aggregate` checks `result["is_error"]`.
+- **Composition — retry / fallback first, capture last.** `retry` and `fallback` are library drivers that run *inside* the action's function call, so they get their chance first: a retrying action re-runs its body per its own policy, and only when the call still fails (retries exhausted, no alternative left) does the scope's capture take over. Capture is the last resort.
+- **Composition — `action_timeout`.** A timed-out action inside a capture scope is captured, not fatal: the engine's `ActionTimeoutError` is captured like any other exception, with `timeout=True` and `error_type="ActionTimeoutError"` in the record. The hung function is still abandoned, not killed (the same rule as an uncaptured timeout).
+- **Composition — `fail_fast`.** Capture wins over the fail-fast abort: a to-be-captured failure never trips the abort event, so not-yet-run siblings still execute and the walk continues. A capturing parallel group therefore degrades to the drain-then-report wait (every sibling settles) even with `fail_fast=True`. An *uncaptured* failure inside the same run still fails fast as usual.
+- **Migration from `try_action`.** `try_action` is **deprecated** in favor of this policy (it still works; see its entry below). Replace `<action function="try_action"><argument key="name" value="simulate"/></action>` with the action itself inside a capture scope — `<scope on_error="capture"><action function="simulate"/></scope>` — and read the failure from the action's own result (`ok` falsy, `error` the exception string) instead of from the wrapper's outcome. The capture record carries the same `ok` / `error` keys, so a downstream reader written for `try_action`'s shape works on a capture too — only the kwarg key changes (the producing action's function name instead of `try_action`).
 
 ### `FunctionRegistry`
 
@@ -1219,7 +1295,7 @@ The workflow schema is **not** a Turing-complete language: a workflow is a finit
 - **`aggregate(upstream, field, op, key=None, **kwargs)`** — pure function, no `dag`. Reads **all** collision-suffixed upstream results named `upstream` (the engine keys repeated function names as `name`, `name_2`, ...) and reduces the `field` value of each with `op` (`sum|max|min|count|mean|all|any`). With `key`, results are first grouped by their `key` field and each group is reduced separately. Returns `{"aggregate": {"op": <op>, "count": <n>, "value": <reduced>}}`; with `key`, `{"aggregate": {"op": <op>, "count": <n>, "groups": {<key value>: {"count": <n>, "value": <reduced>}, ...}}}`. With zero values, `count` returns `0` and `value` is `None`; `sum`/`max`/`min`/`mean` of zero values return `value` `None` (empty reduction); `all`/`any` of zero values return `True`/`False` respectively. Raises `ValueError` when an upstream result named `upstream` is not a mapping or lacks `field` (or `key`), or when `op` is unknown. When no upstream result named `upstream` is available, the function tolerates it — an empty aggregation (`count` `0`, `value` `None`; `all`/`any` return `True`/`False`), since a summary never fails a run.
 - **`guard(upstream, field, op, value, on_fail="skip", *, dag, **kwargs)`** — driver (paper objective 2: adaptation to intermediate results). Evaluates the predicate `latest_upstream_result[field] op value` (ops: `eq|ne|lt|le|gt|ge|in|not_in|contains`) on the latest upstream result (the result of the action named `upstream`, or the collision-suffixed variant when the name repeats). When it holds, the declared downstream scope (the following group) runs unchanged. When it fails: `on_fail="skip"` replaces the following group with an empty group (`dag.skip()`) so the body never runs (the group's result becomes an empty list); `on_fail="fail"` raises `ValueError`. Returns `{"guard": {"passed": <bool>, "op": <op>}}`. Raises `ValueError` when no upstream result named `upstream` is available or the result is not a mapping.
 - **`while_condition(upstream, field, op, threshold, max_iterations=None, *, dag, **kwargs)`** — iteration driver, copy-to-end (the `check_convergence` pattern with a comparison predicate and a user-facing cap). The action is preceded by the iteration body in its scope. Repeats the body while the latest upstream result's `field` fails `op threshold` (numeric comparison ops: `lt|le|gt|ge|eq|ne`). When the comparison holds (condition satisfied), it returns `{"converged": True, "iterations": <n>}` and adapts nothing. When it fails, it appends a copy of the preceding body — plus a fresh copy of this check action itself — at the scope end (`dag.repeat()`), so the next iteration runs strictly downstream; it returns `{"converged": False, "iterations": <n>}`. `max_iterations` (default `None` = no cap beyond the engine's `ADAPTATION_BOUND`) stops iteration once the body has run `max_iterations` times: the function returns `{"converged": False, "iterations": <n>, "max_iterations": <cap>}` and adapts nothing. `iterations` counts completed body runs (the number of collision-suffixed upstream results). Raises `ValueError` when no upstream result is available, the result is not a mapping, `op` is unknown, or the check action has no preceding body.
-- **`try_action(name, params=None, registry=None, **kwargs)`** — error-capturing primitive, no `dag`. The engine propagates a per-node exception out of the run, so this is the one call site that turns an exception into data (the root unblocker for error-reactive scenarios). Resolves `name` from `registry` (default `DEFAULT_REGISTRY`) and invokes it with exactly `params` (a mapping of its own parameters; default empty). `name` (not `function` — that would collide with `Action`'s reserved `function` keyword, breaking `Action("try_action", function=...)` and `dag.copy` on a `try_action` body) is the registry name, the same vocabulary `FunctionRegistry.get` uses. To target a registry other than `DEFAULT_REGISTRY` from a workflow, pass `registry` as a global parameter (globals reach every action's keyword arguments). Extra keyword arguments (globals, upstream results) are ignored, so the wrapped call is deterministic and the recorded history stays plain data. Returns `{"ok": True, "result": <return value>, "error": None}` on success and `{"ok": False, "result": None, "error": "<exception string>"}` on failure (the `str()` of the exception). Raises `ValueError` when `name` is not registered in `registry` (an unresolvable name is a workflow error, not a captured failure).
+- **`try_action(name, params=None, registry=None, **kwargs)`** — error-capturing primitive, no `dag`. **Deprecated** (finding 3c): prefer the engine-level per-scope error policy `on_error="capture"` (see [Error capture](#error-capture-on_errorcapture)), which wraps a *real* workflow body — upstream results, globals, adaptation, whole groups — where this wrapper invokes a named function with exactly static `params`. The wrapper still works and is not scheduled for removal. Resolves `name` from `registry` (default `DEFAULT_REGISTRY`) and invokes it with exactly `params` (a mapping of its own parameters; default empty). `name` (not `function` — that would collide with `Action`'s reserved `function` keyword, breaking `Action("try_action", function=...)` and `dag.copy` on a `try_action` body) is the registry name, the same vocabulary `FunctionRegistry.get` uses. To target a registry other than `DEFAULT_REGISTRY` from a workflow, pass `registry` as a global parameter (globals reach every action's keyword arguments). Extra keyword arguments (globals, upstream results) are ignored, so the wrapped call is deterministic and the recorded history stays plain data. Returns `{"ok": True, "result": <return value>, "error": None}` on success and `{"ok": False, "result": None, "error": "<exception string>"}` on failure (the `str()` of the exception). Raises `ValueError` when `name` is not registered in `registry` (an unresolvable name is a workflow error, not a captured failure). **Migration:** put the action itself inside `<scope on_error="capture">` and read the failure from the action's own result — the capture record's `ok` / `error` keys match this wrapper's outcome shape, so a downstream reader written for `try_action` works unchanged (only the kwarg key changes: the producing action's function name instead of `try_action`).
 - **`retry(upstream, max_attempts, on="error", field=None, op="eq", value=None, backoff="fixed", delay=0.0, sleep=None, *, dag, **kwargs)`** — iteration driver, copy-to-end. The action is preceded by the body in its scope. Re-runs the body while the latest upstream result (the result of the action named `upstream`, or the collision-suffixed variant when the name repeats across attempts) is unacceptable, up to `max_attempts`. `on="error"` (default): the result is unacceptable when it is a `try_action` outcome with `ok` falsy; a result that is not a `try_action` outcome is always acceptable. `on="field"`: the result is unacceptable when `result[field] op value` holds (the same predicate vocabulary as `guard`; the predicate describes the unacceptable result). When the latest result is acceptable, it returns `{"ok": True, "attempts": <n>}` and adapts nothing. When it is unacceptable and the body has run fewer than `max_attempts` times, it appends a copy of the body — plus a fresh copy of this check action itself — at the scope end (`dag.repeat()`) and returns `{"ok": False, "attempts": <n>}`. When the body has already run `max_attempts` times, it returns `{"ok": False, "attempts": <n>, "max_attempts": <cap>}` and adapts nothing. `backoff` / `delay` / `sleep` control the pause between attempts: the default (`backoff="fixed"`, `delay=0.0`) pauses nothing; with `delay > 0`, `backoff="fixed"` pauses `delay` seconds and `backoff="linear"` pauses `delay * attempts`; a `sleep` hook (any callable of one float) is invoked instead of a real sleep (the test-friendly seam). `upstream` should be an action that is part of the body (it runs once per attempt), so the number of its results equals the attempt count. Raises `ValueError` when no upstream result named `upstream` is available, when `on` is unknown, when `on="field"` is given without `field`, when `backoff` is unknown, or when the check action has no preceding body.
 - **`fallback(upstream, field, ok_value, *, dag, **kwargs)`** — conditional driver, first-success. The action is followed by the alternatives chain (the following siblings, each one an alternative body). The function reads `field` from the latest upstream result (the result of the action named `upstream`, or the collision-suffixed variant when the name repeats across alternatives) and evaluates the success predicate `result[field] == ok_value`. On success, **every** following sibling (the remaining alternatives and their checks) is replaced with an empty group (`dag.skip_following()`) — a valid node that runs nothing — so none of them ever runs; on failure, nothing is adapted and the next alternative runs, and its own `fallback` check (declared after it) re-evaluates. The chain convention: place one `fallback` action after **each** alternative (the check-after-each-alternative pattern), each reading the alternative's own result; the first check whose predicate holds empties the rest of the chain. `ok_value` is coerced from its XML string form (the same normalization `guard` applies to its comparison operand), so a boolean success flag driven from XML (`ok_value="True"`) compares against a real boolean field. An error-triggered chain uses `try_action` as the alternative body, so a failure is data (`ok` falsy) rather than an abort. Returns `{"fallback": {"ok": <bool>}}`. Raises `ValueError` when no upstream result named `upstream` is available or the result is not a mapping.
 - **`regression_gate(upstream, baseline, field, tolerance=0.0, on_regression="fail", **kwargs)`** — pure function, no `dag`. Reads **all** collision-suffixed upstream results named `upstream` (the engine keys repeated function names as `name`, `name_2`, ...) and compares each result's `field` to `baseline`: a value passes when it is equal to `baseline` (non-numeric values) or within `tolerance` of it (numbers: `abs(value - baseline) <= tolerance`). `baseline` and `tolerance` are coerced from their XML string forms (the same normalization `guard` applies to its comparison operands), so a numeric gate driven from XML compares numerically. The verdict is the `all` aggregation of the per-result outcomes. When every value is within tolerance, it returns `{"regression_gate": {"passed": True, "count": <n>, "deviations": {}}}`. When any value is outside tolerance (a regression): `on_regression="fail"` (default) raises `ValueError` naming the worst deviation (a fail-fast gate: the run aborts with a clear message); `on_regression="report"` returns `{"regression_gate": {"passed": False, "count": <n>, "deviations": {<result key>: <value>}}}` with the per-result deviations keyed by the engine's result name (`name`, `name_2`, ...). With zero results the gate passes trivially (`count` `0`) — the plain-function convention: a summary never fails a run. Raises `ValueError` when an upstream result named `upstream` is not a mapping or lacks `field`, or when `on_regression` is unknown.
@@ -1269,3 +1345,162 @@ runs/campaign/                 # ArtifactStore("runs/campaign")
     solvers_2/simulate/result.json     # clone 2 — a fresh scope, own outputs
   compare/                     # the fan-in consumer: branches("solvers") + read
 ```
+
+## Wrapping an external simulator (recipe)
+
+The library is deliberately stdlib-only and deterministic: it ships no
+subprocess helpers, no FMI bindings, no HPC client. That is a feature — the
+engine stays a pure, replayable tree walker — but it means a *real*
+`simulate` function (an FMI co-simulation, a Modelica tool, a generic
+command-line solver) is yours to write. This section is the canonical
+pattern for that wrapper. It is a **recipe, not a dependency**: copy it,
+adapt it, keep it in your own code.
+
+The pattern has five parts, each mapping onto a library facility:
+
+1. **Run the tool with `subprocess.run` and a `timeout`.** The tool is a
+   black box; the only contract is its command line, its exit code, and the
+   files it writes. `subprocess.run(..., timeout=...)` bounds a hung
+   simulator at the process level (the subprocess is killed on timeout),
+   which is the layer the engine's `action_timeout` cannot reach — see the
+   cross-reference below.
+2. **Map the exit code to a result.** A non-zero exit is a *failed
+   simulation*, not a Python exception to swallow: raise, so the engine
+   records the exception on the action's `ExecutionRecord` and the run
+   fails (or `retry` / `fallback` / `fail_fast` take over).
+3. **Write the payload through the artifact store.** Declare an
+   `artifacts` parameter; the engine injects a scoped `ArtifactHandle`.
+   Copy the tool's output files into `artifacts.out_dir()` — the action's
+   own, only-writable directory — so the payload lives under the run root
+   and is addressed in the manifest.
+4. **Return a pointer, not the payload.** Return the root-relative address
+   of the file (e.g. `f"{artifacts.address}/result.csv"`). Pointers are
+   small, JSON-serializable, and flow by value through kwargs to
+   downstream functions, which read them back through their own handle.
+   This is the store's documented convention (see the artifact store
+   section above).
+5. **Stay deterministic and replayable.** Same inputs, same command line,
+   same output bytes. `replay(history, registry, artifacts=store)` then
+   re-invokes your function with the recorded parameters; a deterministic
+   wrapper rewrites identical content and the replayed pointers match the
+   recorded ones.
+
+### Worked example: a generic command-line solver
+
+A solver invoked as `solver --model model.fmu --stop-time 10 --out out/`
+that writes `out/result.csv` and exits 0 on success:
+
+```python
+import shutil
+import subprocess
+from pathlib import Path
+
+from sequence_extensions import workflow_function
+
+@workflow_function(param_types={"stop_time": float, "model": str})
+def simulate(model: str, stop_time: float, artifacts, **kwargs):
+    """
+    Run the external solver for one scenario.
+
+    ``model`` / ``stop_time`` arrive from the XML (typed via
+    ``param_types``); ``artifacts`` is the engine-injected handle.
+    Returns a pointer to the result file, or raises on a failed run.
+    """
+    out_dir = artifacts.out_dir()          # this action's own directory
+    cmd = [
+        "solver",
+        "--model", model,
+        "--stop-time", repr(stop_time),
+        "--out", str(out_dir),
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300.0)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"solver timed out after {exc.timeout}s: {' '.join(cmd)}"
+        ) from exc
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"solver exited {proc.returncode}: {proc.stderr.strip()}"
+        )
+    # The tool wrote out_dir/result.csv; the payload now lives under the
+    # run root and is recorded in the manifest under this action's address.
+    return f"{artifacts.address}/result.csv"
+```
+
+```xml
+<VerificationWorkflow>
+  <argument key="model" value="./model_1.fmu"/>
+  <scope type="sequential">
+    <action function="simulate">
+      <argument key="stop_time" value="10"/>
+    </action>
+    <action function="evaluate_results"/>
+  </scope>
+</VerificationWorkflow>
+```
+
+Run it with the CLI and the evidence lands in two places:
+
+```console
+$ sequence-extensions wf.xml --artifacts-dir runs/campaign --history-out runs/campaign/history.json
+2026-10-13 02:28:45,768 INFO     sequence_extensions.cli: starting workflow wf.xml (options: defaults)
+2026-10-13 02:28:45,770 INFO     sequence_extensions.cli: history written to runs/campaign/history.json
+2026-10-13 02:28:45,770 INFO     sequence_extensions.cli: workflow wf.xml completed in 0.002s: 2 action record(s), run_id=74efb43a...
+2026-10-13 02:28:45,770 INFO     sequence_extensions.cli: artifacts written to runs/campaign
+```
+
+`runs/campaign/manifest.jsonl` then names the action's address
+(`simulate`), and `runs/campaign/simulate/result.csv` is the payload —
+readable by any external tool with no engine involved.
+
+### FMI co-simulation variant
+
+The same shape, with the FMI 2.0 co-simulation API in place of a
+subprocess (the `fmi2` bindings are *your* dependency, not the library's):
+
+```python
+@workflow_function(param_types={"stop_time": float})
+def simulate(model: str, stop_time: float, artifacts, **kwargs):
+    import fmi2  # your dependency; the library stays stdlib-only
+    fmu = fmi2.fmi2_import_fmu_shared_library(model, "cs")
+    try:
+        component = fmi2.fmi2_instantiate(
+            fmu, "inst", "cs", fmi2.fmi2_false, fmi2.fmi2_true, fmi2.fmi2_true)
+        fmi2.fmi2_setup_experiment(component, stopTime=stop_time)
+        fmi2.fmi2_initialization_mode(component, fmi2.fmi2_true)
+        step = 0.1
+        t = 0.0
+        rows = []
+        while t < stop_time:
+            fmi2.fmi2_do_step(component, t, step, fmi2.fmi2_true)
+            t += step
+            rows.append((t, fmi2.fmi2_get_real(component, ["y"])[0]))
+    finally:
+        fmi2.fmi2_free_instance(component)
+        fmi2.fmi2_free_fmu_library(fmu)
+    out = artifacts.out_dir() / "result.csv"
+    out.write_text("t,y\n" + "".join(f"{t},{y}\n" for t, y in rows), encoding="utf-8")
+    return f"{artifacts.address}/result.csv"
+```
+
+### Cross-references
+
+- **`action_timeout`** — the engine's per-action wall-clock budget
+  (`run_workflow(..., action_timeout=...)`, CLI `--action-timeout`) bounds
+  a hung *Python* action: the run fails loudly with `ActionTimeoutError`
+  instead of deadlocking a pool worker. It does **not** kill a hung
+  subprocess — the abandoned thread keeps running in the background — so
+  the wrapper's own `subprocess.run(timeout=...)` is the layer that
+  actually terminates the tool process. Use both: the subprocess timeout
+  for the tool, `action_timeout` as the campaign-level backstop.
+- **Artifact store** — `ArtifactStore(root)` / `ArtifactHandle` (see the
+  artifact store section above): `out_dir()` is the only writable
+  directory, `read()` serves the causal past, and the manifest records
+  every minted address. The pointer convention above is what makes
+  payloads replayable.
+- **`retry` / `fallback` / `fail_fast`** — a raised `RuntimeError` from
+  the wrapper is an ordinary action failure: `retry` re-invokes it,
+  `fallback` switches to an alternative, and `fail_fast` (CLI
+  `--fail-fast`) stops a parallel group at the first failure instead of
+  draining every sibling.

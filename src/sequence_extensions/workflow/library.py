@@ -395,6 +395,27 @@ def try_action(
     """
     Invoke the registered function ``name`` and capture any exception.
 
+    .. deprecated:: finding 3c
+       Prefer the engine-level per-scope error policy
+       ``on_error="capture"`` (see :func:`.engine.run_workflow`): a scope
+       declaring ``<scope on_error="capture">`` turns an exception from
+       any of its direct action children into that action's result — a
+       :class:`.engine.CapturedError` record with the same ``ok`` /
+       ``error`` keys this wrapper returns — so the SAME driver
+       vocabulary (:func:`retry` with ``on="error"``, :func:`fallback`)
+       reads it unchanged.  The engine policy wraps a REAL body (upstream
+       results, globals, adaptation, any number of actions); this wrapper
+       is limited to one named function with exactly static ``params``
+       (no upstream data, no adaptation), which is why the review's
+       finding 3c prescribes the engine policy over it.
+
+       Migration: replace ``<action function="try_action"><argument
+       key="name" value="simulate"/></action>`` with the action itself
+       inside a capture scope — ``<scope on_error="capture"><action
+       function="simulate"/></scope>`` — and read the failure from the
+       action's own result (``ok`` falsy, ``error`` the exception string)
+       instead of from the wrapper's ``result`` field.
+
     This is the error-capturing primitive (no ``dag``): the engine
     propagates a per-node exception out of the run, so an error-reactive
     scenario (retry, fallback) needs one call site that turns an exception

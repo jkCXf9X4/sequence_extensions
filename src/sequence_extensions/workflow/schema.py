@@ -125,6 +125,11 @@ __all__ = ["Action", "Parallel", "Sequential", "Template", "parse_workflow"]
 
 # Element names that denote a grouping node.
 _GROUP_TAGS = ("sequential", "parallel")
+
+# Valid per-scope error policies (finding 3c): ``None`` (absent attribute)
+# keeps the historical propagate-and-fail behavior; ``"capture"`` turns an
+# exception from a direct action child into that action's result.
+_ON_ERROR_VALUES = ("capture",)
 # The element name that denotes a grouping node with an explicit, validated
 # ``type`` attribute (``sequential`` / ``parallel``); ``<sequential>`` and
 # ``<parallel>`` are aliases for ``<scope type="...">``.
@@ -199,6 +204,7 @@ class _Group(Group):
         *children: Action | Sequential | Parallel,
         name: str | None = None,
         description: str | None = None,
+        on_error: str | None = None,
     ) -> None:
         """Create a group with the given child nodes, in order.
 
@@ -207,10 +213,21 @@ class _Group(Group):
         from the group type.  ``description`` is an optional plain-data label
         (set from a ``description`` attribute); like ``name`` it does not
         affect execution — it is metadata for the history layer.
+
+        ``on_error`` is the optional per-scope error policy (finding 3c):
+        ``"capture"`` turns an exception raised by one of this scope's
+        DIRECT action children into that action's result — a
+        :class:`CapturedError` record — instead of failing the run, so a
+        V&V campaign can treat a scenario failure as data.  ``None`` (the
+        default) keeps the historical behavior: the exception propagates and
+        the run fails.  The value is validated at parse time (the XML
+        parser rejects any value other than ``"capture"`` with a
+        ``ValueError`` naming the element and the offending value).
         """
         super().__init__(*children, name=name)
         self.globals: dict[str, str] = {}
         self.description = description
+        self.on_error = on_error
 
     def __repr__(self) -> str:
         """One-liner with the group type and its children."""
@@ -218,7 +235,12 @@ class _Group(Group):
 
     def _copy(self, children: list, overrides: dict) -> Node:
         """Clone hook: same group type, cloned children, copied ``globals``."""
-        clone = type(self)(*children, name=self.name, description=self.description)
+        clone = type(self)(
+            *children,
+            name=self.name,
+            description=self.description,
+            on_error=self.on_error,
+        )
         clone.globals = dict(self.globals)
         return clone
 
@@ -520,10 +542,18 @@ def _parse_group(
         scope_type = element.tag
     name = element.attrib.get("name")
     description = element.attrib.get("description")
+    on_error = element.attrib.get("on_error")
+    if on_error is not None and on_error not in _ON_ERROR_VALUES:
+        raise ValueError(
+            f"<{element.tag}> element has invalid 'on_error' attribute "
+            f"{on_error!r}; must be one of {sorted(_ON_ERROR_VALUES)}"
+        )
     children = [_parse_child(child, templates, globals_) for child in element]
     if scope_type == "sequential":
-        return Sequential(*children, name=name, description=description)
-    return Parallel(*children, name=name, description=description)
+        return Sequential(
+            *children, name=name, description=description, on_error=on_error
+        )
+    return Parallel(*children, name=name, description=description, on_error=on_error)
 
 
 def _parse_child(

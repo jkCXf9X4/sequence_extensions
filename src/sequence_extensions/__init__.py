@@ -12,8 +12,10 @@ from sequence_extensions.graph import (
 from sequence_extensions.workflow import (
     DEFAULT_REGISTRY,
     Action,
+    ActionTimeoutError,
     ArtifactHandle,
     ArtifactStore,
+    CapturedError,
     FunctionRegistry,
     Parallel,
     Sequential,
@@ -31,8 +33,10 @@ __version__ = "0.2.0"
 __all__ = [
     "DEFAULT_REGISTRY",
     "Action",
+    "ActionTimeoutError",
     "ArtifactHandle",
     "ArtifactStore",
+    "CapturedError",
     "FunctionRegistry",
     "GraphFuture",
     "GraphPool",

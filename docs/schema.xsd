@@ -89,6 +89,13 @@
     </xs:sequence>
     <xs:attribute name="name" type="xs:string"/>
     <xs:attribute name="description" type="xs:string"/>
+    <xs:attribute name="on_error">
+      <xs:simpleType>
+        <xs:restriction base="xs:string">
+          <xs:enumeration value="capture"/>
+        </xs:restriction>
+      </xs:simpleType>
+    </xs:attribute>
   </xs:complexType>
 
   <!-- The explicit grouping form: a group whose 'type' selects the
@@ -104,6 +111,13 @@
       </xs:sequence>
       <xs:attribute name="name" type="xs:string"/>
       <xs:attribute name="description" type="xs:string"/>
+      <xs:attribute name="on_error">
+        <xs:simpleType>
+          <xs:restriction base="xs:string">
+            <xs:enumeration value="capture"/>
+          </xs:restriction>
+        </xs:simpleType>
+      </xs:attribute>
       <xs:attribute name="type">
         <xs:simpleType>
           <xs:restriction base="xs:string">

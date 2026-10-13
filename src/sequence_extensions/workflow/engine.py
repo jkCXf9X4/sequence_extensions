@@ -41,7 +41,13 @@ as it executes (re-reading each group's children every step, so runtime
 splices are seen immediately) instead of pre-building a future graph.  Every
 action still runs on a pool worker thread via a :class:`GraphFuture` leaf;
 parallel groups wire all their action futures at once through a join node
-and wait on it with a single ``pool.result`` call.
+and wait on it with a single ``pool.result`` call.  Parallel group children
+(branch groups) each run on their own daemon thread while the engine is
+within ``BRANCH_THREAD_BOUND`` (finding 5b) live branch threads; beyond the
+bound a branch's walk runs inline on its parent's thread — the same runner,
+just no new thread — so deeply nested, wide campaigns degrade to
+sequential branch walking instead of unbounded multiplicative thread
+creation.
 
 Public surface (pinned): :func:`run_workflow`, :func:`Test_Framework`.
 Internal but unit-testable: :func:`check_splice_scope`.
@@ -65,7 +71,12 @@ to determine how the function find_files will alter the downstream actions
 by only looking at the representation") and ``action_timeout`` (the
 per-action wall-clock budget in seconds; expiry raises
 :class:`ActionTimeoutError`, so one hung simulator action cannot deadlock
-an unattended campaign).  See the two functions' docstrings.
+an unattended campaign).  ``fail_fast`` (the parallel failure policy:
+``False`` = the historical drain-then-report, ``True`` = stop a parallel
+group at the first failure — not-yet-run siblings skip, in-flight ones are
+abandoned, and the first error is raised promptly, so a runtime-sized
+unattended campaign does not pay for every remaining sibling after the
+first failure).  See the two functions' docstrings.
 
 Opt-in artifact store (IMP-005, IMP-007): pass ``artifacts=ArtifactStore(root)``
 (see :mod:`sequence_extensions.workflow.artifacts`) to give the run a
@@ -107,6 +118,7 @@ if TYPE_CHECKING:  # the engine is store-free at runtime (IMP-007); the
 
 __all__ = [
     "ActionTimeoutError",
+    "CapturedError",
     "Test_Framework",
     "WalkContext",
     "check_splice_scope",
@@ -251,6 +263,96 @@ class ActionTimeoutError(TimeoutError):
     """
 
 
+class CapturedError(dict):
+    """
+    The result an action produces when its scope captures the exception
+    (finding 3c: the per-scope ``on_error="capture"`` policy).
+
+    A plain-data record, not an exception: inside a capture scope a failing
+    action's RESULT is this object, so the failure flows through the data
+    plane (downstream kwargs, group results, the final result) exactly like
+    any other result — a V&V campaign treats a scenario failure as data,
+    not a crash (paper P3: branch on failures).
+
+    It is a ``dict`` so the whole existing driver vocabulary reads it
+    unchanged: :func:`.library.retry` with ``on="error"`` recognizes the
+    ``ok``/``error`` keys (the :func:`.library.try_action` outcome shape)
+    and treats the capture as an unacceptable result to retry; ``guard`` /
+    ``fallback`` / ``aggregate`` read fields from it like from any
+    mapping.  The same fields are also exposed as attributes.
+
+    Keys / attributes (all plain, comparable data):
+
+    * ``is_error`` — always ``True``; the marker a downstream action or
+      aggregate checks (``result["is_error"]``).
+    * ``ok`` — always ``False``; the try_action-compatible success flag
+      (so ``retry(on="error")`` and ``fallback(field="ok")`` work on a
+      captured result without any change).
+    * ``function`` — the failing action's registry name.
+    * ``error_type`` — the exception's class name (e.g. ``"ValueError"``).
+    * ``error`` — ``str()`` of the exception (the try_action key name).
+    * ``timeout`` — ``True`` when the capture came from the per-action
+      timeout (an :class:`ActionTimeoutError` raised by the engine's wait
+      point, not by the action's own function); ``False`` otherwise.
+
+    ``KeyboardInterrupt`` / ``SystemExit`` are NEVER captured (they are not
+    ``Exception`` subclasses): control flow stays with the caller.
+    """
+
+    def __init__(
+        self,
+        function: str,
+        error_type: str,
+        message: str,
+        timeout: bool = False,
+    ) -> None:
+        super().__init__(
+            is_error=True,
+            ok=False,
+            function=function,
+            error_type=error_type,
+            error=str(message),
+            timeout=timeout,
+        )
+
+    @property
+    def is_error(self) -> bool:
+        """The error marker: always ``True`` on a captured result."""
+        return True
+
+    @property
+    def ok(self) -> bool:
+        """The success flag: always ``False`` (try_action compatibility)."""
+        return False
+
+    @property
+    def function(self) -> str:
+        """The failing action's registry name."""
+        return self["function"]
+
+    @property
+    def error_type(self) -> str:
+        """The exception's class name."""
+        return self["error_type"]
+
+    @property
+    def error(self) -> str:
+        """``str()`` of the exception."""
+        return self["error"]
+
+    @property
+    def timeout(self) -> bool:
+        """Whether the capture came from the per-action timeout."""
+        return self["timeout"]
+
+    def __repr__(self) -> str:
+        return (
+            f"CapturedError(function={self['function']!r}, "
+            f"error_type={self['error_type']!r}, error={self['error']!r}, "
+            f"timeout={self['timeout']!r})"
+        )
+
+
 class WalkContext:
     """
     The per-action walk context: plain structural position data (IMP-007).
@@ -299,6 +401,24 @@ class WalkContext:
 def _action_address(action: Action) -> str | None:
     """The action's minted address, or ``None`` (no store / not minted)."""
     return getattr(action, "_engine_address", None)
+
+
+#: Bound on simultaneously-live parallel-branch threads (finding 5b).
+#:
+#: Group children of a ``Parallel`` scope each want their own walk thread;
+#: without a bound, a deeply nested and wide campaign creates threads
+#: MULTIPLICATIVELY (width ``W`` at depth ``D`` wants ~``W**D`` live
+#: threads — an unattended runtime-sized campaign dies at the OS thread
+#: limit).  Up to this many branch walks run on their own daemon thread
+#: (fully concurrent, the historical behavior for every campaign that
+#: fits); beyond the bound a branch's walk runs INLINE on its parent's
+#: thread — the same runner and holder/error contract, just no new thread
+#: — so overflow degrades to sequential branch execution instead of
+#: resource exhaustion.  The acquire is deliberately NON-blocking: a
+#: blocking acquire could wait on a slot a join-blocked parent holds
+#: forever (deadlock).  Actions are unaffected: they run on the
+#: :class:`GraphPool`, bounded by ``max_workers``.
+BRANCH_THREAD_BOUND = 32
 
 
 class _Engine:
@@ -400,6 +520,12 @@ class _Engine:
         # behind the pool) skip their function call instead of doing work.
         # Inert unless ``fail_fast`` is True.
         self._fail_fast_abort = threading.Event()
+        # Branch-thread bound (finding 5b): up to BRANCH_THREAD_BOUND
+        # parallel-branch walks run on their own daemon thread; beyond
+        # that the walk runs inline on its parent's thread (see
+        # ``_walk_parallel``).  The acquire is non-blocking, so a
+        # slot-holding parent never waits on a slot a child needs.
+        self._branch_slots = threading.Semaphore(BRANCH_THREAD_BOUND)
 
     # ------------------------------------------------------------ #
     # Public entry point
@@ -544,7 +670,21 @@ class _Engine:
                 continue
             if isinstance(child, Action):
                 future = self._submit_action(child, chain, ancestry + ((group, i),))
-                raw = self._wait_action(child, future)
+                try:
+                    raw = self._wait_action(child, future)
+                except Exception as exc:
+                    # Per-scope error capture (finding 3c): inside a
+                    # ``on_error="capture"`` scope the action's failure
+                    # becomes its RESULT (a CapturedError record) instead
+                    # of failing the run — the walk continues.  Retry /
+                    # fallback drivers (if any) already ran inside the
+                    # function call: capture is the LAST resort, after
+                    # them.  A timeout raised by the engine's own wait
+                    # point composes the same way (``timeout=True``).
+                    captured = self._capture_for(group, child, exc)
+                    if captured is None:
+                        raise
+                    raw = captured
                 result = self._handle_result(child, group, i, raw, chain, ancestry)
                 chain.append((child, result))
                 direct.append((child, result))
@@ -563,18 +703,34 @@ class _Engine:
         The children are SNAPSHOTTED once (a parallel group's children are
         independent, so the walk does not re-read the list).  ACTION children
         are submitted as :class:`GraphFuture` leaves on the pool; GROUP
-        children run on plain ``threading.Thread``s (never on pool workers —
-        a walk task occupying a worker could starve the pool and deadlock).
+        children run on their own daemon thread while the engine is within
+        ``BRANCH_THREAD_BOUND`` live branch threads, and INLINE on the
+        parent's thread beyond that bound (never on pool workers — a walk
+        task occupying a worker could starve the pool and deadlock).
         All action futures are wired at once through a single join future
-        (``pool.result`` on the join — the wire-then-wait pattern), the
-        threads are joined, and the first exception in child order is raised
-        after every child has settled.
+        (``pool.result`` on the join — the wire-then-wait pattern), and the
+        first exception in child order is raised.  Two policies then govern
+        the wait (the run option ``fail_fast``):
+
+        * ``fail_fast=False`` (the default) — DRAIN-THEN-REPORT: the join
+          is awaited (every action settles), the threads are joined, and
+          the first exception in child order is raised after every child
+          has settled.
+        * ``fail_fast=True`` — FAIL-FAST: the group stops waiting as soon
+          as one action fails (``_await_fail_fast``); not-yet-started
+          siblings skip their function call via the run-level abort event
+          (a queued action costs nothing), in-flight ones are abandoned
+          (a thread cannot be killed — the pool is torn down without
+          waiting for them), and the first error is raised promptly
+          instead of after every sibling has settled.
 
         The information barrier is structural: every child is submitted
         with the SAME pre-group upstream pairs (siblings never see each
         other, exactly as they never see each other's results), and each
-        branch group child is walked on its own thread with its own
-        ancestry below the group.
+        branch group child is walked with its own ancestry below the
+        group — on its own thread within the branch-thread bound, inline
+        beyond it (the barrier is the walk's pair seeding, not the
+        thread it runs on).
         """
         children = list(group.children)
         upstream = list(pairs)
@@ -603,17 +759,48 @@ class _Engine:
             if getattr(child, "_engine_executed", False) or isinstance(child, Action):
                 continue
             holder: dict = {}
-            thread = threading.Thread(
-                target=self._walk_child_thread,
-                args=(child, upstream, holder, ancestry + ((group, position),)),
-                daemon=True,
-            )
-            threads.append((position, thread, holder))
-            thread.start()
+            # Branch-thread bound (finding 5b): a slot means the branch's
+            # walk runs on its own daemon thread (fully concurrent); no
+            # slot means it runs INLINE on THIS thread — the same runner
+            # and holder/error contract, just no new thread.  The acquire
+            # is non-blocking by design: a blocking acquire could wait on
+            # a slot held by a join-blocked parent (deadlock), while the
+            # inline fallback bounds live threads at
+            # BRANCH_THREAD_BOUND without ever blocking.
+            if self._branch_slots.acquire(blocking=False):
+                thread = threading.Thread(
+                    target=self._walk_child_thread,
+                    args=(
+                        child,
+                        upstream,
+                        holder,
+                        ancestry + ((group, position),),
+                        True,
+                    ),
+                    daemon=True,
+                )
+                threads.append((position, thread, holder))
+                thread.start()
+            else:
+                # Over the bound: run the branch's walk inline (the runner
+                # releases the slot only when it OWNS one — this inline
+                # call does not, so the release stays balanced).
+                self._walk_child_thread(
+                    child, upstream, holder, ancestry + ((group, position),)
+                )
+                threads.append((position, None, holder))
         results: list[Any] = [None] * len(children)
         errors: list[tuple[int, BaseException]] = []
+        # Per-scope error capture (finding 3c) composes with fail_fast by
+        # degrading THIS group's wait to the drain: a captured failure is a
+        # result, not an error, so there is nothing to fail fast on —
+        # abandoning the not-yet-settled siblings (the fail-fast contract)
+        # would drop results the capture policy just promised to keep.
+        # The guard already refrains from setting the abort event for a
+        # failure this scope will capture, so queued siblings run too.
+        capturing = getattr(group, "on_error", None) == "capture"
         if submitted:
-            if self._fail_fast:
+            if self._fail_fast and not capturing:
                 # Fail-fast (finding 3e): raise the first action error
                 # promptly, abandoning the in-flight siblings (their queued
                 # actions skip via the abort event; running ones finish in
@@ -653,6 +840,13 @@ class _Engine:
                             # result.
                             self._raise_recorded_timeout()
                         raw = future.result()
+                        if raw is _SKIPPED:
+                            # Fail-fast skip: a sibling already failed and
+                            # this queued action never ran its function —
+                            # no result, no error, no pair.  (Defensive:
+                            # with ``fail_fast`` off the guard never skips,
+                            # so the drain branch cannot see the sentinel.)
+                            continue
                         results[position] = self._handle_result(
                             action, group, position, raw, upstream, ancestry
                         )
@@ -661,9 +855,19 @@ class _Engine:
                         # KeyboardInterrupt from an action is collected too,
                         # so every child still settles, and the first failure
                         # in child order is re-raised below.
+                        captured = self._capture_for(group, action, exc)
+                        if captured is not None:
+                            # Per-scope error capture (finding 3c): the
+                            # sibling's failure is its result, not the
+                            # group's error — the drain continues.
+                            results[position] = self._handle_result(
+                                action, group, position, captured, upstream, ancestry
+                            )
+                            continue
                         errors.append((position, exc))
         for _, thread, _ in threads:
-            thread.join()
+            if thread is not None:
+                thread.join()
         for position, _thread, holder in threads:
             if "error" in holder:
                 errors.append((position, holder["error"]))
@@ -674,7 +878,12 @@ class _Engine:
         direct = [
             (child, child._engine_result)
             for child in children
-            if isinstance(child, Action) and not getattr(child, "_engine_executed", False)
+            if isinstance(child, Action)
+            and not getattr(child, "_engine_executed", False)
+            # A skipped sibling (fail-fast) produced no result: it is not
+            # a data-plane pair (the sentinel never reaches downstream
+            # kwargs), and neither is an action that was never handled.
+            and getattr(child, "_engine_result", _SKIPPED) is not _SKIPPED
         ]
         return results, direct
 
@@ -684,18 +893,29 @@ class _Engine:
         upstream: list,
         holder: dict,
         ancestry: tuple[tuple[_Group, int], ...],
+        owns_slot: bool = False,
     ) -> None:
         """
-        Run a parallel group child on a plain thread; capture its outcome.
+        Run a parallel group child's walk; capture its outcome in ``holder``.
 
-        The child's walk growth (direct pairs) stays INSIDE the thread: a
+        The child's walk growth (direct pairs) stays INSIDE the branch: a
         parallel branch is an information barrier, so nothing it
         accumulated reaches the group's siblings or downstream.
+
+        The runner runs on its own daemon thread when a branch-thread slot
+        was available (``owns_slot=True``; the slot is released when the
+        walk settles — see ``BRANCH_THREAD_BOUND``), or INLINE on the
+        parent's thread when the engine is over the bound (``owns_slot=
+        False``; no slot is taken or released).  The two paths share this
+        one runner, so the holder/error contract is identical either way.
         """
         try:
             holder["result"], _direct = self._walk_group(child, list(upstream), ancestry)
         except BaseException as exc:  # re-raised in child order by the walker
             holder["error"] = exc
+        finally:
+            if owns_slot:
+                self._branch_slots.release()
 
     def _walk_spliced(
         self,
@@ -732,7 +952,16 @@ class _Engine:
                 continue
             if isinstance(node, Action):
                 future = self._submit_action(node, chain, ancestry + ((parent, position),))
-                raw = self._wait_action(node, future)
+                try:
+                    raw = self._wait_action(node, future)
+                except Exception as exc:
+                    # Per-scope error capture (finding 3c), same rule as
+                    # the sequential walk: the spliced node's parent scope
+                    # decides, and a capture becomes the node's result.
+                    captured = self._capture_for(parent, node, exc)
+                    if captured is None:
+                        raise
+                    raw = captured
                 result = self._handle_result(node, parent, position, raw, chain, ancestry)
                 chain.append((node, result))
                 results.append(result)
@@ -792,6 +1021,12 @@ class _Engine:
             if self._registry.wants_context(action.function)
             else None
         )
+        # Per-scope error capture (finding 3c): the action's PARENT scope
+        # decides whether a failure is captured (a result) or fatal.  The
+        # guard runs on the worker thread, before the walker can decide,
+        # so the policy travels with the call — a captured failure must
+        # not trip the fail-fast abort (it is a result, not an error).
+        capture = getattr(ancestry[-1][0], "on_error", None) if ancestry else None
         return GraphFuture(
             self._guarded_action,
             *[result for _, result in upstream],
@@ -800,6 +1035,7 @@ class _Engine:
             actions=actions,
             action=action,
             context=context,
+            capture=capture,
         )
 
     def _guarded_action(
@@ -810,6 +1046,7 @@ class _Engine:
         actions: list[Action | None],
         action: Action,
         context: WalkContext | None = None,
+        capture: str | None = None,
     ) -> Any:
         """
         The action guard: run ``_run_action`` with two engine-level policies.
@@ -843,7 +1080,12 @@ class _Engine:
                 context=context,
             )
         except BaseException as exc:
-            if self._fail_fast:
+            if self._fail_fast and not (
+                capture == "capture" and isinstance(exc, Exception)
+            ):
+                # Fail-fast abort — but NOT for a failure the action's
+                # scope will capture (finding 3c): a captured failure is
+                # a result, not an error, so siblings must not skip.
                 self._fail_fast_abort.set()
             if not isinstance(exc, Exception):
                 # KeyboardInterrupt / SystemExit: carry across the future
@@ -960,6 +1202,178 @@ class _Engine:
                 # Re-scan: a settled action may have unblocked the join, an
                 # expired one raises, and a late starter gets a new budget.
                 continue
+
+    def _await_fail_fast(
+        self,
+        submitted: list,
+        results: list,
+        errors: list,
+        group: Parallel,
+        upstream: list,
+        ancestry: tuple[tuple[_Group, int], ...],
+    ) -> None:
+        """
+        Wait for a parallel group's actions ONLY until the first failure
+        (finding 3e: after one sibling fails, the campaign must not pay
+        for the remaining ones).
+
+        This is the fail-fast sibling of ``_await_join``: instead of waiting
+        for the group's join (every action settled), the wait is
+        ``concurrent.futures.wait(FIRST_EXCEPTION)`` over the group's action
+        futures — it returns as soon as one action FAILS, or once every
+        action has settled (the no-failure case: the same total wait as the
+        drain).  A skipped sibling's ``_SKIPPED`` is a result, not an
+        exception, so it never trips the wait.  Settled futures are then
+        collected exactly like the drain branch (``_handle_result`` per
+        success — history records and splices still finalize — and one
+        ``(position, exc)`` per failure); not-yet-settled siblings are left
+        behind: their queued nodes skip via the run-level abort event (a
+        queued action costs nothing), running ones finish in the background
+        (a thread cannot be killed), and the caller marks the run as having
+        abandoned workers so the pool is torn down without waiting for them
+        (see ``run``).  The caller raises the first error in child order.
+
+        Composes with ``action_timeout``: the wait is a deadline loop with
+        the same rule as ``_await_join`` (execution-based deadlines for
+        started actions, one budget from the wait's start for queued ones),
+        and the first action past its deadline raises
+        :class:`ActionTimeoutError` — a timed-out action is an error like
+        any other, and the first error in time wins.
+        """
+        raw_futures = [future.future for _, _, future in submitted]
+        if self._action_timeout is None:
+            # One blocking wait: FIRST_EXCEPTION returns as soon as one
+            # action fails, or once every action has settled.
+            concurrent.futures.wait(
+                raw_futures, return_when=concurrent.futures.FIRST_EXCEPTION
+            )
+        else:
+            if self._timeout_error is not None:
+                self._raise_recorded_timeout()
+            wait_start = time.monotonic()
+
+            def _deadline(action: Action, future: GraphFuture) -> float | None:
+                """This action's expiry (monotonic), or None once settled."""
+                if future.done():
+                    return None
+                started = getattr(action, "_engine_started", None)
+                if started is None:
+                    return wait_start + self._action_timeout
+                return started + self._action_timeout
+
+            while True:
+                if all(future.done() for _, _, future in submitted):
+                    break
+                now = time.monotonic()
+                for _position, action, future in submitted:
+                    deadline = _deadline(action, future)
+                    if deadline is not None and deadline <= now:
+                        raise self._action_timed_out(action) from None
+                remaining = self._action_timeout
+                for _position, action, future in submitted:
+                    deadline = _deadline(action, future)
+                    if deadline is not None and deadline - now < remaining:
+                        remaining = deadline - now
+                if remaining <= 0:
+                    # An expiry just passed between the scan and here; the
+                    # next scan raises for it (bounded: the scan is re-run).
+                    continue
+                concurrent.futures.wait(
+                    raw_futures,
+                    timeout=remaining,
+                    return_when=concurrent.futures.FIRST_EXCEPTION,
+                )
+                if any(
+                    future.done()
+                    and not future.cancelled()
+                    and future.exception() is not None
+                    for _, _, future in submitted
+                ):
+                    # A sibling failed (now or while this round waited):
+                    # stop waiting — the first error in time wins, even if
+                    # another sibling's deadline has not expired yet.
+                    break
+                # Re-scan: a settled action may have unblocked the wait, an
+                # expired one raises, and a late starter gets a new budget.
+        for position, action, future in submitted:
+            if not future.done():
+                # Not-yet-settled sibling: left behind (its queued node
+                # skips via the abort event; a running one finishes in the
+                # background — the caller marks the run as having abandoned
+                # workers, so the pool is torn down without waiting).
+                continue
+            try:
+                raw = future.result()
+                if raw is not _SKIPPED:
+                    results[position] = self._handle_result(
+                        action, group, position, raw, upstream, ancestry
+                    )
+            except BaseException as exc:
+                # BaseException (matching the drain branch): a
+                # KeyboardInterrupt arrives as a ``_BaseExceptionCarrier``
+                # and is collected like any error — the caller re-raises it
+                # in child order and ``run`` unwraps the carrier.
+                captured = self._capture_for(group, action, exc)
+                if captured is not None:
+                    # Per-scope error capture (finding 3c): the failure is
+                    # the sibling's result; fail-fast keeps waiting for the
+                    # remaining settled siblings, then returns normally.
+                    results[position] = self._handle_result(
+                        action, group, position, captured, upstream, ancestry
+                    )
+                    continue
+                errors.append((position, exc))
+
+    def _capture_for(
+        self, group: _Group, action: Action, exc: BaseException
+    ) -> CapturedError | None:
+        """
+        Decide whether ``group``'s error policy captures ``exc`` (finding 3c).
+
+        Returns the :class:`CapturedError` record that becomes the action's
+        RESULT when the scope declares ``on_error="capture"`` and the
+        exception is an ordinary failure (an ``Exception``; a
+        ``KeyboardInterrupt`` / ``SystemExit`` — or the
+        ``_BaseExceptionCarrier`` transporting one — is never captured:
+        control flow belongs to the caller).  Returns ``None`` otherwise
+        (the default policy: the exception propagates and the run fails).
+
+        Composition rules (documented in ``run_workflow``):
+
+        * retry / fallback — they are library drivers that run INSIDE the
+          action's function call, so they have already exhausted themselves
+          by the time the exception reaches the engine: capture is the
+          last resort, after them.
+        * ``action_timeout`` — a timeout raised by the engine's own wait
+          point (``ActionTimeoutError``) is captured like any other
+          failure, with ``timeout=True`` on the record.  The hung worker
+          is abandoned exactly as without capture (a thread cannot be
+          killed); only the run's outcome changes.
+        * ``fail_fast`` — capture wins over the abort: a captured failure
+          is a result, not an error, so it never sets the abort event and
+          never skips siblings (the guard only sets the event on a
+          failure that will propagate).
+        """
+        if getattr(group, "on_error", None) != "capture":
+            return None
+        if isinstance(exc, _BaseExceptionCarrier) or not isinstance(exc, Exception):
+            return None
+        if isinstance(exc, ActionTimeoutError) and self._timeout_error is not None:
+            # Timeout composition (finding 3c + 3d): the captured timeout
+            # becomes this action's result, so the run-level unwind signal
+            # must be cleared — otherwise sibling waits would re-raise the
+            # recorded error (``_raise_recorded_timeout``) and the capture
+            # would be undone one wait later.  The hung worker itself is
+            # still abandoned (a thread cannot be killed); only the run's
+            # outcome changes.  First-wins is preserved: a timeout that is
+            # NOT captured keeps its recorded error.
+            self._timeout_error = None
+        return CapturedError(
+            function=action.function,
+            error_type=type(exc).__name__,
+            message=str(exc),
+            timeout=isinstance(exc, ActionTimeoutError),
+        )
 
     def _action_timed_out(self, action: Action) -> ActionTimeoutError:
         """
@@ -1475,6 +1889,7 @@ def run_workflow(
     executor: GraphPool | None = None,
     dry_run: bool = False,
     action_timeout: float | None = None,
+    fail_fast: bool = False,
 ) -> Any:
     """
     Parse a workflow XML document and execute it; return the final result.
@@ -1547,6 +1962,20 @@ def run_workflow(
       without waiting for it and the run unwinds; the abandoned worker
       finishes in the background (a caller-owned ``executor`` is never
       shut down by the engine).  Must be > 0 or ``None``.
+    * ``fail_fast`` — the parallel failure policy (default ``False`` =
+      the historical drain-then-report: a failing parallel group waits
+      for every sibling to settle before raising the first error in child
+      order — the safe default, because a caller that inspects state after
+      a failed run sees every sibling's side effects accounted for).
+      ``True`` stops a parallel group at the FIRST failure: not-yet-run
+      siblings skip their function call (a queued action costs nothing),
+      in-flight ones are abandoned (a thread cannot be killed — the pool
+      is torn down without waiting for them, exactly like the
+      ``action_timeout`` path), and the first error is raised promptly.
+      Built for runtime-sized unattended campaigns, where paying for
+      every remaining sibling after the first failure is unacceptable.
+      Composes with ``action_timeout`` (a timed-out action is an error
+      like any other).
 
     Raises ``ValueError`` for invalid XML, an unknown function name (naming
     the function), an out-of-scope dynamic-adaptation splice attempt, an
@@ -1581,6 +2010,7 @@ def run_workflow(
         executor=executor,
         dry_run=dry_run,
         action_timeout=action_timeout,
+        fail_fast=fail_fast,
     )
     return engine.run()
 
@@ -1598,6 +2028,7 @@ def Test_Framework(
     executor: GraphPool | None = None,
     dry_run: bool = False,
     action_timeout: float | None = None,
+    fail_fast: bool = False,
 ) -> Any:
     """
     Execute a workflow built via the Python API (the paper's Listing 10).
@@ -1619,6 +2050,11 @@ def Test_Framework(
     ``dry_run=True`` returning the workflow tree instead of a result — and
     ``action_timeout``, the per-action wall-clock budget in seconds whose
     expiry raises :class:`ActionTimeoutError`; see :func:`run_workflow`).
+    ``fail_fast`` is the parallel failure policy (default ``False`` = the
+    historical drain-then-report; ``True`` stops a parallel group at the
+    first failure — not-yet-run siblings skip, in-flight ones are
+    abandoned, and the first error is raised promptly; see
+    :func:`run_workflow`).
 
     The paper's call form ``Test_Framework(parameters=common_parameters,
     seq=top_seq)`` executes the workflow and returns its final result.
@@ -1642,6 +2078,7 @@ def Test_Framework(
         executor=executor,
         dry_run=dry_run,
         action_timeout=action_timeout,
+        fail_fast=fail_fast,
     )
     return engine.run()
 

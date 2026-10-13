@@ -46,6 +46,8 @@ from sequence_extensions.workflow.artifacts import (
     ReplayArtifacts,
 )
 from sequence_extensions.workflow.engine import (
+    ActionTimeoutError,
+    CapturedError,
     Test_Framework,
     WalkContext,
     check_splice_scope,
@@ -72,6 +74,8 @@ __all__ = [
     "AdaptationOp",
     "ArtifactHandle",
     "ArtifactStore",
+    "ActionTimeoutError",
+    "CapturedError",
     "DAGHandle",
     "FunctionRegistry",
     "Parallel",
