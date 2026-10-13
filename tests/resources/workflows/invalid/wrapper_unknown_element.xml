@@ -1,6 +1,0 @@
-<VerificationWorkflow>
-  <model value="m"/>
-  <sequential>
-    <action function="a"/>
-  </sequential>
-</VerificationWorkflow>

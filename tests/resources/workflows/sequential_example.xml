@@ -1,5 +1,0 @@
-<scope type="sequential">
-  <action function="action_1"/>
-  <action function="action_2"/>
-  <!-- potential additional actions -->
-</scope>

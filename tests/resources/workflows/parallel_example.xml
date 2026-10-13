@@ -1,4 +1,0 @@
-<scope type="parallel">
-  <action function="action_1"/>
-  <action function="action_2"/>
-</scope>

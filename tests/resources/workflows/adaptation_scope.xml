@@ -1,8 +1,0 @@
-<scope type="sequential">
-  <action function="outer_action_1"/>
-  <scope type="sequential">
-    <action function="inner_action_1"/>
-    <action function="inner_action_2"/>
-  </scope>
-  <action function="outer_action_2"/>
-</scope>
