@@ -2,45 +2,49 @@
 id: INFO-001
 type: info
 title: 00-intent — Vision & Goals
-summary: Vision, goal, requirements, and success criteria for sequence_extensions — an audit-first mini flow engine
-date: 2026-10-13
+summary: Vision, goal, requirements, and success criteria — parallel, deterministic, audited campaign execution, local or at HPC
+date: 2026-10-14
 status: current
 ---
 
 # 00-intent — Vision & Goals
 
-## Origin
-
-The project began as the workflow layer of "Automation Nation: Taming Complex V&V Workflows" (Rosenlund, Hällqvist, Braun, Krus, 2025; `docs/references/`). The 2026-10-13 evaluation superseded that layer (`DR-005`): the package now realizes the requirements, not the paper's representation. Traceability of runs — the one surviving paper thread — is the run log.
-
 ## Vision
 
-- Model verification that is automated, parallel, and fully auditable.
+- Parallel, deterministic, fully audited campaign execution — local or at HPC.
 - "Verify what happened" outranks "re-run what happened": the run log is the product.
-- Campaigns are ordinary Python: functions, loops, decorators. No new representation to learn.
+- Campaigns are ordinary Python: functions, loops, decorators. No representation to learn.
 
 ## Goal
 
-An audit-first, zero-dependency, embeddable mini flow engine:
+A zero-dependency, embeddable mini flow engine:
 
-- Parallelism — local: bounded thread pool, process pool for CPU-bound work (`CP-022`); HPC speaks through recipes (a task that sbatches and polls), not adapters.
-- Deterministic operations — pure tasks, declared retry and timeout policy, recorded audit trail.
-- Audit — every attempt, failure, and skip lands in one JSON-lines file per run.
+- Parallelism, local and bounded:
+  - worker threads by default (`CP-017`, `CP-021`)
+  - worker processes for CPU-bound tasks (`CP-022`)
+  - flows run side by side in one process (`CP-023`)
+- HPC through recipes, not adapters (`INFO-012`):
+  - a task that sbatches and polls
+  - the engine ships no scheduler integration
+- Deterministic operations:
+  - retry, backoff, and timeout declared on the task (`CP-019`)
+  - same code and inputs give the same verdict
+- Audit (`CP-020`):
+  - every attempt, failure, and skip in one JSON-lines file per run
+  - the log is complete the moment a flow returns
 
 ## Requirements
 
-- Parallelism: independent tasks run concurrently; concurrency is bounded.
-- Determinism: same code and inputs give the same verdict; policy is declared on the task.
-- Audit: the run log is complete the moment a flow returns.
-- Composability: tasks are functions; flows are functions; futures are edges.
+- Independent tasks run concurrently; concurrency is bounded.
+- The run log is complete the moment a flow returns.
 - Zero runtime dependencies; Python >= 3.9.
 
 ## Out of scope
 
-- Plan-before-execution (dry run): structurally impossible with imperative submission; removed (`DR-005`).
+- Plan-before-execution (dry run): structurally impossible with imperative submission.
 - Replay by re-execution: the log proves what ran; re-running is a fresh run.
-- Workflow XML, node trees, adaptation, artifact store: superseded (`DR-005`).
-- Batch-scheduler integration: recipes, not engine features.
+- Distributed execution: recipes only — no scheduler adapters, no cluster runtime.
+- Workflow XML, node trees, adaptation, artifact store.
 
 ## Success criteria
 
@@ -56,4 +60,5 @@ An audit-first, zero-dependency, embeddable mini flow engine:
 
 - Capability catalog: `INFO-010`.
 - Engine design: `INFO-011`.
-- The supersession decision and its evidence: `DR-005`.
+- Direction pointers and open candidates: `INFO-013`.
+- Recorded decisions: the archive, per `DR-006`.

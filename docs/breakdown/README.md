@@ -1,6 +1,6 @@
 # Product Breakdown — sequence_extensions
 
-Current-state record for sequence_extensions: higher-order function extensions for Python sequences, dependency-graph futures, and the audit-first flow engine. For authors and agents.
+Current-state record for sequence_extensions: higher-order function extensions for Python sequences, dependency-graph futures, and the flow engine — parallel, deterministic, audited. For authors and agents.
 
 ## The Seven Layers
 

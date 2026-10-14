@@ -15,6 +15,7 @@ Direction: the `INFO-001` goal — parallel, deterministic, audited. This file p
 
 - Local, bounded: `CP-017`, `CP-021`.
 - CPU-bound processes: `CP-022` (shipped 1.1.0, `DR-008`).
+- Concurrent flows in one process: `CP-023` (shipped 1.1.0, `DR-007`).
 - HPC through recipes: `INFO-012`; no open candidate — file an IMP when recipe limits bite.
 
 ## Determinism and audit

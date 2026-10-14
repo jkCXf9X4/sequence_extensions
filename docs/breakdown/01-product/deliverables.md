@@ -20,7 +20,7 @@ status: current
 - **`graph`** — the dependency-graph execution substrate.
   - `GraphFuture` nodes form a DAG; each node runs a function once its dependencies complete.
   - `GraphPool` drives scheduling on a bounded thread pool.
-- **`flow`** — the audit-first mini flow engine (`INFO-011`).
+- **`flow`** — the flow engine: parallel, deterministic, audited (`INFO-011`).
   - `@task` — retry (`retries`), backoff (`retry_delay_seconds`), and `timeout` policy around a function.
   - `@flow` — run identity, bounded or caller-owned pool, JSON-lines run log.
   - `RunLog` — writer and reader for the run log; `jsonable` serialization policy.
@@ -41,7 +41,7 @@ The `flow` package: `from sequence_extensions.flow import task, flow, RunLog, Ta
 - Git-based change management inside model archives.
 - STMD/SRMD traceability metadata beyond the run-log record.
 - FMI/SSP model packaging.
-- Distributed (HPC) execution: parallelism is local, via the thread pool; HPC is recipes.
-- Plan-before-execution and replay: superseded (`DR-005`).
+- Distributed (HPC) execution: parallelism is local (threads or processes); HPC is recipes.
+- Plan-before-execution and replay: out of scope.
 
 Scope boundaries: `INFO-001`. Flow engine internals: `INFO-011`.

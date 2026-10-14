@@ -8,7 +8,7 @@ dynamic = ["version"]
 authors = [
   { name="jkCXf9X4"},
 ]
-description = "Higher-order function extensions for Python lists, dicts, and generators, plus an audit-first mini flow engine (retry, timeout, parallelism, JSON-lines run log) on dependency-graph futures."
+description = "Higher-order function extensions for Python lists, dicts, and generators, plus a mini flow engine on dependency-graph futures: deterministic parallel campaigns, local or at HPC (retry, timeout, JSON-lines run log)."
 readme = "README.md"
 requires-python = ">=3.9"
 keywords = ["list", "dict", "functional", "extensions", "generator", "graph", "flow", "parallel", "retry", "audit"]

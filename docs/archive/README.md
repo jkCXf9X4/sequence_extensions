@@ -13,6 +13,8 @@ Records live in the cold-storage archive; extract one with `pb archive read <ID>
 
 - **DR-005** — Supersede the workflow layer with an audit-first flow engine · accepted · 2026-10-13 · `DR-005`
   The declarative workflow layer (XML schema, node tree, adaptation, artifact store, replay) is superseded by @task/@flow decorators over graph_future with a JSON-lines run log as the product
+- **DR-009** — Re-author intent and product layers around the shipped direction · accepted · 2026-10-14 · `DR-009`
+  Vision and use-case catalog still carried consolidation-era framing and supersession narrative; re-authored to lead with parallel, deterministic, audited execution — local or at HPC — with audit as the trust mechanism; CP-023 (concurrent flows) added to the catalog
 
 ### Product
 

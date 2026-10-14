@@ -1,5 +1,5 @@
 """
-flow — the audit-first mini flow engine.
+flow — the mini flow engine: parallel, deterministic, audited.
 
 ``@task`` wraps a function with retry / backoff / timeout policy;
 ``@flow`` adds run identity, a bounded pool, and a JSON-lines audit log

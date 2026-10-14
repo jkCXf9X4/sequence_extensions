@@ -2,16 +2,14 @@
 id: INFO-010
 type: info
 title: Use cases
-summary: The use-case catalog — seven capability leaves (CP-016 to CP-022) concretizing the INFO-001 goal
-date: 2026-10-13
+summary: The use-case catalog — eight capability leaves (CP-016 to CP-023) concretizing the INFO-001 goal
+date: 2026-10-14
 status: current
 ---
 
 # Use cases
 
 The use cases concretize the goal in `INFO-001`. Each is a capability leaf, cited by ID. Every leaf carries a scenario, the API call, acceptance, and evidence from the pytest suite. Acceptance is the requirement where the scenario alone stays ambiguous.
-
-The previous catalog — fifteen workflow-layer capabilities — was superseded with the layer itself (`DR-005`); list the tombstones via `pb archive list --deprecated`.
 
 ## Catalog
 
@@ -22,6 +20,7 @@ The previous catalog — fifteen workflow-layer capabilities — was superseded 
 - `CP-020` — audit a run: one JSON-lines file, attempt granularity, skipped records.
 - `CP-021` — bound the concurrency: `max_workers`, caller-owned pool.
 - `CP-022` — run CPU-bound tasks in parallel: `ProcessGraphPool`, pickling contract, parent-side record replay.
+- `CP-023` — run flows concurrently in one process: pool-scoped cancellation.
 
 ## Owns
 

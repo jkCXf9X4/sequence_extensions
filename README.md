@@ -2,7 +2,7 @@
 
 **Version:** 1.0.0 · **Python:** >=3.9
 
-Higher-order function extensions for Python lists, dicts, and generators, plus an audit-first mini flow engine on dependency-graph futures: parallelism, retries, timeouts — and a JSON-lines run log that is the executed truth of every run.
+Higher-order function extensions for Python lists, dicts, and generators, plus a mini flow engine on dependency-graph futures: deterministic parallel campaigns, local or at HPC — retries, timeouts, and a JSON-lines run log that is the executed truth of every run.
 
 The package is organized into three subpackages:
 
@@ -10,7 +10,7 @@ The package is organized into three subpackages:
 sequence_extensions/
 ├── ext/        # functional helpers for built-in sequences
 ├── graph/      # the execution substrate (GraphFuture / GraphPool)
-└── flow/       # the audit-first mini flow engine (@task / @flow / run log)
+└── flow/       # the mini flow engine (@task / @flow / run log)
 ```
 
 - `ext.list_ext` — an extended `list` class with functional helpers (`map`, `filter`, `reduce`, `window`, ...)
@@ -234,7 +234,7 @@ Pool lifecycle:
 
 ## flow
 
-The audit-first mini flow engine. A task is a function; a flow is a function; a future passed as a submit argument is a dependency edge. Every run writes one JSON-lines audit log — the executed truth of what happened, complete the moment the flow returns.
+The mini flow engine — parallel, deterministic, audited. A task is a function; a flow is a function; a future passed as a submit argument is a dependency edge. Every run writes one JSON-lines audit log — the executed truth of what happened, complete the moment the flow returns.
 
 ```python
 from pathlib import Path

@@ -46,4 +46,4 @@ def campaign(cases_dir): ...
 
 ## Excludes
 - Retry semantics that produce the attempts: `CP-019`.
-- Replay of a run: out of scope (`DR-005`).
+- Replay of a run: out of scope.

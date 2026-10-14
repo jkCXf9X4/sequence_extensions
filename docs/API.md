@@ -11,7 +11,7 @@ sequence_extensions/
 ├── ext/        # list_ext / dict_ext / gen_ext (functional sequence helpers)
 ├── graph/      # the execution substrate
 │   └── graph_future.py # GraphFuture / GraphPool
-└── flow/       # the audit-first mini flow engine
+└── flow/       # the mini flow engine
     ├── task.py       # @task (retries, backoff, timeout), TaskTimeoutError
     ├── flow.py       # @flow (run identity, pool, run log wiring)
     ├── runlog.py     # RunLog JSON-lines writer, jsonable serialization
@@ -918,7 +918,7 @@ def campaign(items):
 
 ## `flow`
 
-The audit-first mini flow engine, built unchanged on the `graph` substrate. A task is a function; a flow is a function; a future passed as an argument is a dependency edge. Every run writes one JSON-lines audit log — the executed truth of the run.
+The mini flow engine — parallel, deterministic, audited — built on the `graph` substrate. A task is a function; a flow is a function; a future passed as an argument is a dependency edge. Every run writes one JSON-lines audit log — the executed truth of the run.
 
 ### `@task` — policy around a function
 

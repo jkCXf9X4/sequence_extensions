@@ -42,6 +42,9 @@ process pool.
   records for failed dependencies and cancelled nodes) are written by
   the flow thread before `run_end`, never from done-callbacks: a
   callback-side write could race `run_end` closing the log.
+- Identity surfaces (README, API docs, package description, `flow`
+  docstring) lead with the direction — parallel, deterministic,
+  audited, local or at HPC — matching the re-authored vision.
 
 ### Deprecated
 - Nothing.
