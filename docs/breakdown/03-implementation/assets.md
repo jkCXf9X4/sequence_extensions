@@ -9,7 +9,7 @@ status: current
 
 # Implementation asset map
 
-The package `sequence-extensions` (v1.0.0) is a pure Python library: src layout, Python >= 3.9, MIT, zero runtime dependencies. About 1,900 source lines. Component design lives in `INFO-003`; the flow engine design in `INFO-011`.
+The package `sequence-extensions` (v1.1.0) is a pure Python library: src layout, Python >= 3.9, MIT, zero runtime dependencies. About 2,160 source lines. Component design lives in `INFO-003`; the flow engine design in `INFO-011`.
 
 ## Layout
 
@@ -24,6 +24,7 @@ The package `sequence-extensions` (v1.0.0) is a pure Python library: src layout,
 - `flow/flow.py` — `@flow` (run identity, pool ownership, drain, failure handling)
 - `flow/runlog.py` — `RunLog` writer/reader, `jsonable` serialization policy, `SCHEMA_VERSION`
 - `flow/_context.py` — `RunContext` and the `ContextVar` current-run plumbing
+- `flow/process_pool.py` — `ProcessGraphPool` (process executor, parent-side record replay), `ProcessDispatchError`
 
 ## Entry points
 

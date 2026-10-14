@@ -355,3 +355,36 @@ def test_caller_owned_pool_is_drained_not_settled_on_error(tmp_path):
     assert recs[-1]["status"] == "error"
     assert all(t["status"] == "ok" for t in _task_records(recs))
     shared.__exit__(None, None, None)  # owner closes the pool
+
+
+def test_concurrent_flows_in_one_process(tmp_path):
+    """Two flows run at the same time in one process, each on its own
+    pool: both complete (pool-scoped cancellation — a pool's exit no
+    longer cancels the other flow's pending nodes)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    @task
+    def slow(x):
+        time.sleep(0.2)
+        return x
+
+    @flow(log=tmp_path / "a", name="fa")
+    def fa():
+        return slow.submit(1).result()
+
+    @flow(log=tmp_path / "b", name="fb")
+    def fb():
+        return slow.submit(2).result()
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f1 = ex.submit(fa)
+        f2 = ex.submit(fb)
+        assert f1.result(timeout=10) == 1
+        assert f2.result(timeout=10) == 2
+
+    for sub in ("a", "b"):
+        recs = _read_log(tmp_path / sub)
+        assert recs[-1]["record"] == "run_end"
+        assert recs[-1]["status"] == "ok"

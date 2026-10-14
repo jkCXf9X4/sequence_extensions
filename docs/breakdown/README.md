@@ -1,6 +1,6 @@
 # Product Breakdown — sequence_extensions
 
-Current-state record for sequence_extensions: higher-order function extensions for Python sequences, dependency-graph futures, and the V&V workflow layer. For authors and agents.
+Current-state record for sequence_extensions: higher-order function extensions for Python sequences, dependency-graph futures, and the audit-first flow engine. For authors and agents.
 
 ## The Seven Layers
 
@@ -45,4 +45,4 @@ A document's home is the layer whose question it answers; information flows down
 ## Excludes
 
 - Implementation detail and durable rationale: `docs/` (runtime-coupled), outside this tree.
-- `docs/API.md`, `docs/alignment_report.md` — runtime-coupled docs, outside this breakdown.
+- `docs/API.md` and `docs/references/` — runtime-coupled docs and reference material, outside this breakdown.

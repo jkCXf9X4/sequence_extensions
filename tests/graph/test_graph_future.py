@@ -208,21 +208,81 @@ def test_pool_result_timeout_param():
         assert gf.result(timeout=2) == 42
 
 
-def test_unbound_node_cancelled_at_pool_exit():
-    """__exit__ cancels ALL live nodes, including unbound ones created inside
-    the with-block: after exit, result() raises CancelledError (NOT hangs)."""
+def test_unbound_node_survives_unrelated_pool_exit():
+    """Pool exit is pool-scoped: an unbound node (never wired to any pool)
+    stays pending when an unrelated pool exits — cancellation no longer
+    sweeps the whole process."""
     node = None
     with GraphPool(max_workers=2):
         node = GraphFuture(lambda: (time.sleep(5), 1)[1])  # never bound
         assert not node.future.done()
-    # pool exited -> the unbound node must have been cancelled
-    assert node.future.done() is True
-    assert node.future.cancelled() is True
-    assert node.has_result() is False
-    with pytest.raises(CancelledError):
-        node.result()
-    with pytest.raises(CancelledError):
-        node.exception()
+    # unrelated pool exited -> the unbound node is untouched
+    assert node.future.done() is False
+    assert node.future.cancelled() is False
+
+
+def test_pool_exit_spares_other_pools_nodes():
+    """Exiting pool A cancels only A's own nodes; a node bound to pool B
+    survives A's exit and still completes (the concurrent-flows fix)."""
+    pb = GraphPool(max_workers=1)
+    try:
+        b_node = GraphFuture(lambda: (time.sleep(0.3), 42)[1])
+        pb.bind(b_node)  # pending/running on pb
+        with GraphPool(max_workers=1):  # pool A: enters and exits
+            pass  # A's exit must not cancel b_node
+        assert not b_node.future.done()
+        assert b_node.result(timeout=2) == 42
+    finally:
+        pb.__exit__(None, None, None)
+
+
+def test_bind_submits_ready_leaves():
+    """bind() wires the graph and starts ready leaves without waiting."""
+    with GraphPool(max_workers=2) as p:
+        gf = GraphFuture(lambda: 7)
+        p.bind(gf)
+        assert gf.result(timeout=2) == 7
+
+
+def test_bind_is_idempotent():
+    """Binding twice does not run the node twice."""
+    calls = []
+
+    def fn():
+        calls.append(1)
+        return len(calls)
+
+    with GraphPool(max_workers=2) as p:
+        gf = GraphFuture(fn)
+        p.bind(gf)
+        p.bind(gf)
+        assert gf.result(timeout=2) == 1
+    assert calls == [1]
+
+
+def test_bind_raises_on_cycle():
+    """bind() detects dependency cycles synchronously (ValueError)."""
+    a = GraphFuture(lambda: 1)
+    b = GraphFuture(lambda: 2, a)
+    a.arguments[0] = b  # a now depends on b: cycle
+    a.dependencies.append(b)
+    with GraphPool(max_workers=2) as p:
+        with pytest.raises(ValueError, match="cycle"):
+            p.bind(b)
+
+
+def test_bind_never_raises_settled_nodes_exception():
+    """A pure bind: a node that fails before the bind call must not raise
+    through bind() — unlike result(gf, timeout=0), which replays the
+    node's own exception."""
+    with GraphPool(max_workers=2) as p:
+        boom = GraphFuture(_instantly_raises)
+        p.bind(boom)
+        assert boom.exception(timeout=2) is not None
+
+
+def _instantly_raises():
+    raise RuntimeError("boom")
 
 
 def test_pool_shutdown_with_pending_nodes():

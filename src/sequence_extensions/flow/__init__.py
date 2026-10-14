@@ -23,11 +23,14 @@ Typical shape::
 
 from sequence_extensions.flow._context import RunContext, current_run
 from sequence_extensions.flow.flow import DEFAULT_LOG_DIR, flow
+from sequence_extensions.flow.process_pool import ProcessDispatchError, ProcessGraphPool
 from sequence_extensions.flow.runlog import SCHEMA_VERSION, RunLog, jsonable
 from sequence_extensions.flow.task import TaskFunction, TaskTimeoutError, task
 
 __all__ = [
     "DEFAULT_LOG_DIR",
+    "ProcessDispatchError",
+    "ProcessGraphPool",
     "RunContext",
     "RunLog",
     "SCHEMA_VERSION",

@@ -23,4 +23,5 @@ How it is run day to day: install, build, test, lint, release, and routine maint
 <!-- pb:index:start -->
 <!-- GENERATED FILE — do not edit. Regenerate with pb-registers. -->
 - **INFO-007** [Install, run, and maintain](running.md) — Install, run, test, lint, and release steps for sequence_extensions, as present in the repo
+- **INFO-012** [Running flows — local and at HPC](running-flows-local-and-at-hpc.md) — Operational shape of running a flow — bounded local pool, HPC through the recipe pattern, subprocess timeout layering
 <!-- pb:index:end -->

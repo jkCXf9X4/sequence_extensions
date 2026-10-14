@@ -31,12 +31,19 @@ A task body raising a non-``Exception`` ``BaseException`` (``SystemExit``,
 ``KeyboardInterrupt``) is recorded and re-raised wrapped in
 ``RuntimeError`` — the node must settle, and ``GraphFuture`` only carries
 ``Exception``s.
+
+On a :class:`~sequence_extensions.flow.ProcessGraphPool` the same policy
+runs in a worker process: the task and its arguments must be picklable,
+and the run-log records are buffered by the worker and replayed by the
+parent when the future settles (see :mod:`sequence_extensions.flow.process_pool`).
 """
 
 from __future__ import annotations
 
-import concurrent.futures
 import functools
+import pickle
+import re
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -47,12 +54,16 @@ from sequence_extensions.flow._context import (
     reset_current_run,
     set_current_run,
 )
+from sequence_extensions.flow.process_pool import (
+    ProcessGraphPool,
+    _process_task_runner,
+)
 from sequence_extensions.flow.runlog import jsonable
 from sequence_extensions.graph.graph_future import GraphFuture
 
-#: ``pool.result(gf, timeout=0)`` binds the reachable graph without
-#: waiting; concurrent binds from parallel workers must not interleave
-#: (``GraphPool._visiting`` is pool-level DFS state).
+#: ``pool.bind(gf)`` submits every ready leaf; concurrent binds from
+#: parallel workers must not interleave (``GraphPool._visiting`` is
+#: pool-level DFS state).
 _BIND_LOCK = threading.Lock()
 
 
@@ -68,6 +79,11 @@ class TaskTimeoutError(TimeoutError):
         self.timeout = timeout
         self.attempt = attempt
         super().__init__(f"task '{task}' exceeded its timeout of {timeout}s (attempt {attempt})")
+
+    def __reduce__(self):
+        """Pickle transport for process pools (default exception pickling
+        would rebuild with the message string, not the constructor)."""
+        return (type(self), (self.task, self.timeout, self.attempt))
 
 
 class TaskFunction:
@@ -86,6 +102,30 @@ class TaskFunction:
         self.timeout = None if timeout is None else float(timeout)
         self.name = name or getattr(fn, "__name__", "task")
         functools.update_wrapper(self, fn)
+        # Process-pool support: the decorator replaces the module-level
+        # name with this TaskFunction, so pickling the raw function by
+        # reference would fail pickle's identity check.  Rebind the raw
+        # function under a private alias in its own module; __reduce__
+        # ships (alias, policy) instead of the function object.
+        module = sys.modules.get(getattr(fn, "__module__", None))
+        if module is not None:
+            alias = "__seqext_task_fn_" + re.sub(
+                r"\W+", "_", getattr(fn, "__qualname__", "") or self.name
+            )
+            setattr(module, alias, fn)
+            self._pickle_alias = (fn.__module__, alias)
+
+    def __reduce__(self):
+        """Pickle transport for process pools (see __init__)."""
+        alias = getattr(self, "_pickle_alias", None)
+        if alias is None:
+            raise pickle.PicklingError(
+                f"task '{self.name}' is not picklable: its function has no importable module"
+            )
+        return (
+            _rebuild_task_function,
+            (alias, self.retries, self.retry_delay_seconds, self.timeout, self.name),
+        )
 
     def __repr__(self):
         return f"<TaskFunction {self.name} retries={self.retries} timeout={self.timeout}>"
@@ -115,54 +155,42 @@ class TaskFunction:
                 "sequentially"
             )
 
-        def _runner(*resolved_args, **resolved_kwargs):
-            gf._flow_attempted = True
-            token = set_current_run(ctx)
-            try:
-                return self._execute(resolved_args, resolved_kwargs, ctx)
-            finally:
-                reset_current_run(token)
+        if isinstance(ctx.pool, ProcessGraphPool):
+            # Process mode: the node's function must be picklable, so the
+            # runner is this module-level function carrying the task and a
+            # plain-dict run header; the worker buffers run-log records and
+            # the flow replays them before run_end (flow.py).
+            run_info = {
+                "run_id": ctx.run_id,
+                "flow_name": ctx.flow_name,
+                "summary": bool(ctx.runlog is not None and ctx.runlog.summary),
+            }
+            gf = GraphFuture(_process_task_runner, self, run_info, *args, **kwargs)
+        else:
 
-        gf = GraphFuture(_runner, *args, **kwargs)
+            def _runner(*resolved_args, **resolved_kwargs):
+                gf._flow_attempted = True
+                token = set_current_run(ctx)
+                try:
+                    return self._execute(resolved_args, resolved_kwargs, ctx)
+                finally:
+                    reset_current_run(token)
+
+            gf = GraphFuture(_runner, *args, **kwargs)
         gf.set_name(self.name)
         ctx.nodes.append(gf)
 
-        def _on_settle(_future):
-            # Fires in whichever thread settles the node.  A node that
-            # failed WITHOUT ever executing (its dependency failed, so
-            # argument resolution raised before the body ran) gets one
-            # skipped record — absence of a record would be an audit gap.
-            if ctx.runlog is None or gf.cancelled():
-                return
-            try:
-                exc = gf.exception()
-            except concurrent.futures.CancelledError:
-                return
-            if exc is None or getattr(gf, "_flow_attempted", False):
-                return
-            ctx.runlog.write(
-                {
-                    "record": "task",
-                    "run_id": ctx.run_id,
-                    "task": self.name,
-                    "attempt": 0,
-                    "status": "skipped",
-                    "reason": "dependency failed",
-                    "error": {"type": type(exc).__qualname__, "message": str(exc)},
-                }
-            )
-
-        gf.add_done_callback(_on_settle)
+        # Settle-time records (replayed process records, skip records)
+        # are written by the flow thread in flow.py, never from a
+        # done-callback: set_result wakes drain waiters before callbacks
+        # finish, so a callback-side write can race run_end closing the
+        # log.
 
         # Bind the reachable graph — submitting every ready leaf — without
-        # touching any result.  The public alternative, a zero-timeout
-        # ``pool.result(gf, timeout=0)`` probe, RAISES the task's own
-        # exception when the task settles faster than the probe (an
-        # instantly-failing dependency does exactly that), so the direct
-        # bind is the only correct call here.  Cycles raise ValueError
-        # here, synchronously at submit time.
+        # touching any result (a pure bind; cycles raise ValueError here,
+        # synchronously at submit time).
         with _BIND_LOCK:
-            ctx.pool._bind_graph(gf)
+            ctx.pool.bind(gf)
         return gf
 
     # ------------------------------------------------------------ #
@@ -259,6 +287,23 @@ class TaskFunction:
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _rebuild_task_function(alias, retries, retry_delay_seconds, timeout, name):
+    """Unpickle a TaskFunction from its module alias (see __reduce__)."""
+    module = sys.modules.get(alias[0])
+    fn = getattr(module, alias[1], None) if module is not None else None
+    if fn is None:
+        # E.g. a spawn-started worker: the alias only exists where the
+        # decoration ran (module level), not in a fresh interpreter.
+        raise pickle.UnpicklingError(f"task function {alias!r} is not importable")
+    return TaskFunction(
+        fn,
+        retries=retries,
+        retry_delay_seconds=retry_delay_seconds,
+        timeout=timeout,
+        name=name,
+    )
 
 
 def task(fn=None, *, retries=0, retry_delay_seconds=0.0, timeout=None, name=None):

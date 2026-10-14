@@ -40,11 +40,13 @@ from sequence_extensions.flow import (
     RunContext,
     TaskFunction,
     TaskTimeoutError,
+    ProcessGraphPool,
+    ProcessDispatchError,
     jsonable,
     current_run,
 )
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 ```
 
 | Export | Description |
@@ -60,7 +62,9 @@ __version__ = "1.0.0"
 | `flow` | Decorator: run identity, pool, and audit log around a function |
 | `RunLog` | JSON-lines run-log writer and reader |
 | `TaskTimeoutError` | `TimeoutError` carrying `task`, `timeout`, `attempt` |
-| `__version__` | `"1.0.0"` |
+| `ProcessGraphPool` | `GraphPool` subclass with worker processes (CPU-bound tasks) |
+| `ProcessDispatchError` | A payload could not be dispatched to a worker process |
+| `__version__` | `"1.1.0"` |
 
 ---
 
@@ -846,6 +850,17 @@ def result(self, gf: GraphFuture, timeout=None)
 - **Raises:** `ValueError("dependency cycle detected")` on cyclic graphs; `TimeoutError` on timeout; exceptions raised by node functions propagate.
 - **Description:** Evaluate the graph reachable from `gf` and return its result.
 
+### `bind`
+
+```python
+def bind(self, gf: GraphFuture) -> None
+```
+
+- **Parameters:** `gf` (`GraphFuture`) — the graph node to bind.
+- **Returns:** nothing.
+- **Raises:** `ValueError("dependency cycle detected")` on cyclic graphs.
+- **Description:** Bind the graph reachable from `gf` without touching any result: submit every ready leaf, wire the rest for event-driven scheduling. A **pure bind** — unlike `result(gf, timeout=0)`, it never raises a settled node's own exception. This is the call `task.submit()` uses.
+
 ### `__enter__`
 
 ```python
@@ -866,15 +881,38 @@ def __exit__(self, exc_type, exc_val, exc_tb) -> None
 - **Parameters:** the standard context-manager exception triple.
 - **Returns:** `None` (any exception from the `with` body propagates).
 - **Raises:** nothing directly.
-- **Description:** Cancel pending work and shut the executor down. **Unbound nodes are cancelled with `CancelledError`** — calling `result()` on them after exit raises `CancelledError`.
+- **Description:** Cancel **this pool's** pending nodes, then shut the executor down. Cancellation is pool-scoped: nodes bound to other pools (e.g. a concurrent flow's pool in the same process) are untouched.
 
 ### Lifecycle notes
 
 - The `with`-block form is **required for cleanup**; lazy use without `with` is safe (atexit shutdown).
-- Unbound nodes (not yet evaluated) are cancelled at `__exit__`; `result()` on those raises `CancelledError` after exit.
+- Exit cancels the pool's **own** pending nodes (`result()` on those raises `CancelledError`); nodes bound to other pools survive. A node never bound to any pool is left pending — bind nodes through `pool.result()` / `pool.bind()`.
 - Re-entry (`__enter__` twice) raises `RuntimeError`.
-- Cycle detection: `pool.result()` raises `ValueError("dependency cycle detected")` instead of deadlocking.
+- Cycle detection: `pool.result()` and `pool.bind()` raise `ValueError("dependency cycle detected")` instead of deadlocking.
 - Exceptions in a node function propagate from `pool.result()`.
+
+---
+
+## `ProcessGraphPool`
+
+`class ProcessGraphPool(GraphPool)` — evaluate a `GraphFuture` graph with a bounded **process** pool: same `bind` / `result` / context-manager surface as `GraphPool`, workers are processes. The fix for CPU-bound task bodies, which the GIL serializes under a thread pool.
+
+```python
+from sequence_extensions.flow import ProcessGraphPool, flow
+
+
+@flow(pool=ProcessGraphPool(max_workers=4), log="runs")
+def campaign(items):
+    futures = [cpu_heavy.submit(i) for i in items]  # runs in worker processes
+    return [f.result() for f in futures]
+```
+
+- **`__init__(max_workers=None)`** — worker process count; `None` uses the executor's default (the CPU count).
+- **Picklable payloads:** tasks and arguments must survive `pickle` — module-level functions and plain data. `@task`-decorated module-level functions pickle (the raw function is aliased under a private module name at decoration). A lambda, a closure, or an unpicklable argument fails at dispatch: the node settles with `ProcessDispatchError` and the run log records `skipped` / `dispatch failed`.
+- **Run-log records replay in the parent:** a worker cannot write the flow's open log file, so the worker buffers its attempt records and the flow writes them before `run_end` — the log is still complete the moment the flow returns.
+- **Dependencies resolve in the parent:** a failed dependency skips the dependent without a process round-trip (same `skipped` record as thread mode).
+- **Limits:** a task returning a `GraphFuture` (graph chaining) works in thread mode only; `task.submit()` inside a process worker is unsupported (the worker has no pool); a timed-out attempt is abandoned as a daemon thread *in the worker process*; errors must be picklable to cross the boundary.
+- Under the default *fork* start method (Linux), function closures defined at call time also pickle; under *spawn* (Windows, macOS default), module-level tasks only.
 
 ---
 
@@ -923,15 +961,16 @@ def campaign(cases_dir): ...
 | `max_workers` | `16` | thread pool size for the run's `submit()` calls |
 | `log` | `"runs"` | directory for `<run_id>.jsonl`; `None` disables the file |
 | `summary` | `False` | log item counts for long containers instead of items |
-| `pool` | `None` | a caller-owned `GraphPool`; never settled by the flow |
+| `pool` | `None` | a caller-owned pool — a `GraphPool` (threads) or a `ProcessGraphPool` (processes); never settled by the flow |
 
 - The body is ordinary Python: plain calls are sequential, `.submit()` calls are concurrent.
 - **Drain-on-return** — the flow returns only after every submitted task has settled, so the log is complete on return.
 - **Failure** — a failed flow cancels its own pool's pending tasks (each recorded `skipped`), waits for running ones, records `run_end` with `status: "error"`, and re-raises.
 - A caller-owned pool is never settled: success and failure both drain; the owner owns the lifecycle.
 - `run_id` format: `<flow>-<UTC timestamp>-<short uuid>`.
-- Flows run sequentially per process (accepted limit): pool exit cancels pending graph nodes process-wide.
+- **Concurrent flows are safe in one process**: pool exit cancels only that pool's own nodes, so two flows — each on its own pool — can run side by side.
 - Nested flows work: an inner `@flow` gets its own run, pool, and log.
+- On a `ProcessGraphPool`, settle-time records (replayed worker records, skip records) are written by the flow before `run_end`; an unpicklable payload settles its node with `ProcessDispatchError` and records `skipped` / `dispatch failed`.
 
 ### The run log — the executed truth
 
@@ -945,7 +984,7 @@ Record kinds:
 | `task` | `run_id`, `task`, `attempt`, `status`, `args`, `kwargs`, `start`, `end`, `duration_ms`, `worker`, plus `result` (ok) or `error` |
 | `run_end` | `run_id`, `status`, `ended`, `duration_ms`, plus `result` (ok) or `error` |
 
-- Task `status`: `ok` (attempt succeeded), `error`, `timeout`, or `skipped` (`attempt: 0` — the node never executed: a dependency failed, or the flow failed and cancelled it).
+- Task `status`: `ok` (attempt succeeded), `error`, `timeout`, or `skipped` (`attempt: 0` — the node never executed: a dependency failed, the payload could not be dispatched to a process (`reason: "dispatch failed"`), or the flow failed and cancelled it).
 - Serialization policy (`jsonable`): paths log as `{"path": ..., "sha256": ...}` (hashed when the file exists); `bytes` as length plus sha256; datetimes as ISO 8601; sets as sorted lists; unknown values as `str(value)`. Bulky payloads return a `Path` by convention — never inlined.
 - `summary=True` replaces containers longer than 8 items with `{"type": ..., "len": ...}`.
 

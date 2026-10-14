@@ -24,6 +24,7 @@ status: current
   - `@task` — retry (`retries`), backoff (`retry_delay_seconds`), and `timeout` policy around a function.
   - `@flow` — run identity, bounded or caller-owned pool, JSON-lines run log.
   - `RunLog` — writer and reader for the run log; `jsonable` serialization policy.
+  - `ProcessGraphPool` — a `GraphPool` subclass running tasks in worker processes (`CP-022`); `ProcessDispatchError` — a payload could not reach a worker.
   - `TaskTimeoutError` — a `TimeoutError` naming the task.
 
 ## API surface at a glance
@@ -33,7 +34,7 @@ Root re-exports (`sequence_extensions.__all__`):
 - `ext`: `list_ext`, `dict_ext`, `gen_ext`, `KeyValueTuple`.
 - `graph`: `GraphFuture`, `GraphPool`, `graph_future`.
 
-The `flow` package: `from sequence_extensions.flow import task, flow, RunLog, TaskTimeoutError`.
+The `flow` package: `from sequence_extensions.flow import task, flow, RunLog, TaskTimeoutError, ProcessGraphPool, ProcessDispatchError`.
 
 ## Out of scope
 

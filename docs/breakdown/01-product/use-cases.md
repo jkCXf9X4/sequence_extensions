@@ -2,7 +2,7 @@
 id: INFO-010
 type: info
 title: Use cases
-summary: The use-case catalog — six capability leaves (CP-016 to CP-021) concretizing the INFO-001 goal
+summary: The use-case catalog — seven capability leaves (CP-016 to CP-022) concretizing the INFO-001 goal
 date: 2026-10-13
 status: current
 ---
@@ -21,6 +21,7 @@ The previous catalog — fifteen workflow-layer capabilities — was superseded 
 - `CP-019` — retry, back off, and bound a task: attempts, wall budget, `TaskTimeoutError`.
 - `CP-020` — audit a run: one JSON-lines file, attempt granularity, skipped records.
 - `CP-021` — bound the concurrency: `max_workers`, caller-owned pool.
+- `CP-022` — run CPU-bound tasks in parallel: `ProcessGraphPool`, pickling contract, parent-side record replay.
 
 ## Owns
 

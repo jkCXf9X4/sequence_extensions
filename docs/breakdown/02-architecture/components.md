@@ -22,7 +22,8 @@ The package decomposes into three subpackages with a strict dependency order: `f
 - **`graph_future`** — `GraphFuture`: one DAG node — a function, its arguments, and its dependencies.
   - Arguments may be other `GraphFuture` nodes; they resolve to results at run time.
   - `GraphPool` — owns a bounded `ThreadPoolExecutor`; wires, schedules, and evaluates a graph.
-  - Context manager; `result(gf, timeout)` blocks on one node; cycle detection raises at bind time.
+  - Context manager; `result(gf, timeout)` blocks on one node; `bind(gf)` binds without touching results; cycle detection raises at bind time.
+  - Pool exit cancels only the pool's own nodes (pool-scoped, `DR-007`); `_submit_node` is the dispatch seam pool subclasses redirect.
 
 ## `flow` — the audit-first engine
 
@@ -30,6 +31,7 @@ The package decomposes into three subpackages with a strict dependency order: `f
 - **`flow`** — `@flow` decorator: run identity, pool (owned or caller-supplied), drain, failure handling.
 - **`runlog`** — `RunLog` JSON-lines writer (thread-safe) and `jsonable` serialization policy.
 - **`_context`** — `RunContext` plus `ContextVar` plumbing; workers and attempt threads restore the run.
+- **`process_pool`** — `ProcessGraphPool`: a `GraphPool` subclass on a `ProcessPoolExecutor` (`CP-022`); workers buffer records, the parent replays them at settle time.
 
 ## Data flow
 
@@ -41,7 +43,7 @@ The package decomposes into three subpackages with a strict dependency order: `f
 ## Interface contracts
 
 - `ext`: the three classes; methods return extended types or plain values.
-- `graph`: `GraphFuture(function, *args, **kwargs)`, `result()`, `done()`; `GraphPool(max_workers)`, `result(gf)`.
-- `flow`: `@task(retries, retry_delay_seconds, timeout, name)`, `task.submit(...)`, `@flow(name, max_workers, log, summary, pool)`.
+- `graph`: `GraphFuture(function, *args, **kwargs)`, `result()`, `done()`; `GraphPool(max_workers)`, `result(gf)`, `bind(gf)`.
+- `flow`: `@task(retries, retry_delay_seconds, timeout, name)`, `task.submit(...)`, `@flow(name, max_workers, log, summary, pool)`; `pool=` accepts `GraphPool` or `ProcessGraphPool`.
 
 Engine semantics: `INFO-011`. Scope: `INFO-001`.

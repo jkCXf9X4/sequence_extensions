@@ -28,6 +28,7 @@ What is delivered and what is out of scope: the capabilities, requirements, and 
 - **CP-019** [UC-19 Retry, back off, and bound a task](uc-19-retry-back-off-and-bound-a-task.md) — retries and retry_delay_seconds drive an attempt loop inside the task wrapper; timeout bounds one attempt; TaskTimeoutError names the task
 - **CP-020** [UC-20 Audit a run](uc-20-audit-a-run.md) — One JSON-lines file per run records run_start, every task attempt, skipped nodes, and run_end; paths log as path plus sha256
 - **CP-021** [UC-21 Bound the concurrency](uc-21-bound-the-concurrency.md) — max_workers sizes the run pool; a caller-owned GraphPool is accepted and never settled by the flow
+- **CP-022** [UC-22 Run CPU-bound tasks in parallel](uc-22-run-cpu-bound-tasks-in-parallel.md) — ProcessGraphPool behind the pool= seam swaps worker threads for processes; picklable tasks parallelize past the GIL, records replay in the parent
 - **INFO-002** [Deliverables](deliverables.md) — What sequence_extensions delivers — three subpackages, the public API surface, and explicit out-of-scope items
-- **INFO-010** [Use cases](use-cases.md) — The use-case catalog — six capability leaves (CP-016 to CP-021) concretizing the INFO-001 goal
+- **INFO-010** [Use cases](use-cases.md) — The use-case catalog — seven capability leaves (CP-016 to CP-022) concretizing the INFO-001 goal
 <!-- pb:index:end -->

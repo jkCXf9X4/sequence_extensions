@@ -277,6 +277,16 @@ Semantics, in one list:
 - **Futures as arguments are dependency edges** — any DAG shape, diamonds included; cycles raise at submit time.
 - **Drain-on-return**: the flow returns only after every submitted task settles. A failed flow cancels its pending tasks (recorded `skipped`), waits for the running ones, and re-raises.
 - **The run log** (default `runs/<run_id>.jsonl`, one JSON object per line) records `run_start`, every task attempt (`ok` / `error` / `timeout` / `skipped`), and `run_end`. Paths log as path plus sha256 — bulky payloads return a `Path` by convention and never bloat the log. Read it back with `RunLog.records(path)`.
+- **Concurrent flows are safe in one process** — pool exit cancels only that pool's own nodes. CPU-bound campaigns swap threads for processes:
+
+```python
+from sequence_extensions.flow import ProcessGraphPool, flow
+
+with ProcessGraphPool() as pool:  # worker processes instead of threads
+    verdict = campaign(cases_dir, pool=pool)
+```
+
+Tasks and arguments must be picklable (module-level functions, plain data); attempt records are buffered by the worker and replayed by the flow, so the log is still complete on return. An unpicklable payload surfaces as `ProcessDispatchError` with a `skipped` / `dispatch failed` record.
 
 Two examples of the log's shape (from the acceptance test's campaign — six cases, one flaky):
 

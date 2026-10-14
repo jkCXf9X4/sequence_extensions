@@ -22,7 +22,7 @@ The product is a library (`INFO-002`): there is no service to deploy and no CLI 
 
 - Use the Python API: `from sequence_extensions.flow import task, flow`
 - A flow call writes its run log to `runs/<run_id>.jsonl` under the working directory (default); pass `log=` to choose the directory
-- Flows run sequentially per process (accepted limit, `INFO-011`)
+- CPU-bound campaigns run on `ProcessGraphPool` (`CP-022`); running at an HPC cluster follows the recipe pattern: `INFO-012`
 
 ## Test and lint
 

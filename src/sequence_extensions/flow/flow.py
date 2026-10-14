@@ -10,8 +10,10 @@ The decorated function is called exactly as before; the wrapper adds:
 * **a bounded pool** — a :class:`~sequence_extensions.graph.GraphPool`
   with ``max_workers`` threads that the run's ``task.submit()`` calls
   use, unless a caller-owned ``pool=`` is supplied (never settled by
-  the flow; the owner owns its lifecycle).  The flow body itself is
-  ordinary sequential Python.
+  the flow; the owner owns its lifecycle).  A
+  :class:`~sequence_extensions.flow.ProcessGraphPool` swaps the workers
+  for processes — CPU-bound tasks parallelize for real.  The flow body
+  itself is ordinary sequential Python.
 * **drain-on-return** — the flow returns only after every submitted task
   has settled, so the audit log is complete the moment the call returns.
   A flow that fails cancels its pending tasks (recorded as ``skipped``)
@@ -19,14 +21,15 @@ The decorated function is called exactly as before; the wrapper adds:
 
 Accepted limitations, documented here on purpose:
 
-* **Sequential flows only, per process.**  Closing a pool cancels
-  pending graph nodes process-wide (``GraphPool.__exit__`` walks all
-  live nodes — substrate behavior); a flow exiting while another flow
-  has pending nodes would cancel them.  Run flows one after another.
 * **Hung tasks need ``timeout=``.**  Drain waits for every submitted
   task; Python threads cannot be preempted, so only a task-level
   ``timeout`` bounds a stuck body.
 * **A retrying task holds its pool worker** through the backoff sleep.
+* **Process pools need picklable tasks.**  On a
+  :class:`~sequence_extensions.flow.ProcessGraphPool`, tasks and
+  arguments must be picklable (module-level functions, plain data); a
+  task returning a ``GraphFuture`` works in thread mode only; nested
+  ``submit()`` inside a worker is unsupported.
 """
 
 from __future__ import annotations
@@ -45,6 +48,7 @@ from sequence_extensions.flow._context import (
     reset_current_run,
     set_current_run,
 )
+from sequence_extensions.flow.process_pool import ProcessDispatchError
 from sequence_extensions.flow.runlog import RunLog, jsonable
 from sequence_extensions.graph.graph_future import GraphPool
 
@@ -100,22 +104,58 @@ def _drain(ctx: RunContext) -> None:
                 pass
 
 
-def _write_skipped_cancelled(ctx: RunContext) -> None:
-    """One skipped record per node cancelled by the flow's failure."""
+def _write_settle_records(ctx: RunContext, *, flow_failed: bool) -> None:
+    """Every settle-time record, written by the flow thread before run_end.
+
+    Replayed worker records first (process pools), then one skip record
+    per node that never executed: cancelled by the flow's failure, or
+    failed because its dependency or process dispatch failed.  Never
+    called from a done-callback — ``set_result`` wakes drain waiters
+    before callbacks finish, so a callback-side write could race
+    ``run_end`` closing the log.
+    """
     if ctx.runlog is None:
         return
     for node in ctx.nodes:
-        if node.cancelled() and not getattr(node, "_flow_attempted", False):
-            ctx.runlog.write(
-                {
-                    "record": "task",
-                    "run_id": ctx.run_id,
-                    "task": node.name,
-                    "attempt": 0,
-                    "status": "skipped",
-                    "reason": "cancelled (flow failed)",
-                }
-            )
+        for record in getattr(node, "_process_records", None) or ():
+            ctx.runlog.write(record)
+    for node in ctx.nodes:
+        if getattr(node, "_flow_attempted", False) or getattr(node, "_process_attempted", False):
+            continue
+        if node.cancelled():
+            if flow_failed:
+                ctx.runlog.write(
+                    {
+                        "record": "task",
+                        "run_id": ctx.run_id,
+                        "task": node.name,
+                        "attempt": 0,
+                        "status": "skipped",
+                        "reason": "cancelled (flow failed)",
+                    }
+                )
+            continue
+        try:
+            exc = node.exception()
+        except concurrent.futures.CancelledError:
+            continue
+        if exc is None:
+            continue
+        ctx.runlog.write(
+            {
+                "record": "task",
+                "run_id": ctx.run_id,
+                "task": node.name,
+                "attempt": 0,
+                "status": "skipped",
+                "reason": (
+                    "dispatch failed"
+                    if isinstance(exc, ProcessDispatchError)
+                    else "dependency failed"
+                ),
+                "error": {"type": type(exc).__qualname__, "message": str(exc)},
+            }
+        )
 
 
 def flow(
@@ -139,9 +179,11 @@ def flow(
       ``None`` disables the file.
     * ``summary`` — summarize bulky values in the log (item counts
       instead of items); paths are always path-plus-hash.
-    * ``pool`` — a caller-owned :class:`GraphPool` to submit on instead
-      of a fresh per-run pool.  A caller-owned pool is never settled by
-      the flow; its lifecycle is the owner's.
+    * ``pool`` — a caller-owned pool to submit on instead of a fresh
+      per-run thread pool: a :class:`~sequence_extensions.graph.GraphPool`
+      (threads) or a :class:`~sequence_extensions.flow.ProcessGraphPool`
+      (processes, for CPU-bound tasks).  A caller-owned pool is never
+      settled by the flow; its lifecycle is the owner's.
 
     The function body is plain Python.  Tasks are called directly
     (sequential) or via ``task.submit()`` (concurrent); passing futures
@@ -188,7 +230,7 @@ def flow(
                     # A caller-owned pool is never settled by the flow;
                     # drain instead so no record lands after run_end.
                     _drain(ctx)
-                _write_skipped_cancelled(ctx)
+                _write_settle_records(ctx, flow_failed=True)
                 if runlog is not None:
                     runlog.write(
                         {
@@ -208,6 +250,7 @@ def flow(
                 _drain(ctx)
                 if owned_pool is not None:
                     _settle(owned_pool)
+                _write_settle_records(ctx, flow_failed=False)
                 if runlog is not None:
                     runlog.write(
                         {

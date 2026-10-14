@@ -19,14 +19,15 @@ The suite is pytest (>= 8, < 9) with pytest-cov. `pytest` runs it as-is: `pyproj
 
 ## Areas
 
-The suite collects 222 tests.
+The suite collects 240 tests.
 
 - `tests/test_package.py` — package-level smoke tests: root re-exports, ext methods, `GraphFuture`/`GraphPool` basics (30)
 - `tests/ext/` — `list_ext` (51), `dict_ext` (44), `gen_ext` (6)
-- `tests/graph/test_graph_future.py` — DAG execution, pool lifecycle, timeouts, cycle detection (22)
+- `tests/graph/test_graph_future.py` — DAG execution, pool lifecycle, bind, pool-scoped exit, timeouts, cycle detection (27)
 - `tests/flow/test_runlog.py` — serialization policy, writer thread safety (20)
 - `tests/flow/test_task.py` — decoration, inline execution, retry, backoff, timeout, submit semantics (28)
-- `tests/flow/test_flow.py` — run identity, drain, failure handling, skipped records, caller-owned pool (20)
+- `tests/flow/test_flow.py` — run identity, drain, failure handling, skipped records, caller-owned pool, concurrent flows (21)
+- `tests/flow/test_process_pool.py` — process dispatch, record replay, skip and dispatch-failure records, timeout transport, exit cancellation, CPU-bound wall gain (12)
 - `tests/flow/test_acceptance.py` — the benchmark campaign end to end (1)
 
 ## Fixtures and claim verification

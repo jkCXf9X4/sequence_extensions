@@ -5,6 +5,56 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-10-14
+
+The parallelism release: local CPU-bound work parallelizes for real, and
+concurrent flows in one process stop interfering. Decisions `DR-007` and
+`DR-008` in the product breakdown record the substrate reopen and the
+process pool.
+
+### Added
+- **`ProcessGraphPool`** (`sequence_extensions.flow`) — a `GraphPool`
+  subclass driving a `ProcessPoolExecutor` behind the same
+  `bind` / `result` / exit surface: `@flow(pool=ProcessGraphPool())`
+  swaps local parallelism from threads to worker processes, so
+  CPU-bound task bodies parallelize past the GIL. `max_workers`
+  defaults to the executor's own default (the CPU count).
+  - Worker-side run-log records are buffered and replayed by the flow
+    at settle time, in the flow thread — the log is still complete the
+    moment the flow returns.
+  - Dispatch or transport failures (e.g. an unpicklable payload)
+    surface as `ProcessDispatchError`; the run log records the node as
+    `skipped` with reason `dispatch failed`.
+  - `TaskTimeoutError` pickles across the process boundary (custom
+    `__reduce__`); `@task`-decorated module-level functions pickle too
+    (the raw function is aliased under a private module name at
+    decoration, surviving the decorator-replaces-the-name problem).
+- **`GraphPool.bind(gf)`** — a public, pure bind: submits every ready
+  leaf, raises `ValueError` on a dependency cycle, never touches (or
+  raises) a result — unlike the `result(gf, timeout=0)` probe.
+
+### Changed
+- **Pool exit is pool-scoped.** `GraphPool.__exit__` (and so a flow's
+  pool) cancels only the nodes bound to that pool; the process-wide
+  `_LIVE_NODES` sweep is removed. Concurrent flows in one process —
+  each on its own pool — no longer cancel each other's work.
+- Settle-time run-log records (replayed process records, `skipped`
+  records for failed dependencies and cancelled nodes) are written by
+  the flow thread before `run_end`, never from done-callbacks: a
+  callback-side write could race `run_end` closing the log.
+
+### Deprecated
+- Nothing.
+
+### Removed
+- Nothing.
+
+### Fixed
+- Nothing.
+
+### Security
+- Nothing.
+
 ## [1.0.0] - 2026-10-13
 
 The identity release: the package is an **audit-first mini flow engine**. The

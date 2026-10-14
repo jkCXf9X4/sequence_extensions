@@ -15,9 +15,6 @@ import concurrent.futures
 import threading
 import weakref
 
-# Every GraphFuture still alive, so ``GraphPool.__exit__`` can cancel unbound
-# nodes that would otherwise hang forever.
-_LIVE_NODES = weakref.WeakSet()
 # Every GraphPool still alive, so the atexit handler can shut down lazily
 # created executors of pools used without ``with``.
 _LIVE_POOLS = weakref.WeakSet()
@@ -73,7 +70,6 @@ class GraphFuture:
         # to this node's future — guarantees each callback is attached at most
         # once (per dependent), which kills the re-attach recursion loop.
         self._callback_attached = set()
-        _LIVE_NODES.add(self)
 
     # ------------------------------------------------------------ #
     # Introspection
@@ -175,21 +171,13 @@ class GraphFuture:
         self._submit(pool)
 
     def _submit(self, pool) -> None:
-        """Idempotently queue ``_run`` on the pool's executor (lock-guarded)."""
+        """Idempotently mark queued and hand the node to the pool (lock-guarded)."""
         with self._lock:
             if self.queued:
                 return
             self.queued = True
             self._pool = pool
-            if pool._shutdown:
-                # Pool is exiting: don't enqueue fresh work; settle as cancelled.
-                try:
-                    self.future.set_exception(concurrent.futures.CancelledError())
-                except concurrent.futures.InvalidStateError:
-                    pass
-                return
-            pool._ensure_executor()
-            pool._executor.submit(self._run)
+        pool._submit_node(self)
 
     # ------------------------------------------------------------ #
     # Execution (runs on a pool worker thread)
@@ -210,7 +198,12 @@ class GraphFuture:
                 self._pool._bind_graph(result)
                 result.future.add_done_callback(self._forward_result)
             else:
-                self.future.set_result(result)
+                try:
+                    self.future.set_result(result)
+                except concurrent.futures.InvalidStateError:
+                    # Cancelled at pool exit while the body ran to
+                    # completion — the completion is discarded.
+                    pass
         except Exception as e:
             # ``except Exception`` (not BaseException) so KeyboardInterrupt /
             # SystemExit propagate instead of being swallowed into the future.
@@ -223,7 +216,10 @@ class GraphFuture:
     def _forward_result(self, inner_future) -> None:
         """Copy a chained inner GraphFuture's result into this node's future."""
         try:
-            self.future.set_result(inner_future.result())
+            try:
+                self.future.set_result(inner_future.result())
+            except concurrent.futures.InvalidStateError:
+                pass
         except Exception as e:
             if not self.future.done():
                 try:
@@ -262,11 +258,11 @@ class GraphPool:
     with or without the ``with`` statement.  Pools used without ``with`` are
     shut down at interpreter exit by an atexit handler.  Re-entering a pool
     (``__enter__`` twice, including after a previous ``__exit__``) raises
-    ``RuntimeError``; ``__exit__`` cancels pending nodes and shuts the
-    executor down.  Reactor-style callbacks (not polling) drive scheduling: a
-    leaf is submitted as soon as it is reached; dependents are submitted when
-    their dependencies complete.  The executor's thread pool bounds
-    concurrency.
+    ``RuntimeError``; ``__exit__`` cancels this pool's pending nodes and
+    shuts the executor down.  Reactor-style callbacks (not polling) drive
+    scheduling: a leaf is submitted as soon as it is reached; dependents are
+    submitted when their dependencies complete.  The executor's worker pool
+    bounds concurrency.
     """
 
     def __init__(self, max_workers: int = 16):
@@ -298,15 +294,19 @@ class GraphPool:
             raise RuntimeError("GraphPool.__enter__ called more than once")
         self._entered = True
         self._shutdown = False
-        self._executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=self.max_workers, thread_name_prefix="graph-worker"
-        )
+        self._ensure_executor()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Cancel pending work, then shut the executor down."""
+        """Cancel this pool's pending nodes, then shut the executor down.
+
+        Cancellation is pool-scoped: only nodes bound to *this* pool
+        (``self._nodes``) are cancelled, so pools of concurrent flows in
+        one process do not interfere.  A node never bound to any pool is
+        left pending — bind nodes through ``pool.result()`` / ``pool.bind()``.
+        """
         self._shutdown = True
-        for node in list(_LIVE_NODES):
+        for node in list(self._nodes):
             if not node.future.done():
                 node.future.cancel()
         if self._executor:
@@ -327,9 +327,37 @@ class GraphPool:
         self._bind_graph(gf)
         return gf.result(timeout=timeout)
 
+    def bind(self, gf: GraphFuture) -> None:
+        """
+        Bind the graph reachable from ``gf`` without touching any result.
+
+        Submits every ready leaf to this pool and wires the rest for
+        event-driven scheduling; raises ``ValueError`` on a dependency
+        cycle.  A pure bind: unlike ``result(gf, timeout=0)``, it never
+        raises a settled node's own exception.
+        """
+        self._bind_graph(gf)
+
     # ------------------------------------------------------------ #
     # Scheduling support
     # ------------------------------------------------------------ #
+    def _submit_node(self, node: GraphFuture) -> None:
+        """Queue ``node`` for execution on this pool (dispatch seam).
+
+        Subclasses redirect execution here — e.g. a process-pool subclass
+        ships the node's function and resolved arguments to a worker
+        process instead of running ``node._run`` on a worker thread.
+        """
+        if self._shutdown:
+            # Pool is exiting: don't enqueue fresh work; settle as cancelled.
+            try:
+                node.future.set_exception(concurrent.futures.CancelledError())
+            except concurrent.futures.InvalidStateError:
+                pass
+            return
+        self._ensure_executor()
+        self._executor.submit(node._run)
+
     def _bind_graph(self, gf: GraphFuture) -> None:
         """
         Walk the dependency graph (post-order) and wire every node.

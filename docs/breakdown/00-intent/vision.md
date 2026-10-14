@@ -23,7 +23,7 @@ The project began as the workflow layer of "Automation Nation: Taming Complex V&
 
 An audit-first, zero-dependency, embeddable mini flow engine:
 
-- Parallelism — local thread pool, bounded; HPC speaks through recipes (a task that sbatches and polls), not adapters.
+- Parallelism — local: bounded thread pool, process pool for CPU-bound work (`CP-022`); HPC speaks through recipes (a task that sbatches and polls), not adapters.
 - Deterministic operations — pure tasks, declared retry and timeout policy, recorded audit trail.
 - Audit — every attempt, failure, and skip lands in one JSON-lines file per run.
 
@@ -45,7 +45,7 @@ An audit-first, zero-dependency, embeddable mini flow engine:
 ## Success criteria
 
 - A six-case simulated campaign runs parallel, retries its flaky case, and yields one verdict plus a complete audit log (acceptance test).
-- Package stays small: about 1,900 lines of engine core plus ext helpers.
+- Package stays small: about 2,200 lines of engine core plus ext helpers.
 - The audit log is diffable, greppable, and readable without the code beside it.
 
 ## Owns
