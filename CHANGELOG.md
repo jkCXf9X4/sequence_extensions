@@ -5,6 +5,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-10-14
+
+The determinism release: the run log becomes checkable, not just
+readable — see what a run did at a glance, and prove two runs executed
+identically. Decision `DR-012` in the product breakdown records the
+reading toolkit (`IMP-022`).
+
+### Added
+- **`RunLog.filter(records, ...)`** (`sequence_extensions.flow`) —
+  select records by kind, task, status, or attempt; a record without a
+  constrained field never matches; input order preserved.
+- **`RunLog.summarize(records)`** — the compact account of a run: run
+  level `flow`, `run_id`, and `status` (absent for an interrupted run),
+  plus one entry per task — attempts, statuses in order, the last
+  status, and compute time summed over executions.
+- **`RunLog.diff(left, right)`** — the semantic comparison of two runs,
+  the determinism check. Records are identified by what ran — task,
+  inputs, attempt number (run records by kind) — never by record
+  position, so fan-outs compare case by case and completion-order
+  races never count. Fields in `DIFF_EXCLUDE` (record order, `run_id`,
+  wall-clock, and `worker`) are dropped before comparing — wall time is
+  not a determinism claim — and a future argument's `done` snapshot is
+  ignored. The report is jsonable and stably ordered: `equal`,
+  `only_left`, `only_right`, and `changed` (per-record differing
+  fields with both values). Duplicate identities: last record wins.
+- All three accept a log path or a record list; `records` itself is
+  unchanged. `DIFF_EXCLUDE` is exported for composing a custom
+  `exclude=` set.
+
 ## [1.1.0] - 2026-10-14
 
 The parallelism release: local CPU-bound work parallelizes for real, and

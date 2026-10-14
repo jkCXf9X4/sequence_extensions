@@ -14,7 +14,7 @@ sequence_extensions/
 └── flow/       # the mini flow engine
     ├── task.py       # @task (retries, backoff, timeout), TaskTimeoutError
     ├── flow.py       # @flow (run identity, pool, run log wiring)
-    ├── runlog.py     # RunLog JSON-lines writer, jsonable serialization
+    ├── runlog.py     # RunLog JSON-lines writer, reading toolkit, jsonable
     └── _context.py   # RunContext + current-run ContextVar plumbing
 ```
 
@@ -37,6 +37,7 @@ from sequence_extensions.flow import (
     task,
     flow,
     RunLog,
+    DIFF_EXCLUDE,
     RunContext,
     TaskFunction,
     TaskTimeoutError,
@@ -46,7 +47,7 @@ from sequence_extensions.flow import (
     current_run,
 )
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 ```
 
 | Export | Description |
@@ -60,11 +61,12 @@ __version__ = "1.1.0"
 | `KeyValueTuple` | `NamedTuple` with `.key` and `.value` attributes |
 | `task` | Decorator: retry, backoff, and timeout policy around a function |
 | `flow` | Decorator: run identity, pool, and audit log around a function |
-| `RunLog` | JSON-lines run-log writer and reader |
+| `RunLog` | JSON-lines run-log writer and reader (`records`, `filter`, `summarize`, `diff`) |
+| `DIFF_EXCLUDE` | Fields `RunLog.diff` drops by default: order, run identity, wall-clock, worker |
 | `TaskTimeoutError` | `TimeoutError` carrying `task`, `timeout`, `attempt` |
 | `ProcessGraphPool` | `GraphPool` subclass with worker processes (CPU-bound tasks) |
 | `ProcessDispatchError` | A payload could not be dispatched to a worker process |
-| `__version__` | `"1.1.0"` |
+| `__version__` | `"1.2.0"` |
 
 ---
 
@@ -996,6 +998,47 @@ from sequence_extensions.flow import RunLog
 for record in RunLog.records("runs/campaign-20261013T101500-1a2b3c4d.jsonl"):
     print(record["seq"], record.get("task"), record["status"])
 ```
+
+#### Reading toolkit — filter, summarize, diff
+
+All three accept a log path or a record list; `records` itself is unchanged.
+
+```python
+from sequence_extensions.flow import RunLog
+
+path = "runs/campaign-20261013T101500-1a2b3c4d.jsonl"
+
+RunLog.filter(path, task="simulate", status="error")  # selection
+RunLog.summarize(path)                                # compact account
+RunLog.diff(path, "runs/campaign-20261013T111500-2b3c4d5e.jsonl")  # determinism
+```
+
+**`filter(records, *, record=None, task=None, status=None, attempt=None)`** — records matching every given field (`None` = no constraint). `record` selects the kind (`"run_start"` / `"task"` / `"run_end"`); a record without a constrained field never matches. Input order preserved.
+
+**`summarize(records)`** — the compact account, one jsonable dict: run level `flow`, `run_id`, and `status` (the verdict; absent when the log has no `run_end` — an interrupted run), plus one entry per task in first-appearance order — `attempts` (executions; a skip is not an attempt), `statuses` in record order, the last recorded `status`, and `duration_ms` summed over executions.
+
+**`diff(left, right, *, exclude=DIFF_EXCLUDE)`** — the semantic comparison of two runs, the determinism check. Records are identified by *what ran* — task, inputs, attempt number (run records by kind) — never by record position, so a fan-out compares case by case. Fields dropped before comparing, by default (`DIFF_EXCLUDE`):
+
+| Dropped | Why |
+| --- | --- |
+| `seq` | completion order is wall-clock, not execution |
+| `run_id` | the run's own identity |
+| `start`, `end`, `started`, `ended`, `duration_ms` | wall time is not a determinism claim |
+| `worker` | which thread or process happened to run it |
+
+A future argument's `done` snapshot (`{"node": ..., "done": ...}`) is ignored for the same reason. Duplicate identities: the last record wins. The report is jsonable and stably ordered:
+
+```python
+{"equal": False,
+ "only_left":  [{"record": "task", "task": "simulate", "attempt": 2,
+                 "args": ["cases/a.csv"], "kwargs": {}}],
+ "only_right": [],
+ "changed":   [{"record": "task", "task": "simulate", "attempt": 1,
+                 "args": ["cases/a.csv"], "kwargs": {},
+                 "fields": {"status": {"left": "error", "right": "ok"}, ...}}]}
+```
+
+Pass `exclude=` a replacement set to compare more or less — e.g. `DIFF_EXCLUDE - {"duration_ms"}` to make durations count.
 
 ### Example campaign
 

@@ -2,7 +2,7 @@
 id: INFO-010
 type: info
 title: Use cases
-summary: The use-case catalog — eight capability leaves (CP-016 to CP-023) concretizing the INFO-001 goal
+summary: The use-case catalog — ten capability leaves (CP-016 to CP-025) concretizing the INFO-001 goal
 date: 2026-10-14
 status: current
 ---
@@ -21,6 +21,8 @@ The use cases concretize the goal in `INFO-001`. Each is a capability leaf, cite
 - `CP-021` — bound the concurrency: never more tasks at once than the chosen limit; one shared execution context may serve several campaigns.
 - `CP-022` — run CPU-bound tasks in parallel: compute-heavy work on several cores, same campaign, complete record.
 - `CP-023` — run flows concurrently in one process: several campaigns at the same time in one process, without interference.
+- `CP-024` — see what a run did: one compact account of a completed run — attempts, statuses, and time per task, plus the verdict — and selection of the records of interest.
+- `CP-025` — verify two runs executed identically: same code and inputs, same execution — completion order, clock readings, and worker identity never count.
 
 ## Owns
 

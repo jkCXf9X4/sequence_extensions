@@ -30,5 +30,7 @@ What users need: the use-case catalog — needs stated in user-observable terms,
 - **CP-021** [UC-21 Bound the concurrency](uc-21-bound-the-concurrency.md) — concurrent tasks never exceed a limit the caller chooses; a caller may instead supply one shared execution context that serves several campaigns
 - **CP-022** [UC-22 Run CPU-bound tasks in parallel](uc-22-run-cpu-bound-tasks-in-parallel.md) — compute-heavy tasks run on several cores of one machine at the same time, without rewriting the campaign or losing its record
 - **CP-023** [UC-23 Run flows concurrently in one process](uc-23-run-flows-concurrently-in-one-process.md) — several campaigns run at the same time in one process without interfering with each other
-- **INFO-010** [Use cases](use-cases.md) — The use-case catalog — eight capability leaves (CP-016 to CP-023) concretizing the INFO-001 goal
+- **CP-024** [UC-24 See what a run did](uc-24-see-what-a-run-did.md) — a completed run read back at a glance — per task the attempts, the statuses, and the time spent, plus the run's verdict — without reading raw records
+- **CP-025** [UC-25 Verify two runs executed identically](uc-25-verify-two-runs-executed-identically.md) — same code and same inputs must execute the same — every task, every attempt, same outcomes — with completion order, clock readings, and worker identity never counting as differences
+- **INFO-010** [Use cases](use-cases.md) — The use-case catalog — ten capability leaves (CP-016 to CP-025) concretizing the INFO-001 goal
 <!-- pb:index:end -->

@@ -48,6 +48,12 @@ The flow layer (`sequence_extensions.flow`) is the audit-first engine, built on 
 - Dependencies resolve in the parent: a failed dependency skips the dependent without a process round-trip.
 - `TaskTimeoutError` crosses the boundary intact (custom `__reduce__`).
 
+## Reading the log
+
+- `RunLog.records` reads a log back; `filter` selects records; `summarize` is the compact account (`CP-024`); `diff` compares two runs (`CP-025`). All three accept a log path or a record list; the report is jsonable and stably ordered.
+- Diff identifies task records by task, inputs, and attempt number (run records by kind) — never by position; duplicate identities: last wins.
+- `DIFF_EXCLUDE` drops record order, run identity, and wall-clock/worker fields before comparing — wall time is not a determinism claim; a future argument's `done` snapshot is ignored for the same reason.
+
 ## Accepted limits
 
 - Drain waits for every submitted task; a task that can hang needs `timeout=`.

@@ -7,6 +7,7 @@ stream.
 
 | Date | ID | Decision | Layers | Status | Record |
 |---|---|---|---|---|---|
+| 2026-10-14 | DR-012 | Run-log reading toolkit — filter, summarize, diff | product, architecture, implementation, verification | accepted | `DR-012` |
 | 2026-10-14 | DR-011 | Deliverables live in architecture; the product layer is needs only | product, architecture | accepted | `DR-011` |
 | 2026-10-14 | DR-010 | Use cases are need statements, not solution descriptions | product, architecture | accepted | `DR-010` |
 | 2026-10-14 | DR-009 | Re-author intent and product layers around the shipped direction | intent, product | accepted | `DR-009` |

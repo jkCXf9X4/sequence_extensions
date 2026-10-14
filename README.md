@@ -276,7 +276,7 @@ Semantics, in one list:
 - **Retries and timeouts are task attributes**: `retries=2` means up to three attempts; `timeout=30` bounds one attempt and raises `TaskTimeoutError` (a `TimeoutError` naming the task). Every attempt is one record in the log.
 - **Futures as arguments are dependency edges** — any DAG shape, diamonds included; cycles raise at submit time.
 - **Drain-on-return**: the flow returns only after every submitted task settles. A failed flow cancels its pending tasks (recorded `skipped`), waits for the running ones, and re-raises.
-- **The run log** (default `runs/<run_id>.jsonl`, one JSON object per line) records `run_start`, every task attempt (`ok` / `error` / `timeout` / `skipped`), and `run_end`. Paths log as path plus sha256 — bulky payloads return a `Path` by convention and never bloat the log. Read it back with `RunLog.records(path)`.
+- **The run log** (default `runs/<run_id>.jsonl`, one JSON object per line) records `run_start`, every task attempt (`ok` / `error` / `timeout` / `skipped`), and `run_end`. Paths log as path plus sha256 — bulky payloads return a `Path` by convention and never bloat the log. Read it back with `RunLog.records(path)`, see it at a glance with `RunLog.summarize(path)`, select with `RunLog.filter(...)`, and prove two runs executed identically with `RunLog.diff(a, b)` — record order, wall-clock, and worker identity never count as differences.
 - **Concurrent flows are safe in one process** — pool exit cancels only that pool's own nodes. CPU-bound campaigns swap threads for processes:
 
 ```python

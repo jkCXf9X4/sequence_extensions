@@ -23,7 +23,7 @@ status: current
 - **`flow`** — the flow engine: parallel, deterministic, audited (`INFO-011`).
   - `@task` — retry (`retries`), backoff (`retry_delay_seconds`), and `timeout` policy around a function.
   - `@flow` — run identity, bounded or caller-owned pool, JSON-lines run log.
-  - `RunLog` — writer and reader for the run log; `jsonable` serialization policy.
+  - `RunLog` — writer and reader for the run log: `records`, plus the reading toolkit — `filter`, `summarize` (the compact account, `CP-024`), `diff` (the determinism check, `CP-025`); `jsonable` serialization policy.
   - `ProcessGraphPool` — a `GraphPool` subclass running tasks in worker processes (`CP-022`); `ProcessDispatchError` — a payload could not reach a worker.
   - `TaskTimeoutError` — a `TimeoutError` naming the task.
 
@@ -34,7 +34,7 @@ Root re-exports (`sequence_extensions.__all__`):
 - `ext`: `list_ext`, `dict_ext`, `gen_ext`, `KeyValueTuple`.
 - `graph`: `GraphFuture`, `GraphPool`, `graph_future`.
 
-The `flow` package: `from sequence_extensions.flow import task, flow, RunLog, TaskTimeoutError, ProcessGraphPool, ProcessDispatchError`.
+The `flow` package: `from sequence_extensions.flow import task, flow, RunLog, TaskTimeoutError, ProcessGraphPool, ProcessDispatchError, DIFF_EXCLUDE`.
 
 ## Out of scope
 
