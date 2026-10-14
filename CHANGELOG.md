@@ -33,6 +33,17 @@ reading toolkit (`IMP-022`).
 - All three accept a log path or a record list; `records` itself is
   unchanged. `DIFF_EXCLUDE` is exported for composing a custom
   `exclude=` set.
+- **e2e reference harness** (`tests/e2e/`) — two deterministic mock
+  flows (a retrying fan-out pipeline with a verdict artifact, and a
+  failing one with dependency skips) run against a committed reference
+  (`tests/e2e/ref/`): logs compared with `RunLog.diff`, artifacts
+  byte-for-byte.  The run id is pinned per flow and the scratch
+  (`tests/e2e/out/`, one stable subtree per flow) is versioned, so
+  repeated runs leave only timing-field differences — no file churn.
+  A failure means behavior changed between versions;
+  `UPDATE_REF=1 python -m pytest tests/e2e` regenerates the reference
+  after an intended change.  The engine proves its own determinism
+  claim.
 
 ## [1.1.0] - 2026-10-14
 

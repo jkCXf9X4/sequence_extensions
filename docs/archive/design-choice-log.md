@@ -7,6 +7,8 @@ stream.
 
 | Date | ID | Decision | Layers | Status | Record |
 |---|---|---|---|---|---|
+| 2026-10-14 | DR-014 | e2e harness under tests — versioned scratch, pinned run id | verification, implementation | accepted | `DR-014` |
+| 2026-10-14 | DR-013 | e2e reference harness — version comparison by RunLog.diff | verification, implementation | accepted | `DR-013` |
 | 2026-10-14 | DR-012 | Run-log reading toolkit — filter, summarize, diff | product, architecture, implementation, verification | accepted | `DR-012` |
 | 2026-10-14 | DR-011 | Deliverables live in architecture; the product layer is needs only | product, architecture | accepted | `DR-011` |
 | 2026-10-14 | DR-010 | Use cases are need statements, not solution descriptions | product, architecture | accepted | `DR-010` |

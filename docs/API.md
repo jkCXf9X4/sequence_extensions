@@ -1009,7 +1009,7 @@ from sequence_extensions.flow import RunLog
 path = "runs/campaign-20261013T101500-1a2b3c4d.jsonl"
 
 RunLog.filter(path, task="simulate", status="error")  # selection
-RunLog.summarize(path)                                # compact account
+RunLog.summarize(path)  # compact account
 RunLog.diff(path, "runs/campaign-20261013T111500-2b3c4d5e.jsonl")  # determinism
 ```
 

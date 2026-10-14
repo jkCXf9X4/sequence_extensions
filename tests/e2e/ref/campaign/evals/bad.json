@@ -1,0 +1,6 @@
+{
+  "case": "bad.csv",
+  "passed": true,
+  "tolerance": 100.0,
+  "value": -2
+}

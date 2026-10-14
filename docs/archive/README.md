@@ -38,6 +38,13 @@ Records live in the cold-storage archive; extract one with `pb archive read <ID>
 - **DR-007** — Substrate reopen — pool-scoped cancellation and a public bind · accepted · 2026-10-14 · `DR-007`
   GraphPool.__exit__ cancels only the pool's own nodes (the global _LIVE_NODES sweep is removed) and GraphPool.bind(gf) becomes the public bind-without-results; the flow layer drops its private _bind_graph call
 
+### Verification
+
+- **DR-013** — e2e reference harness — version comparison by RunLog.diff · accepted · 2026-10-14 · `DR-013`
+  Two deterministic mock flows (e2e/flows.py) run against a committed reference (e2e/ref) of logs and artifact trees; RunLog.diff is the comparison, UPDATE_REF regenerates, and a failure means behavior changed between versions
+- **DR-014** — e2e harness under tests — versioned scratch, pinned run id · accepted · 2026-10-14 · `DR-014`
+  The e2e harness moves under tests/e2e; its scratch (out/, one stable subtree per flow) is versioned instead of ignored, and the run id is pinned per flow so repeated runs leave only timing-field differences — no file churn
+
 ### Operation
 
 - **DR-003** — Breakdown restructure: decision archive, references, implemented IMPs · accepted · 2026-10-10 · `DR-003`
