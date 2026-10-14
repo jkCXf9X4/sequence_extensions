@@ -5,8 +5,8 @@ Current-state record for sequence_extensions: higher-order function extensions f
 ## The Seven Layers
 
 - `00-intent/` — why does the project exist, who is it for?
-- `01-product/` — what is delivered, out of scope?
-- `02-architecture/` — how are deliverables, evidence, and work organized?
+- `01-product/` — what do users need?
+- `02-architecture/` — what is delivered, and how is it organized?
 - `03-implementation/` — with what concrete assets is it realized?
 - `04-verification/` — how do we know it satisfies the requirements?
 - `05-operation/` — how do authors run, maintain, release?

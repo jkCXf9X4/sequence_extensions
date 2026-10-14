@@ -2,8 +2,8 @@
 id: CP-021
 type: capability
 title: UC-21 Bound the concurrency
-summary: max_workers sizes the run pool; a caller-owned GraphPool is accepted and never settled by the flow
-date: 2026-10-13
+summary: concurrent tasks never exceed a limit the caller chooses; a caller may instead supply one shared execution context that serves several campaigns
+date: 2026-10-14
 status: current
 ---
 
@@ -12,31 +12,13 @@ status: current
 ## Scenario
 
 - A licence server allows eight simulators; the campaign must not exceed eight concurrent tasks.
-
-## API
-
-```python
-@flow(max_workers=8)
-def campaign(cases_dir): ...
-
-
-# or: supply the pool yourself
-from sequence_extensions.graph import GraphPool
-
-with GraphPool(max_workers=8) as shared:
-    campaign_a = flow_a(pool=shared)
-    campaign_b = flow_b(pool=shared)
-```
-
-- `max_workers` sizes the run's thread pool (default 16).
-- A caller-owned `GraphPool` is accepted: the flow submits on it and never settles it — the owner owns its lifecycle.
-- On failure, a caller-owned pool is drained, not cancelled; the flow cancels only its own pool's pending nodes.
+- A caller may bring one execution context and share it across campaigns; the campaigns must leave it usable.
 
 ## Acceptance
 
-- `max_workers=1` serializes two 0.1 s tasks to at least 0.2 s.
-- Two sequential flows share one caller-owned pool; it stays usable after each.
-- A non-pool `pool=` value raises `TypeError` at decoration.
+- A limit of one serializes two 0.1 s tasks to at least 0.2 s.
+- Two sequential campaigns share one caller-supplied execution context; it stays usable after each.
+- A shared-context value the campaign cannot use is rejected when the campaign is defined.
 
 ## Evidence
 
@@ -45,8 +27,10 @@ with GraphPool(max_workers=8) as shared:
 - `tests/flow/test_flow.py::test_caller_owned_pool_is_drained_not_settled_on_error`
 
 ## Owns
-- Pool sizing and ownership rules.
+
+- The bounded-concurrency need and shared-context ownership.
 
 ## Excludes
-- The substrate pool itself: `INFO-011`.
-- Sequential-flows limitation: `INFO-011` accepted limits.
+
+- How the need is met: `INFO-002` (shipped surface), `INFO-011` (engine design).
+- Independent tasks at the same time: `CP-017`.

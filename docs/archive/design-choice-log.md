@@ -7,6 +7,8 @@ stream.
 
 | Date | ID | Decision | Layers | Status | Record |
 |---|---|---|---|---|---|
+| 2026-10-14 | DR-011 | Deliverables live in architecture; the product layer is needs only | product, architecture | accepted | `DR-011` |
+| 2026-10-14 | DR-010 | Use cases are need statements, not solution descriptions | product, architecture | accepted | `DR-010` |
 | 2026-10-14 | DR-009 | Re-author intent and product layers around the shipped direction | intent, product | accepted | `DR-009` |
 | 2026-10-14 | DR-008 | ProcessGraphPool — a process-pool executor for CPU-bound tasks | product, architecture, implementation, verification | accepted | `DR-008` |
 | 2026-10-14 | DR-007 | Substrate reopen — pool-scoped cancellation and a public bind | architecture, implementation, verification | accepted | `DR-007` |

@@ -2,8 +2,8 @@
 id: CP-017
 type: capability
 title: UC-17 Run independent tasks concurrently
-summary: task.submit() maps a list comprehension onto the run pool; default 16 workers; flow returns only after drain
-date: 2026-10-13
+summary: independent tasks inside one campaign run at the same time; the campaign returns only once every task has finished
+date: 2026-10-14
 status: current
 ---
 
@@ -12,23 +12,15 @@ status: current
 ## Scenario
 
 - Six simulations, each 0.15 s of work. The campaign must run them at once, not in series.
-
-## API
-
-```python
-sims = [simulate.submit(c) for c in cases]  # concurrent map
-verdict = aggregate([s.result() for s in sims])
-```
-
-- `submit()` schedules the task on the run's pool and returns a `GraphFuture`.
-- Pool default is 16 workers; `@flow(max_workers=...)` sizes it.
-- Drain-on-return: the flow returns only after every submitted task settles, so the log is complete.
+- Each simulation is independent: none needs another's result.
+- The campaign must not return while any of its work is still running.
 
 ## Acceptance
 
 - Wall time for six parallel 0.15 s tasks stays under 0.6 s; sequential needs at least 0.9 s.
-- `max_workers=1` serializes: two 0.1 s tasks take at least 0.2 s.
-- Task records carry the pool worker name.
+- A concurrency limit of one serializes: two 0.1 s tasks take at least 0.2 s.
+- Each attempt's record names the worker that ran it.
+- The campaign returns only after every task it launched has finished.
 
 ## Evidence
 
@@ -38,8 +30,11 @@ verdict = aggregate([s.result() for s in sims])
 - `tests/flow/test_acceptance.py` — parallelism assertion on the campaign.
 
 ## Owns
-- Concurrent submission and drain semantics.
+
+- The concurrent-independent-tasks need and its wall-time acceptance.
 
 ## Excludes
-- Pool sizing and ownership: `CP-021`.
-- Dependency edges: `CP-018`.
+
+- How the need is met: `INFO-002` (shipped surface), `INFO-011` (engine design).
+- Concurrency limits and shared-context ownership: `CP-021`.
+- Dependency ordering: `CP-018`.

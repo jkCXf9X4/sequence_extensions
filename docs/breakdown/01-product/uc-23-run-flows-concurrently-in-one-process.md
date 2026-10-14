@@ -2,7 +2,7 @@
 id: CP-023
 type: capability
 title: UC-23 Run flows concurrently in one process
-summary: pool-scoped cancellation - a pool's exit cancels only its own nodes, so flows run side by side in one process
+summary: several campaigns run at the same time in one process without interfering with each other
 date: 2026-10-14
 status: current
 ---
@@ -11,26 +11,13 @@ status: current
 
 ## Scenario
 
-- A driver or server embeds the engine and runs two campaigns at the same time, in one process.
-- Each flow owns its pool by default; a caller may share one caller-owned pool across flows.
-
-## API
-
-```python
-from concurrent.futures import ThreadPoolExecutor
-
-with ThreadPoolExecutor(max_workers=2) as ex:  # two flows, side by side
-    f1 = ex.submit(flow_a)
-    f2 = ex.submit(flow_b)
-```
-
-- A pool's exit cancels only the nodes bound to that pool (`DR-007`).
-- A shared caller-owned pool serializes binds; the owner owns the lifecycle (`CP-021`).
+- A program runs two campaigns at the same time, in one process — for example a server handling two requests.
+- Each campaign manages its own work by default; a caller may also share one execution context across campaigns.
 
 ## Acceptance
 
-- Two flows running concurrently in one process both complete; both logs close clean.
-- Exiting one pool spares another pool's pending nodes; the spared node still completes.
+- Both campaigns complete; each leaves a complete record of its run.
+- Stopping one campaign's work does not stop the other's; the spared work still completes.
 
 ## Evidence
 
@@ -40,9 +27,9 @@ with ThreadPoolExecutor(max_workers=2) as ex:  # two flows, side by side
 
 ## Owns
 
-- Pool-scoped cancellation semantics and concurrent-flow safety.
+- The concurrent-campaign need and its interference-freedom acceptance.
 
 ## Excludes
 
-- Pool sizing and ownership rules: `CP-021`.
-- The substrate scheduler and unbound-node semantics: `INFO-011`.
+- How the need is met: `INFO-002` (shipped surface), `INFO-011` (engine design).
+- Concurrency limits and shared-context ownership: `CP-021`.

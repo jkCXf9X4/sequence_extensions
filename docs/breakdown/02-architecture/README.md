@@ -1,14 +1,14 @@
 # 02-architecture — Architecture
 
-How the system is organized: component decomposition, data and message flow, interfaces, and structural decisions.
+What is delivered and how it is organized: the public surface, component decomposition, data and message flow, interfaces, and structural decisions.
 
 ## Ask
 
-"How is the system organized?" — the three subpackages, their dependency order, the data flow, and the interface contracts.
+"What is delivered, and how is it organized?" — the three subpackages, the public surface, the data flow, and the interface contracts.
 
 ## When to Read
 
-- Before adding or changing a component or an interface.
+- Before adding or changing a component, the public surface, or an interface.
 - When tracing how a value flows from input to output.
 
 ## Boundary
@@ -22,6 +22,7 @@ How the system is organized: component decomposition, data and message flow, int
 
 <!-- pb:index:start -->
 <!-- GENERATED FILE — do not edit. Regenerate with pb-registers. -->
+- **INFO-002** [Deliverables](deliverables.md) — What sequence_extensions delivers — three subpackages, the public API surface, and explicit out-of-scope items
 - **INFO-003** [Components](components.md) — Component decomposition of ext/, graph/, flow/ — responsibilities, data flow, and interface contracts
 - **INFO-011** [Flow engine — decorators over the graph substrate](flow-engine-decorators-over-the-graph-substrate.md) — The flow layer wraps plain functions with @task policy and @flow wiring; futures as arguments are dependency edges; the run log is the executed truth of a run
 <!-- pb:index:end -->

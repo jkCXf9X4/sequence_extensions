@@ -2,8 +2,8 @@
 id: CP-016
 type: capability
 title: UC-16 Define a flow in Python
-summary: A campaign is decorated functions — @flow and @task; no schema, no XML, plain calls run sequential
-date: 2026-10-13
+summary: an engineer authors a campaign as ordinary Python — functions, calls, returns; no schema, no XML
+date: 2026-10-14
 status: current
 ---
 
@@ -13,37 +13,13 @@ status: current
 
 - An engineer authors a sweep campaign as ordinary Python: discover cases, simulate each, aggregate one verdict.
 - No schema, no registry, no XML. The module is the workflow; functions are the actions.
-
-## API
-
-```python
-from pathlib import Path
-from sequence_extensions.flow import flow, task
-
-
-@task(retries=2, retry_delay_seconds=0.1, timeout=30.0)
-def simulate(case: Path) -> dict: ...
-
-
-def aggregate(evaluations: list) -> dict: ...  # plain function
-
-
-@flow
-def campaign(cases_dir: Path) -> dict:
-    cases = sorted(cases_dir.glob("*.csv"))  # plain call: sequential
-    sims = [simulate.submit(c) for c in cases]  # concurrent map
-    return aggregate([s.result() for s in sims])
-```
-
-- `@task` wraps a function; called directly it runs inline in the caller's thread.
-- `@flow` wraps the campaign function; it adds run identity, pool, and run log.
-- Undecorated helpers stay plain functions — fan-in, gates, and drivers are user code.
+- A task must also work alone, outside any campaign, like any other function.
 
 ## Acceptance
 
-- A flow call returns the campaign function's return value.
-- A task called outside a flow runs and returns its value, unlogged.
-- Decoration validates policy: negative `retries`, negative delay, or non-positive `timeout` raise `ValueError`.
+- Calling the campaign runs it and returns the campaign's own result.
+- A task used outside a campaign still runs and returns its value; it leaves no record.
+- An impossible policy choice is rejected when the task is defined, before any run starts.
 
 ## Evidence
 
@@ -52,9 +28,12 @@ def campaign(cases_dir: Path) -> dict:
 - `tests/flow/test_acceptance.py` — the campaign end to end.
 
 ## Owns
-- Authoring shape: decorators, plain calls, plain helpers.
+
+- The author-in-Python need and its acceptance.
 
 ## Excludes
-- Concurrency semantics: `CP-017`.
-- Retry and timeout policy: `CP-019`.
-- The audit log: `CP-020`.
+
+- How the need is met: `INFO-002` (shipped surface), `INFO-011` (engine design).
+- Running tasks at the same time: `CP-017`.
+- Retry and wall-budget policy: `CP-019`.
+- The run's record: `CP-020`.

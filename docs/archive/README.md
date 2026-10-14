@@ -20,6 +20,10 @@ Records live in the cold-storage archive; extract one with `pb archive read <ID>
 
 - **DR-008** — ProcessGraphPool — a process-pool executor for CPU-bound tasks · accepted · 2026-10-14 · `DR-008`
   A GraphPool subclass driving a ProcessPoolExecutor behind the existing pool= seam; workers buffer run-log records and the parent writes them at future completion
+- **DR-010** — Use cases are need statements, not solution descriptions · accepted · 2026-10-14 · `DR-010`
+  the eight use-case leaves (CP-016 to CP-023) re-authored solution-agnostic — scenario and acceptance in user-observable terms; API names, parameters, mechanisms, and code blocks move out to deliverables (INFO-002), architecture (INFO-003, INFO-011), and the API reference; IDs stable
+- **DR-011** — Deliverables live in architecture; the product layer is needs only · accepted · 2026-10-14 · `DR-011`
+  INFO-002 (the shipped-surface listing) relocated from 01-product to 02-architecture, completing the needs/solution split — the product layer answers only what users need; layer questions and README prose restated
 
 ### Architecture
 

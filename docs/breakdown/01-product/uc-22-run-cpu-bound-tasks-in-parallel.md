@@ -2,7 +2,7 @@
 id: CP-022
 type: capability
 title: UC-22 Run CPU-bound tasks in parallel
-summary: ProcessGraphPool behind the pool= seam swaps worker threads for processes; picklable tasks parallelize past the GIL, records replay in the parent
+summary: compute-heavy tasks run on several cores of one machine at the same time, without rewriting the campaign or losing its record
 date: 2026-10-14
 status: current
 ---
@@ -11,45 +11,27 @@ status: current
 
 ## Scenario
 
-- A campaign of pure-Python computations sees no speedup from `submit()` on the default thread pool: the GIL serializes CPU-bound bodies.
-- The author swaps the executor, not the code: `@flow(pool=ProcessGraphPool())` runs the same tasks in worker processes.
-
-## API
-
-```python
-from sequence_extensions.flow import ProcessGraphPool, flow, task
-
-
-@task
-def crunch(n: int) -> int: ...
-
-
-with ProcessGraphPool(max_workers=4) as pool:
-
-    @flow(pool=pool, log="runs")
-    def campaign(counts: list) -> list:
-        futures = [crunch.submit(n) for n in counts]
-        return [f.result() for f in futures]
-```
-
-- Same bind/result/exit surface as `GraphPool` (`DR-008`); `max_workers` defaults to the CPU count.
-- Tasks and arguments must be picklable: module-level functions, plain data. An unpicklable payload settles its node with `ProcessDispatchError` and one `skipped` record, reason `dispatch failed`.
+- A campaign of pure-Python computations sees no speedup from many threads: one process serializes compute-bound work.
+- The need is several cores at work — same campaign, same complete record, one machine.
 
 ## Acceptance
 
-- Two CPU-bound tasks on two processes beat the GIL-serialized wall (wall-time test with generous margin).
-- Worker attempt records are buffered in the worker and written by the flow before `run_end`; the log is complete on return.
-- A failed dependency skips the dependent in the parent — no process round-trip.
-- `TaskTimeoutError` crosses the process boundary intact (task, timeout, attempt preserved).
+- Two compute-heavy tasks on two cores beat the one-core wall time by a wide margin.
+- The record is complete the moment the campaign returns, including attempts that ran in other processes.
+- A task whose dependency failed never starts; it gets one record marking it skipped.
+- A budget failure from another process still names its task and its attempt.
+- Work that cannot be moved to another process is recorded skipped at once.
 
 ## Evidence
 
 - `tests/flow/test_process_pool.py` — results, retry and error record replay, dependency skip, dispatch failure, timeout transport, exit cancellation, wall-time gain.
 
 ## Owns
-- The process-pool capability and its pickling contract.
+
+- The several-cores need and its wall-time and record acceptance.
 
 ## Excludes
-- Thread-pool semantics: `CP-017`, `CP-021`.
-- The recipe pattern for cluster jobs: `INFO-012`.
-- Engine limits: `INFO-011`.
+
+- How the need is met: `INFO-002` (shipped surface), `INFO-011` (engine design).
+- Thread-mode concurrency and limits: `CP-017`, `CP-021`.
+- Running beyond one machine: `INFO-012`.

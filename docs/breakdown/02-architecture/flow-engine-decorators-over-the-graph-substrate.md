@@ -15,12 +15,14 @@ The flow layer (`sequence_extensions.flow`) is the audit-first engine, built on 
 
 - `@task` wraps a function: plain call runs inline (sequential); `.submit()` schedules on the run's pool.
 - `@flow` wraps a function: run identity, a `GraphPool` (owned or caller-supplied), and a JSON-lines run log.
+- Undecorated helpers stay plain functions; fan-in, gates, and drivers are user code.
 - `runlog` writes one record per event: `run_start`, one per task attempt, `run_end`.
 - `_context` carries the run (identity, log, pool, submitted nodes) in a `ContextVar`; workers and attempt threads restore it — `ContextVar` values do not cross threads on their own.
 - `process_pool` — `ProcessGraphPool`, a `GraphPool` subclass on a `ProcessPoolExecutor` (`CP-022`): same bind/result/exit surface, worker processes instead of threads.
 
 ## Semantics
 
+- Decoration validates policy: negative `retries`, negative `retry_delay_seconds`, or non-positive `timeout` raise `ValueError`.
 - Retry: attempt loop inside the task wrapper; `retries` extra attempts, `retry_delay_seconds` backoff. A retrying task holds its pool worker through the sleep.
 - Timeout: `timeout` bounds one attempt; the attempt runs in its own thread joined with the budget. Threads cannot be preempted — a timed-out attempt is abandoned as a daemon, its late result discarded.
 - `TaskTimeoutError` (a `TimeoutError` naming the task) surfaces once attempts are exhausted.
@@ -34,6 +36,8 @@ The flow layer (`sequence_extensions.flow`) is the audit-first engine, built on 
 - A flow returns only after every submitted task settles (drain), so the log is complete on return.
 - A failed flow cancels its own pool's pending tasks (recorded `skipped`), waits for running ones, records `run_end` error.
 - A caller-owned pool is never settled: success and failure both drain; the owner owns the lifecycle.
+- A non-pool `pool=` value raises `TypeError` at decoration.
+- Concurrent binds on one shared pool serialize; the graph walk keeps pool-level state.
 - Default log: `runs/<run_id>.jsonl` under the working directory; `log=` picks a directory; `log=None` disables.
 - Concurrent flows in one process are safe: pool exit cancels only that pool's own nodes (`DR-007`).
 

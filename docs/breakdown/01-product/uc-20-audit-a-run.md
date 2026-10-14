@@ -2,8 +2,8 @@
 id: CP-020
 type: capability
 title: UC-20 Audit a run
-summary: One JSON-lines file per run records run_start, every task attempt, skipped nodes, and run_end; paths log as path plus sha256
-date: 2026-10-13
+summary: every run leaves one complete, ordered record — each attempt, each skip, and the run's verdict, readable with plain tools
+date: 2026-10-14
 status: current
 ---
 
@@ -12,28 +12,15 @@ status: current
 ## Scenario
 
 - A verdict must be defensible: which case ran, which failed on which attempt, what value each produced, and when.
-
-## API
-
-```python
-@flow(log="runs")  # default: runs/<run_id>.jsonl under cwd
-def campaign(cases_dir): ...
-```
-
-- One JSON-lines file per run; every record gets a monotonic `seq` and `schema`.
-- `run_start`: identity, flow name, package version, flow arguments.
-- One `task` record per attempt: status `ok` (with result), `error`, `timeout` (with error), or `skipped` (attempt 0 — dependency failed, or cancelled by the failed flow).
-- `run_end`: status, duration, result or error.
-- Paths log as `{"path": ..., "sha256": ...}` — bulky payloads return a `Path` by convention, never inlined.
-- `summary=True` logs counts for long containers.
-- The log is complete the moment the flow returns: drain precedes `run_end`.
+- The record must outlive the run: readable later, with standard tools, one entry per line.
 
 ## Acceptance
 
-- The campaign run log holds 15 records: 2 bookends, 7 simulate attempts (6 cases plus one retry), 6 evaluations.
-- Attempt numbering per case is correct; a failed first attempt records `error` then `ok`.
-- A node whose dependency failed gets one `skipped` record.
-- The log is diffable, greppable JSON; readable with `RunLog.records(path)`.
+- The campaign's record holds 15 entries: 2 bookends, 7 simulate attempts (6 cases plus one retried), 6 evaluations.
+- Each case's attempts are numbered in order; a failed first attempt is recorded, then the successful one.
+- A task whose dependency failed gets exactly one record marking it skipped.
+- The record is complete the moment the campaign returns.
+- The record is plain text, one entry per line, greppable and diffable.
 
 ## Evidence
 
@@ -42,8 +29,11 @@ def campaign(cases_dir): ...
 - `tests/flow/test_acceptance.py` — full log assertions.
 
 ## Owns
-- The run-log record kinds and serialization policy.
+
+- The audit need and its record-completeness acceptance.
 
 ## Excludes
-- Retry semantics that produce the attempts: `CP-019`.
+
+- How the need is met: `INFO-002` (shipped surface), `INFO-011` (engine design).
+- The retry behavior that produces the attempts: `CP-019`.
 - Replay of a run: out of scope.
