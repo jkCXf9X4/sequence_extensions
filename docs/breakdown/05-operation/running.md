@@ -20,13 +20,13 @@ The product is a library plus one CLI (`INFO-002`): no service to deploy. Day-to
 
 ## Run
 
-- Use the Python API: `from sequence_extensions.flow import task, flow`
+- Use the Python API: `from sequence_extensions.flow import task, flow` — embedding a host application (`CP-027`)
 - A flow call writes its run log to `runs/<run_id>.jsonl` under the working directory (default); pass `log=` to choose the directory
 - CPU-bound campaigns run on `ProcessGraphPool` (`CP-022`); running at an HPC cluster follows the recipe pattern: `INFO-012`
 - Run from a config file, no driver script (`CP-026`): `flow-runner config.toml` (or `python -m sequence_extensions.flow_runner config.toml`)
   - The file selects the module and flow (`[run]`), sets inputs (`[inputs]`), tunes the engine (`[flow]`, `[task]`, `[pool]`)
   - `--flow NAME` overrides the selection; `--list` shows the flows in the module
-  - Exit codes: 0 ok, 1 flow failure, 2 usage or config error — cron, CI, SLURM can branch on them
+  - Exit codes: 0 ok, 1 flow failure, 2 usage or config error — cron, CI, SLURM can branch on them (`CP-028`)
   - The config file names a module to import; treat it as trusted code
 
 ## Test and lint
