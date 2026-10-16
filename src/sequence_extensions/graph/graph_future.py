@@ -15,6 +15,8 @@ import concurrent.futures
 import threading
 import weakref
 
+from sequence_extensions.config import UNSET, active_config
+
 # Every GraphPool still alive, so the atexit handler can shut down lazily
 # created executors of pools used without ``with``.
 _LIVE_POOLS = weakref.WeakSet()
@@ -265,8 +267,16 @@ class GraphPool:
     bounds concurrency.
     """
 
-    def __init__(self, max_workers: int = 16):
-        """Create a pool; the executor is created lazily on first use."""
+    def __init__(self, max_workers=UNSET):
+        """Create a pool; the executor is created lazily on first use.
+
+        ``max_workers`` defaults to the active configuration's
+        ``[pool].graph_max_workers`` (16 without a config — the built-in
+        default, unchanged).  Construct pools after ``configure()`` for
+        the config to apply, or pass ``max_workers`` explicitly.
+        """
+        if max_workers is UNSET:
+            max_workers = active_config().pool.graph_max_workers
         self.max_workers = max_workers
         self._executor = None
         self._shutdown = False

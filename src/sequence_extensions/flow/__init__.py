@@ -21,6 +21,14 @@ Typical shape::
         return aggregate([evaluate(s).result() ...])   # gather
 """
 
+from sequence_extensions.config import (
+    Config,
+    ConfigError,
+    active_config,
+    configure,
+    reset_config,
+    use_config,
+)
 from sequence_extensions.flow._context import RunContext, current_run
 from sequence_extensions.flow.flow import DEFAULT_LOG_DIR, flow
 from sequence_extensions.flow.process_pool import ProcessDispatchError, ProcessGraphPool
@@ -30,6 +38,8 @@ from sequence_extensions.flow.task import TaskFunction, TaskTimeoutError, task
 __all__ = [
     "DEFAULT_LOG_DIR",
     "DIFF_EXCLUDE",
+    "Config",
+    "ConfigError",
     "ProcessDispatchError",
     "ProcessGraphPool",
     "RunContext",
@@ -37,8 +47,12 @@ __all__ = [
     "SCHEMA_VERSION",
     "TaskFunction",
     "TaskTimeoutError",
+    "active_config",
+    "configure",
     "current_run",
     "flow",
     "jsonable",
+    "reset_config",
     "task",
+    "use_config",
 ]

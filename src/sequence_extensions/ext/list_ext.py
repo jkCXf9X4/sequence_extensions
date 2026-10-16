@@ -5,10 +5,10 @@ for mapping, filtering, windows, dict conversions, and more.
 """
 
 from collections import ChainMap, deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from functools import reduce
 from statistics import mean
-from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar, Union
+from typing import TYPE_CHECKING, Any, TypeVar
 
 if TYPE_CHECKING:
     from . import dict_ext
@@ -67,7 +67,8 @@ class list_ext(list):
         """
         if not iterables:
             return type(self)()
-        return type(self)(zip(self, *iterables))
+        # strict=False keeps classic zip semantics: stops at the shortest.
+        return type(self)(zip(self, *iterables, strict=False))
 
     def for_each(self, func: Callable[[T], Any]) -> None:
         """
@@ -123,7 +124,7 @@ class list_ext(list):
     def execute_or_default(
         func: Callable,
         default: Any = None,
-        exception: Union[type, tuple[type, ...]] = (IndexError, KeyError),
+        exception: type | tuple[type, ...] = (IndexError, KeyError),
     ) -> Any:
         """
         Try to execute function, return default if one of the expected
@@ -144,7 +145,7 @@ class list_ext(list):
             lambda: self[index], default=default, exception=(IndexError, TypeError)
         )
 
-    def first(self, func: Optional[Callable[[T], bool]] = None) -> T:
+    def first(self, func: Callable[[T], bool] | None = None) -> T:
         """
         filter list on func, return first item in the filtered list
         will raise IndexError if no item is found
@@ -158,9 +159,7 @@ class list_ext(list):
                 return x
         raise IndexError("no item found")
 
-    def first_or_default(
-        self, func: Optional[Callable[[T], bool]] = None, default: Any = None
-    ) -> Any:
+    def first_or_default(self, func: Callable[[T], bool] | None = None, default: Any = None) -> Any:
         """
         filter list on func, return first item in the filtered list,
         will return default if no item is found
@@ -169,7 +168,7 @@ class list_ext(list):
 
         return filtered.get_item_or_default(index=0, default=default)
 
-    def last(self, func: Optional[Callable[[T], bool]] = None) -> T:
+    def last(self, func: Callable[[T], bool] | None = None) -> T:
         """
         filter list on func, return last item in the filtered list
         will raise IndexError if no item is found
@@ -181,9 +180,7 @@ class list_ext(list):
                 return x
         raise IndexError("no item found")
 
-    def last_or_default(
-        self, func: Optional[Callable[[T], bool]] = None, default: Any = None
-    ) -> Any:
+    def last_or_default(self, func: Callable[[T], bool] | None = None, default: Any = None) -> Any:
         """
         filter list on func, return last item in the filtered list,
         will return default if no item is found
@@ -272,8 +269,8 @@ class list_ext(list):
 
     def to_dict_fn(
         self,
-        key_func: Optional[Callable[[T], Any]] = None,
-        value_func: Optional[Callable[[T], Any]] = None,
+        key_func: Callable[[T], Any] | None = None,
+        value_func: Callable[[T], Any] | None = None,
     ) -> "dict_ext":
         """
         Convert to a dict using key_func and value_func:
@@ -291,7 +288,7 @@ class list_ext(list):
 
         return dict_ext(f(i) for i in self)
 
-    def all(self, func: Optional[Callable[[T], bool]] = None) -> bool:
+    def all(self, func: Callable[[T], bool] | None = None) -> bool:
         """
         Check if all items fulfill the condition
 
@@ -301,7 +298,7 @@ class list_ext(list):
             return all(self)
         return all(func(x) for x in self)
 
-    def any(self, func: Optional[Callable[[T], bool]] = None) -> bool:
+    def any(self, func: Callable[[T], bool] | None = None) -> bool:
         """
         Check if at least one item fulfill the condition
 
@@ -329,7 +326,7 @@ class list_ext(list):
         """
         return len(self) == 1
 
-    def single(self, func: Optional[Callable[[T], bool]] = None) -> T:
+    def single(self, func: Callable[[T], bool] | None = None) -> T:
         """
         Returns the unique item fulfilling the condition, if more than one is
         found a ValueError will be raised

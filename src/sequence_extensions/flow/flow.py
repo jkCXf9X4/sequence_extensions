@@ -39,10 +39,12 @@ import functools
 import re
 import time
 import uuid
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
 
+from sequence_extensions import config
+from sequence_extensions.config import UNSET, active_config
 from sequence_extensions.flow._context import (
     RunContext,
     reset_current_run,
@@ -58,18 +60,19 @@ except ImportError:  # pragma: no cover - packaging safety net
     _PACKAGE_VERSION = "unknown"
 
 #: Default directory for run logs (relative to the current directory).
-DEFAULT_LOG_DIR = "runs"
+#: Kept as a re-export: the constant lives in :mod:`sequence_extensions.config`.
+DEFAULT_LOG_DIR = config.DEFAULT_LOG_DIR
 
 _LOG_PATH_TYPES = (str, Path)
 
 
 def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _new_run_id(flow_name: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", flow_name).strip("-") or "flow"
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     return f"{safe}-{stamp}-{uuid.uuid4().hex[:8]}"
 
 
@@ -162,12 +165,16 @@ def flow(
     fn=None,
     *,
     name: str | None = None,
-    max_workers: int = 16,
-    log: str | Path | None = DEFAULT_LOG_DIR,
-    summary: bool = False,
+    max_workers=UNSET,
+    log=UNSET,
+    summary=UNSET,
     pool: GraphPool | None = None,
 ):
     """Decorate a function as a flow: run identity + pool + audit log.
+
+    Keywords (``max_workers``, ``log``, ``summary``) left unset resolve
+    per call from the active configuration — see
+    :mod:`sequence_extensions.config`; an explicit keyword always wins.
 
     Keywords:
 
@@ -188,10 +195,16 @@ def flow(
     The function body is plain Python.  Tasks are called directly
     (sequential) or via ``task.submit()`` (concurrent); passing futures
     as submit arguments creates dependency edges.
+
+    The wrapper carries two attributes tooling can rely on:
+    ``__flow__`` (the flow name — how ``flow-runner`` discovers flows)
+    and ``last_run`` (a dict with ``run_id``, ``status``, ``log``,
+    ``duration_ms`` of the most recent call; concurrent calls to the
+    same flow race — last writer wins).
     """
 
     def _decorate(fn: Callable) -> Callable:
-        if log is not None and not isinstance(log, _LOG_PATH_TYPES):
+        if log is not UNSET and log is not None and not isinstance(log, _LOG_PATH_TYPES):
             raise TypeError(f"log must be a directory path or None, got {log!r}")
         if pool is not None and not isinstance(pool, GraphPool):
             raise TypeError(f"pool must be a GraphPool or None, got {pool!r}")
@@ -199,12 +212,22 @@ def flow(
 
         @functools.wraps(fn)
         def _wrapper(*args, **kwargs):
+            # Resolve unset keywords per call — the active configuration,
+            # or the built-in defaults without one.  Explicit keywords
+            # (closure values) keep winning.
+            cfg = active_config()
+            workers = max_workers if max_workers is not UNSET else cfg.flow.max_workers
+            log_dir = log if log is not UNSET else cfg.flow.log
+            summarize = summary if summary is not UNSET else cfg.flow.summary
+            if log_dir == "":  # the config-file spelling of "disabled"
+                log_dir = None
             run_id = _new_run_id(flow_name)
             runlog = None
-            if log is not None:
-                runlog = RunLog(Path(log) / f"{run_id}.jsonl", summary=summary)
+            if log_dir is not None:
+                runlog = RunLog(Path(log_dir) / f"{run_id}.jsonl", summary=summarize)
             ctx = RunContext(run_id=run_id, flow_name=flow_name, runlog=runlog)
             started = time.perf_counter()
+            status = "ok"
             if runlog is not None:
                 runlog.open()
                 runlog.write(
@@ -214,16 +237,17 @@ def flow(
                         "flow": flow_name,
                         "started": _utcnow(),
                         "version": _PACKAGE_VERSION,
-                        "args": [jsonable(a, summary=summary) for a in args],
-                        "kwargs": {k: jsonable(v, summary=summary) for k, v in kwargs.items()},
+                        "args": [jsonable(a, summary=summarize) for a in args],
+                        "kwargs": {k: jsonable(v, summary=summarize) for k, v in kwargs.items()},
                     }
                 )
-            owned_pool = None if pool is not None else GraphPool(max_workers=max_workers)
+            owned_pool = None if pool is not None else GraphPool(max_workers=workers)
             ctx.pool = pool if pool is not None else owned_pool
             token = set_current_run(ctx)
             try:
                 result = fn(*args, **kwargs)
             except BaseException as error:
+                status = "error"
                 if owned_pool is not None:
                     _settle(owned_pool)
                 else:
@@ -259,15 +283,24 @@ def flow(
                             "status": "ok",
                             "ended": _utcnow(),
                             "duration_ms": int((time.perf_counter() - started) * 1000),
-                            "result": jsonable(result, summary=summary),
+                            "result": jsonable(result, summary=summarize),
                         }
                     )
                 return result
             finally:
+                _wrapper.last_run = {
+                    "run_id": run_id,
+                    "flow": flow_name,
+                    "status": status,
+                    "log": str(runlog.path) if runlog is not None else None,
+                    "duration_ms": int((time.perf_counter() - started) * 1000),
+                }
                 reset_current_run(token)
                 if runlog is not None:
                     runlog.close()
 
+        _wrapper.__flow__ = flow_name
+        _wrapper.last_run = None
         return _wrapper
 
     if fn is None:

@@ -909,7 +909,7 @@ def campaign(items):
     return [f.result() for f in futures]
 ```
 
-- **`__init__(max_workers=None)`** — worker process count; `None` uses the executor's default (the CPU count).
+- **`__init__(max_workers=UNSET)`** — worker process count; `UNSET` (the default) resolves to the active configuration's `[pool] process_max_workers` — `None` without a config, the executor's own default (the CPU count). Construct after `configure()` or pass `max_workers` explicitly (resolution is at construction time).
 - **Picklable payloads:** tasks and arguments must survive `pickle` — module-level functions and plain data. `@task`-decorated module-level functions pickle (the raw function is aliased under a private module name at decoration). A lambda, a closure, or an unpicklable argument fails at dispatch: the node settles with `ProcessDispatchError` and the run log records `skipped` / `dispatch failed`.
 - **Run-log records replay in the parent:** a worker cannot write the flow's open log file, so the worker buffers its attempt records and the flow writes them before `run_end` — the log is still complete the moment the flow returns.
 - **Dependencies resolve in the parent:** a failed dependency skips the dependent without a process round-trip (same `skipped` record as thread mode).
@@ -939,6 +939,8 @@ def simulate(case): ...
 | `timeout` | `None` | wall budget for ONE attempt, in seconds |
 | `name` | function name | task name in the run log |
 
+- **Defaults are configurable**: an omitted keyword resolves per call — explicit keyword > active config (`[task]` in a `Config`, see [Configuration](#configuration)) > built-in default. Resolution happens at call time, so `configure()` in `main()` reaches module-level tasks.
+
 - **Plain call** — runs inline in the caller's thread (sequential): `simulate(case)`.
 - **`.submit(...)`** — schedules on the current run's pool, returns a `GraphFuture`; requires an active `@flow` (raises `RuntimeError` otherwise).
 - Futures may be passed as submit arguments (positional or keyword); they resolve to their results before the body runs. Any DAG shape, diamonds included; a cycle raises `ValueError("dependency cycle detected")` at submit time.
@@ -965,6 +967,10 @@ def campaign(cases_dir): ...
 | `summary` | `False` | log item counts for long containers instead of items |
 | `pool` | `None` | a caller-owned pool — a `GraphPool` (threads) or a `ProcessGraphPool` (processes); never settled by the flow |
 
+- **Defaults are configurable**: `max_workers`, `log`, and `summary` left unset resolve per call — explicit keyword > active config (`[flow]`, see [Configuration](#configuration)) > built-in default.
+- The wrapper carries `__flow__` (the flow name — how `flow-runner` discovers it) and `last_run` (a dict with `run_id`, `status`, `log`, `duration_ms` of the most recent call; concurrent calls race, last writer wins).
+
+
 - The body is ordinary Python: plain calls are sequential, `.submit()` calls are concurrent.
 - **Drain-on-return** — the flow returns only after every submitted task has settled, so the log is complete on return.
 - **Failure** — a failed flow cancels its own pool's pending tasks (each recorded `skipped`), waits for running ones, records `run_end` with `status: "error"`, and re-raises.
@@ -973,6 +979,79 @@ def campaign(cases_dir): ...
 - **Concurrent flows are safe in one process**: pool exit cancels only that pool's own nodes, so two flows — each on its own pool — can run side by side.
 - Nested flows work: an inner `@flow` gets its own run, pool, and log.
 - On a `ProcessGraphPool`, settle-time records (replayed worker records, skip records) are written by the flow before `run_end`; an unpicklable payload settles its node with `ProcessDispatchError` and records `skipped` / `dispatch failed`.
+
+### Configuration
+
+Every engine parameter can live outside the code, in a TOML file loaded into a `Config` and installed with `configure`. Resolution is per call and keyword-first: **explicit decorator keyword > active config > built-in default**.
+
+```python
+from sequence_extensions.flow import Config, configure, flow, task
+
+configure(Config.from_toml("config.toml"))
+
+
+@task  # retries / retry_delay_seconds / timeout from [task]
+@flow  # max_workers / log / summary from [flow]
+def campaign(cases_dir): ...
+```
+
+```toml
+# config.toml — every section and key is optional
+[flow]
+max_workers = 8            # default 16
+log = "output/runs"        # default "runs"; "" disables run logging
+summary = true             # default false
+
+[task]
+retries = 2                # default 0
+retry_delay_seconds = 0.5  # default 0.0
+timeout = 30.0             # default: omit (no timeout)
+
+[pool]
+graph_max_workers = 16     # GraphPool() default (default 16)
+process_max_workers = 4    # ProcessGraphPool() default; omit → CPU count
+
+[run]                      # flow-runner selection (unused by configure)
+module = "mypackage.flows"
+flow = "campaign"
+
+[inputs]                   # keyword arguments for the flow
+items = [1, 2, 3]
+```
+
+**`Config.from_toml(path)`** — parse and validate a TOML file. **`Config.from_dict(data, where=...)`** — build from a mapping (code, tests); `where` prefixes error messages. Both are strict: unknown sections and keys are errors (typo-proof), values are type-checked, ranges follow the same rules as the decorators. Every `Config` constructor validates — build one directly and bad values fail at construction. `log = ""` is the TOML spelling of "disabled" (TOML has no `null`) and normalizes to `None`; an omitted key keeps the built-in default.
+
+**`configure(config)`** — install `config` as the active configuration for the calling context; returns a reset token. **`reset_config(token)`** — restore. **`active_config()`** — read. **`use_config(config)`** — context manager: run a block under a configuration.
+
+Resolution mechanics worth knowing:
+
+- **Call time, not import time**: `configure()` in `main()` reaches module-level decorators regardless of import order.
+- **Threads**: the flow layer restores the active configuration in pool workers and timeout attempt threads around task bodies, so nested direct calls and `active_config()` reads see the submitting context.
+- **Processes**: `submit()` resolves the task policy in the submitting thread and ships concrete values across the boundary — worker processes never need the config.
+- **Pools constructed directly** (`GraphPool()`, `ProcessGraphPool()`) resolve at construction time: construct them after `configure()`, or pass `max_workers` explicitly.
+- **Determinism**: config values never enter run-log records; a run without `configure()` behaves exactly as before.
+
+### `flow-runner` — run a flow from the command line
+
+```text
+flow-runner config.toml                # run the configured flow
+flow-runner config.toml --flow report  # override the selection
+flow-runner config.toml --list         # flows in the module, with docstrings
+python -m sequence_extensions.flow_runner config.toml   # same thing
+```
+
+The runner loads and validates the whole config first, installs it as the active configuration, imports `[run] module`, scans it for the `__flow__` marker (no registry, no registration call), validates `[inputs]` against the flow's signature, and calls the flow with them as keyword arguments. It then prints the status, duration, log path, and result:
+
+```text
+$ flow-runner campaign.toml
+flow campaign: ok (1843 ms)
+log: runs/campaign-20261016T110258-b0e4a12e.jsonl
+result: {"count": 6, "mean_score": 0.71, "passed": 6, "all_passed": true}
+```
+
+- **Exit codes**: `0` run succeeded, `1` the flow raised, `2` usage or config error (missing file, invalid TOML, unknown key, no flow selected, inputs that do not match the signature).
+- **Inputs** are TOML values passed as keyword arguments — recorded in `run_start` by the existing serialization policy. Flows needing non-TOML inputs (open connections, custom objects) belong in a small `main.py` that calls them directly.
+- A config file names a module to import: treat it as trusted code.
 
 ### The run log — the executed truth
 

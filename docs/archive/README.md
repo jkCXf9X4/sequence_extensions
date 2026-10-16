@@ -26,6 +26,8 @@ Records live in the cold-storage archive; extract one with `pb archive read <ID>
   INFO-002 (the shipped-surface listing) relocated from 01-product to 02-architecture, completing the needs/solution split — the product layer answers only what users need; layer questions and README prose restated
 - **DR-012** — Run-log reading toolkit — filter, summarize, diff · accepted · 2026-10-14 · `DR-012`
   RunLog grows the reading side — filter selects, summarize condenses to the per-task account and verdict, diff compares two runs semantically (identity-keyed, timing excluded); IMP-022 implemented
+- **DR-015** — External configuration and flow-runner — TOML config, per-call resolution, module-scan discovery · accepted · 2026-10-16 · `DR-015`
+  Engine parameters resolve per call from a TOML Config installed by configure() — explicit keyword > config > built-in default — and flow-runner launches a flow by scanning [run].module for the __flow__ marker
 
 ### Architecture
 

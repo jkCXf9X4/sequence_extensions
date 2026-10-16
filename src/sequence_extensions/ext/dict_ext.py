@@ -3,8 +3,9 @@ dict_ext: an extended dict class with functional-style helpers
 (map, filter, reduce, ...) mirroring list_ext semantics.
 """
 
+from collections.abc import Callable
 from functools import reduce
-from typing import Any, Callable, NamedTuple, Optional
+from typing import Any, NamedTuple
 
 from .list_ext import list_ext
 
@@ -60,7 +61,7 @@ class dict_ext(dict):
 
         return cast(results)
 
-    def filter(self, func: Optional[Callable[[Any, Any], bool]] = None) -> "dict_ext":
+    def filter(self, func: Callable[[Any, Any], bool] | None = None) -> "dict_ext":
         """
         func(key, value) -> bool
 
@@ -195,7 +196,7 @@ class dict_ext(dict):
         """
         return type(self)({value: key for key, value in self.items()})
 
-    def first(self, func: Optional[Callable[[Any, Any], bool]] = None) -> KeyValueTuple:
+    def first(self, func: Callable[[Any, Any], bool] | None = None) -> KeyValueTuple:
         """
         Filter the dict on func(key, value), return the first (key, value) pair
         as a KeyValueTuple.
@@ -207,7 +208,7 @@ class dict_ext(dict):
 
         return KeyValueTuple(*results.to_list()[0])
 
-    def last(self, func: Optional[Callable[[Any, Any], bool]] = None) -> KeyValueTuple:
+    def last(self, func: Callable[[Any, Any], bool] | None = None) -> KeyValueTuple:
         """
         Filter the dict on func(key, value), return the last (key, value) pair
         as a KeyValueTuple.
@@ -219,7 +220,7 @@ class dict_ext(dict):
 
         return KeyValueTuple(*results.to_list()[-1])
 
-    def all(self, func: Optional[Callable[[Any, Any], bool]] = None) -> bool:
+    def all(self, func: Callable[[Any, Any], bool] | None = None) -> bool:
         """
         Check if all items fulfill the condition
 
@@ -233,7 +234,7 @@ class dict_ext(dict):
         results = self.map(func, cast=list_ext)
         return all(results)
 
-    def any(self, func: Optional[Callable[[Any, Any], bool]] = None) -> bool:
+    def any(self, func: Callable[[Any, Any], bool] | None = None) -> bool:
         """
         Check if at least one item fulfill the condition
 

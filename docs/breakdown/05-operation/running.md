@@ -9,20 +9,25 @@ status: current
 
 # Install, run, and maintain
 
-The product is a library (`INFO-002`): there is no service to deploy and no CLI to run. Day-to-day operation is install, test, lint, and release.
+The product is a library plus one CLI (`INFO-002`): no service to deploy. Day-to-day operation is install, run, test, lint, and release.
 
 ## Install
 
 - `pip install sequence-extensions` — from PyPI
 - `pip install .` — from a source checkout
 - `pip install -e ".[dev]"` — editable install with dev extras (pytest, pytest-cov, ruff)
-- Requires Python >= 3.9; the package has no runtime dependencies
+- Requires Python >= 3.11; the package has no runtime dependencies
 
 ## Run
 
 - Use the Python API: `from sequence_extensions.flow import task, flow`
 - A flow call writes its run log to `runs/<run_id>.jsonl` under the working directory (default); pass `log=` to choose the directory
 - CPU-bound campaigns run on `ProcessGraphPool` (`CP-022`); running at an HPC cluster follows the recipe pattern: `INFO-012`
+- Run from a config file, no driver script (`CP-026`): `flow-runner config.toml` (or `python -m sequence_extensions.flow_runner config.toml`)
+  - The file selects the module and flow (`[run]`), sets inputs (`[inputs]`), tunes the engine (`[flow]`, `[task]`, `[pool]`)
+  - `--flow NAME` overrides the selection; `--list` shows the flows in the module
+  - Exit codes: 0 ok, 1 flow failure, 2 usage or config error — cron, CI, SLURM can branch on them
+  - The config file names a module to import; treat it as trusted code
 
 ## Test and lint
 
@@ -34,7 +39,7 @@ The product is a library (`INFO-002`): there is no service to deploy and no CLI 
 
 ## CI and release
 
-- CI (`.github/workflows/ci.yml`) runs on push to `main` and on PRs: matrix Python 3.9 to 3.13, install dev extras, pytest with coverage, ruff check, ruff format check, `python -m build`
+- CI (`.github/workflows/ci.yml`) runs on push to `main` and on PRs: matrix Python 3.11 to 3.13, install dev extras, pytest with coverage, ruff check, ruff format check, `python -m build`
 - No Makefile and no release automation
 - Release is manual: bump `__version__` in `src/sequence_extensions/__init__.py`, record the change in `CHANGELOG.md` (Keep a Changelog, SemVer), merge after CI passes
 - `CONTRIBUTING.md` defines the PR process: branch from `main`, tests and lint pass, CHANGELOG updated under Unreleased

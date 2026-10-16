@@ -2,7 +2,7 @@
 id: INFO-010
 type: info
 title: Use cases
-summary: The use-case catalog — ten capability leaves (CP-016 to CP-025) concretizing the INFO-001 goal
+summary: The use-case catalog — eleven capability leaves (CP-016 to CP-026) concretizing the INFO-001 goal
 date: 2026-10-14
 status: current
 ---
@@ -23,6 +23,7 @@ The use cases concretize the goal in `INFO-001`. Each is a capability leaf, cite
 - `CP-023` — run flows concurrently in one process: several campaigns at the same time in one process, without interference.
 - `CP-024` — see what a run did: one compact account of a completed run — attempts, statuses, and time per task, plus the verdict — and selection of the records of interest.
 - `CP-025` — verify two runs executed identically: same code and inputs, same execution — completion order, clock readings, and worker identity never count.
+- `CP-026` — set a run's parameters outside the code: one TOML file tunes the engine, picks the flow, sets its inputs; explicit keywords keep winning; `flow-runner` launches it.
 
 ## Owns
 

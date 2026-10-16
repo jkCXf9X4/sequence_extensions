@@ -9,20 +9,30 @@ status: current
 
 # Flow engine — decorators over the graph substrate
 
-The flow layer (`sequence_extensions.flow`) is the audit-first engine, built on `graph.graph_future`. Locked in by `DR-005`; the substrate follow-ups (`bind`, pool-scoped cancellation) applied per `DR-007`; the process pool added per `DR-008`.
+The flow layer (`sequence_extensions.flow`) is the audit-first engine, built on `graph.graph_future`. Locked in by `DR-005`; the substrate follow-ups (`bind`, pool-scoped cancellation) applied per `DR-007`; the process pool added per `DR-008`; external configuration and the runner added per `DR-015`.
 
 ## Shape
 
 - `@task` wraps a function: plain call runs inline (sequential); `.submit()` schedules on the run's pool.
 - `@flow` wraps a function: run identity, a `GraphPool` (owned or caller-supplied), and a JSON-lines run log.
+- The `@flow` wrapper carries `__flow__` (the flow name, runner discovery) and `last_run` (a dict: `run_id`, `status`, `log`, `duration_ms`; concurrent calls race, last writer wins).
 - Undecorated helpers stay plain functions; fan-in, gates, and drivers are user code.
 - `runlog` writes one record per event: `run_start`, one per task attempt, `run_end`.
 - `_context` carries the run (identity, log, pool, submitted nodes) in a `ContextVar`; workers and attempt threads restore it — `ContextVar` values do not cross threads on their own.
 - `process_pool` — `ProcessGraphPool`, a `GraphPool` subclass on a `ProcessPoolExecutor` (`CP-022`): same bind/result/exit surface, worker processes instead of threads.
 
+## Configuration (`DR-015`, `CP-026`)
+
+- Unset `@task` keywords (`retries`, `retry_delay_seconds`, `timeout`), unset `@flow` keywords (`max_workers`, `log`, `summary`), and bare pool construction resolve per call: explicit keyword > active config > built-in default.
+- Resolution at call time, not decoration time: `configure()` after import reaches module-level decorators.
+- The active config lives in a `ContextVar` (`config.py`); pool workers and timeout attempt threads restore it around task bodies, same plumbing as the run context.
+- Process mode resolves the policy in the submitting thread and ships concrete values: executor dispatch pickles from its manager thread, and worker processes may not inherit the parent context. A task carrying `UNSET` never crosses the process boundary.
+- Pools constructed directly resolve at construction time: construct after `configure()` or pass `max_workers` explicitly.
+- Config values never enter run-log records; a run without `configure()` behaves exactly as before (e2e reference unchanged).
+
 ## Semantics
 
-- Decoration validates policy: negative `retries`, negative `retry_delay_seconds`, or non-positive `timeout` raise `ValueError`.
+- Decoration validates an explicit policy: negative `retries`, negative `retry_delay_seconds`, or non-positive `timeout` raise `ValueError`. The same constraints validate config values at load (`validate_task_policy`, one source).
 - Retry: attempt loop inside the task wrapper; `retries` extra attempts, `retry_delay_seconds` backoff. A retrying task holds its pool worker through the sleep.
 - Timeout: `timeout` bounds one attempt; the attempt runs in its own thread joined with the budget. Threads cannot be preempted — a timed-out attempt is abandoned as a daemon, its late result discarded.
 - `TaskTimeoutError` (a `TimeoutError` naming the task) surfaces once attempts are exhausted.

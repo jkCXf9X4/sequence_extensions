@@ -32,6 +32,7 @@ import concurrent.futures
 import multiprocessing
 import threading
 
+from sequence_extensions.config import UNSET, active_config
 from sequence_extensions.flow._context import RunContext
 from sequence_extensions.graph.graph_future import GraphFuture, GraphPool
 
@@ -98,11 +99,21 @@ class ProcessGraphPool(GraphPool):
     Same surface as :class:`~sequence_extensions.graph.GraphPool`
     (``bind``, ``result``, context manager, pool-scoped cancellation on
     exit); the workers are processes.  ``max_workers`` defaults to the
-    executor's own default (the CPU count).
+    active configuration's ``[pool].process_max_workers`` — ``None``
+    without a config, the executor's own default (the CPU count).
     """
 
-    def __init__(self, max_workers=None):
-        """Create a process pool; the executor is created lazily on first use."""
+    def __init__(self, max_workers=UNSET):
+        """Create a process pool; the executor is created lazily on first use.
+
+        ``max_workers`` defaults to the active configuration's
+        ``[pool].process_max_workers`` — ``None`` without a config, which
+        keeps the executor's own default (the CPU count).  Construct pools
+        after ``configure()`` for the config to apply, or pass
+        ``max_workers`` explicitly (``None`` means the CPU count).
+        """
+        if max_workers is UNSET:
+            max_workers = active_config().pool.process_max_workers
         super().__init__(max_workers=max_workers)
 
     def _ensure_executor(self) -> None:

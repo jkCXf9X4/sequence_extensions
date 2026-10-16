@@ -32,5 +32,6 @@ What users need: the use-case catalog — needs stated in user-observable terms,
 - **CP-023** [UC-23 Run flows concurrently in one process](uc-23-run-flows-concurrently-in-one-process.md) — several campaigns run at the same time in one process without interfering with each other
 - **CP-024** [UC-24 See what a run did](uc-24-see-what-a-run-did.md) — a completed run read back at a glance — per task the attempts, the statuses, and the time spent, plus the run's verdict — without reading raw records
 - **CP-025** [UC-25 Verify two runs executed identically](uc-25-verify-two-runs-executed-identically.md) — same code and same inputs must execute the same — every task, every attempt, same outcomes — with completion order, clock readings, and worker identity never counting as differences
-- **INFO-010** [Use cases](use-cases.md) — The use-case catalog — ten capability leaves (CP-016 to CP-025) concretizing the INFO-001 goal
+- **CP-026** [UC-26 Set a run's parameters outside the code](uc-26-set-a-runs-parameters-outside-the-code.md) — engine parameters and flow selection live in one TOML file; explicit keywords keep winning; the file launches the run without a code change
+- **INFO-010** [Use cases](use-cases.md) — The use-case catalog — eleven capability leaves (CP-016 to CP-026) concretizing the INFO-001 goal
 <!-- pb:index:end -->

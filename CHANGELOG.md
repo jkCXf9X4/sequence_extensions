@@ -5,6 +5,57 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-10-16
+
+The external-configuration release: every engine parameter can live
+in a TOML file, and `flow-runner` starts a flow from the command line.
+Decision `DR-015` in the product breakdown records the design
+(precedence, call-time resolution, discovery by module scan).
+
+### Breaking
+- **Python >= 3.11 required** (was >= 3.9).  The config system reads
+  TOML with the standard library's `tomllib` (3.11+); stdlib-only and
+  zero-dependency stays true.
+
+### Added
+- **`sequence_extensions.config`** — the `Config` object: frozen,
+  validated dataclasses for the `[flow]`, `[task]`, `[pool]`, `[run]`,
+  and `[inputs]` sections.  `Config.from_toml(path)` /
+  `Config.from_dict(data)` load and validate strictly: unknown sections
+  and keys are errors (typo-proof), values are type-checked, and
+  messages name the file, section, and key.  `log = ""` disables run
+  logging (TOML has no `null`); an omitted key keeps its built-in
+  default.
+- **`configure(config)` / `active_config()` / `reset_config()` /
+  `use_config()`** (`sequence_extensions.flow` and `.config`) — install
+  a configuration for the thread; explicit decorator keywords keep
+  winning.  Resolution is per call: unset `@task` keywords
+  (`retries`, `retry_delay_seconds`, `timeout`), unset `@flow` keywords
+  (`max_workers`, `log`, `summary`), and bare pool construction
+  (`GraphPool()`, `ProcessGraphPool()`) resolve at call/construct time,
+  so a config installed in `main()` reaches module-level decorators
+  regardless of import order.  Worker threads and timeout attempt
+  threads restore the active configuration around task bodies; the
+  process-pool path resolves the policy in the submitting thread and
+  ships concrete values across the boundary.
+- **`flow-runner`** — a console script and `python -m
+  sequence_extensions.flow_runner` module.  One TOML file selects the
+  module to import (`[run] module`), the flow to run (`[run] flow` or
+  `--flow`), passes `[inputs]` as keyword arguments (validated against
+  the flow's signature), and tunes the engine.  Flows are discovered by
+  scanning the module for the `__flow__` marker `@flow` now stamps on
+  its wrapper — no registry, no registration call.  `--list` prints the
+  flows with their docstring summaries.  Exit codes: 0 ok, 1 flow
+  failure, 2 usage/config error.  `[project.scripts]` gains the
+  package's first console script.
+- **`flow.last_run`** — the wrapper now records the most recent call:
+  `run_id`, `status`, `log` path, `duration_ms` (concurrent calls race;
+  last writer wins).  The runner reports from it.
+- Task policy validation is shared: `validate_task_policy` (in
+  `sequence_extensions.config`) is the one constraint check behind both
+  `@task` and `Config`, with unchanged messages.
+- CI matrix: Python 3.11–3.13 (3.9/3.10 dropped with the floor).
+
 ## [1.2.0] - 2026-10-14
 
 The determinism release: the run log becomes checkable, not just

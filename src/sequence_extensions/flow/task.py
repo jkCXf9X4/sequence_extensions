@@ -12,7 +12,9 @@ edges, resolved to their results before the task body runs, so
 general DAG (diamonds included), something the old series-parallel
 workflow tree could not express.
 
-Semantics (all per task, set as decorator keywords):
+Semantics (all per task, set as decorator keywords or, when left
+unset, by the active configuration —
+:mod:`sequence_extensions.config`):
 
 * ``retries`` — additional attempts after a failed one
   (``retries=2`` means up to 3 attempts).  Every attempt, successful or
@@ -46,8 +48,15 @@ import re
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
+from sequence_extensions.config import (
+    UNSET,
+    active_config,
+    configure,
+    reset_config,
+    validate_task_policy,
+)
 from sequence_extensions.flow._context import (
     RunContext,
     current_run,
@@ -87,19 +96,27 @@ class TaskTimeoutError(TimeoutError):
 
 
 class TaskFunction:
-    """The object ``@task`` returns: still callable, plus ``.submit()``."""
+    """The object ``@task`` returns: still callable, plus ``.submit()``.
 
-    def __init__(self, fn, *, retries=0, retry_delay_seconds=0.0, timeout=None, name=None):
-        if retries < 0:
-            raise ValueError(f"retries must be >= 0, got {retries}")
-        if retry_delay_seconds < 0:
-            raise ValueError(f"retry_delay_seconds must be >= 0, got {retry_delay_seconds}")
-        if timeout is not None and timeout <= 0:
-            raise ValueError(f"timeout must be > 0, got {timeout}")
+    Policy keywords left unset (the default) resolve per call — see
+    :mod:`sequence_extensions.config` — so ``configure()`` reaches
+    module-level tasks after import.
+    """
+
+    def __init__(self, fn, *, retries=UNSET, retry_delay_seconds=UNSET, timeout=UNSET, name=None):
+        # Each given value is checked alone; an unset one defers to the
+        # active configuration at call time (validate_task_policy's
+        # pass-through arguments 0/None never fire their own checks).
+        if retries is not UNSET:
+            validate_task_policy(retries, 0.0, None)
+        if retry_delay_seconds is not UNSET:
+            validate_task_policy(0, retry_delay_seconds, None)
+        if timeout is not UNSET:
+            validate_task_policy(0, 0.0, timeout)
         self.fn = fn
-        self.retries = int(retries)
-        self.retry_delay_seconds = float(retry_delay_seconds)
-        self.timeout = None if timeout is None else float(timeout)
+        self.retries = retries
+        self.retry_delay_seconds = retry_delay_seconds
+        self.timeout = timeout
         self.name = name or getattr(fn, "__name__", "task")
         functools.update_wrapper(self, fn)
         # Process-pool support: the decorator replaces the module-level
@@ -115,8 +132,29 @@ class TaskFunction:
             setattr(module, alias, fn)
             self._pickle_alias = (fn.__module__, alias)
 
+    def _effective_policy(self):
+        """Resolve the policy this call runs under: explicit keyword >
+        active config > built-in default (config values are validated at
+        load; decorator values at decoration)."""
+        cfg = active_config().task
+        retries = self.retries if self.retries is not UNSET else cfg.retries
+        delay = (
+            self.retry_delay_seconds
+            if self.retry_delay_seconds is not UNSET
+            else cfg.retry_delay_seconds
+        )
+        timeout = self.timeout if self.timeout is not UNSET else cfg.timeout
+        return int(retries), float(delay), None if timeout is None else float(timeout)
+
     def __reduce__(self):
-        """Pickle transport for process pools (see __init__)."""
+        """Pickle transport for process pools (see __init__).
+
+        Ships the policy exactly as stored — ``UNSET`` pickles as the
+        sentinel and resolves in the receiving process.  The engine's own
+        process path never relies on that: ``submit()`` resolves the
+        policy in the submitting thread and ships a concrete-valued task
+        (see :meth:`submit`).
+        """
         alias = getattr(self, "_pickle_alias", None)
         if alias is None:
             raise pickle.PicklingError(
@@ -160,21 +198,41 @@ class TaskFunction:
             # runner is this module-level function carrying the task and a
             # plain-dict run header; the worker buffers run-log records and
             # the flow replays them before run_end (flow.py).
+            #
+            # The policy is resolved HERE, in the submitting thread where
+            # the active configuration is visible, and shipped concrete:
+            # executor dispatch pickles from its manager thread and worker
+            # processes may not inherit the parent's context, so a task
+            # still carrying UNSET must never cross the process boundary.
+            retries, delay, timeout = self._effective_policy()
+            resolved = TaskFunction(
+                self.fn,
+                retries=retries,
+                retry_delay_seconds=delay,
+                timeout=timeout,
+                name=self.name,
+            )
             run_info = {
                 "run_id": ctx.run_id,
                 "flow_name": ctx.flow_name,
                 "summary": bool(ctx.runlog is not None and ctx.runlog.summary),
             }
-            gf = GraphFuture(_process_task_runner, self, run_info, *args, **kwargs)
+            gf = GraphFuture(_process_task_runner, resolved, run_info, *args, **kwargs)
         else:
+            # Snapshot the configuration here, in the submitting thread:
+            # a new worker thread starts with an empty context and would
+            # otherwise fall back to the built-in defaults.
+            cfg = active_config()
 
             def _runner(*resolved_args, **resolved_kwargs):
                 gf._flow_attempted = True
-                token = set_current_run(ctx)
+                run_token = set_current_run(ctx)
+                cfg_token = configure(cfg)
                 try:
                     return self._execute(resolved_args, resolved_kwargs, ctx)
                 finally:
-                    reset_current_run(token)
+                    reset_config(cfg_token)
+                    reset_current_run(run_token)
 
             gf = GraphFuture(_runner, *args, **kwargs)
         gf.set_name(self.name)
@@ -198,15 +256,17 @@ class TaskFunction:
     # ------------------------------------------------------------ #
     def _execute(self, args, kwargs, ctx: RunContext | None):
         """Run all attempts; log each; return the result or raise the last error."""
-        max_attempts = self.retries + 1
+        retries, delay, timeout = self._effective_policy()
+        cfg = active_config()
+        max_attempts = retries + 1
         for attempt in range(1, max_attempts + 1):
             started_clock = time.perf_counter()
             started_at = _utcnow()
-            status, value = self._run_attempt(args, kwargs, ctx)
+            status, value = self._run_attempt(args, kwargs, ctx, cfg, timeout)
             duration_ms = int((time.perf_counter() - started_clock) * 1000)
 
             if status == "timeout":
-                error: Exception = TaskTimeoutError(self.name, self.timeout, attempt)
+                error: Exception = TaskTimeoutError(self.name, timeout, attempt)
             elif isinstance(value, BaseException) and not isinstance(value, Exception):
                 # BaseException cannot settle a GraphFuture (it catches
                 # Exception only) — wrap it so the node always settles.
@@ -222,12 +282,12 @@ class TaskFunction:
             if status == "ok":
                 return value
             if attempt < max_attempts:
-                if self.retry_delay_seconds > 0:
-                    time.sleep(self.retry_delay_seconds)
+                if delay > 0:
+                    time.sleep(delay)
                 continue
             raise error
 
-    def _run_attempt(self, args, kwargs, ctx: RunContext | None):
+    def _run_attempt(self, args, kwargs, ctx: RunContext | None, cfg, timeout):
         """Run ONE attempt.
 
         Returns ``("ok", result)`` / ``("error", exception)`` /
@@ -235,7 +295,7 @@ class TaskFunction:
         current thread; with one, it runs in its own thread joined with
         the budget (see the module docstring for the daemon caveat).
         """
-        if self.timeout is None:
+        if timeout is None:
             try:
                 return "ok", self.fn(*args, **kwargs)
             except BaseException as e:
@@ -244,17 +304,23 @@ class TaskFunction:
         box = {}
 
         def _target():
-            token = set_current_run(ctx)
+            # Restore run context *and* configuration in the fresh
+            # thread (same rationale as a pool worker): a body that
+            # reads either — nested task calls, ``active_config()`` —
+            # must see the submitting context, not empty-thread defaults.
+            run_token = set_current_run(ctx)
+            cfg_token = configure(cfg)
             try:
                 box["result"] = self.fn(*args, **kwargs)
             except BaseException as e:
                 box["error"] = e
             finally:
-                reset_current_run(token)
+                reset_config(cfg_token)
+                reset_current_run(run_token)
 
         thread = threading.Thread(target=_target, name=f"{self.name}-attempt", daemon=True)
         thread.start()
-        thread.join(self.timeout)
+        thread.join(timeout)
         if thread.is_alive():
             return "timeout", None
         if "error" in box:
@@ -286,7 +352,7 @@ class TaskFunction:
 
 
 def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _rebuild_task_function(alias, retries, retry_delay_seconds, timeout, name):
@@ -306,11 +372,20 @@ def _rebuild_task_function(alias, retries, retry_delay_seconds, timeout, name):
     )
 
 
-def task(fn=None, *, retries=0, retry_delay_seconds=0.0, timeout=None, name=None):
+def task(
+    fn=None,
+    *,
+    retries=UNSET,
+    retry_delay_seconds=UNSET,
+    timeout=UNSET,
+    name=None,
+):
     """Decorate a function as a task: retry, backoff, and timeout policy.
 
     Usable bare (``@task``), with keywords (``@task(retries=2)``), or
-    both forms empty (``@task()``).
+    both forms empty (``@task()``).  Keywords left unset resolve per call
+    from the active configuration (see :mod:`sequence_extensions.config`);
+    an explicit keyword always wins.
     """
     if fn is None:
         return lambda f: TaskFunction(

@@ -1,6 +1,6 @@
 # sequence_extensions
 
-**Version:** 1.0.0 · **Python:** >=3.9
+**Version:** 2.0.0 · **Python:** >=3.11
 
 Higher-order function extensions for Python lists, dicts, and generators, plus a mini flow engine on dependency-graph futures: deterministic parallel campaigns, local or at HPC — retries, timeouts, and a JSON-lines run log that is the executed truth of every run.
 
@@ -8,9 +8,11 @@ The package is organized into three subpackages:
 
 ```
 sequence_extensions/
-├── ext/        # functional helpers for built-in sequences
-├── graph/      # the execution substrate (GraphFuture / GraphPool)
-└── flow/       # the mini flow engine (@task / @flow / run log)
+├── ext/           # functional helpers for built-in sequences
+├── graph/         # the execution substrate (GraphFuture / GraphPool)
+├── flow/          # the mini flow engine (@task / @flow / run log)
+├── config.py      # external configuration (TOML → Config → configure)
+└── flow_runner/   # the flow-runner CLI
 ```
 
 - `ext.list_ext` — an extended `list` class with functional helpers (`map`, `filter`, `reduce`, `window`, ...)
@@ -18,12 +20,14 @@ sequence_extensions/
 - `ext.gen_ext` — static helpers for generators (`to_list`, `recursive_gen`)
 - `graph.graph_future` — dependency-graph futures (`GraphFuture`, `GraphPool`)
 - `flow` — the flow engine: `@task` (retry, backoff, timeout policy) and `@flow` (run identity, pool, audit log)
+- `config` — the `Config` object and `configure()`: engine parameters from a TOML file
+- `flow_runner` — the `flow-runner` command: run a flow selected by a config file
 
 `ext` and `graph` names are re-exported from the package root; `flow` is imported as its own package (`from sequence_extensions.flow import task, flow`). See [docs/API.md](docs/API.md) for the full API reference.
 
 ## Installation
 
-Requires **Python >= 3.9**.
+Requires **Python >= 3.11**.
 
 ```
 pip install sequence-extensions
@@ -272,7 +276,7 @@ verdict = campaign(Path("cases/"))
 
 Semantics, in one list:
 
-- **Plain call = sequential** (runs inline); **`.submit()` = concurrent** (the run's bounded pool, default 16 workers; `@flow(max_workers=...)`).
+- **Plain call = sequential** (runs inline); **`.submit()` = concurrent** (the run's bounded pool, default 16 workers; `@flow(max_workers=...)`, or `[flow] max_workers` in a config — see [Configuration](#configuration)).
 - **Retries and timeouts are task attributes**: `retries=2` means up to three attempts; `timeout=30` bounds one attempt and raises `TaskTimeoutError` (a `TimeoutError` naming the task). Every attempt is one record in the log.
 - **Futures as arguments are dependency edges** — any DAG shape, diamonds included; cycles raise at submit time.
 - **Drain-on-return**: the flow returns only after every submitted task settles. A failed flow cancels its pending tasks (recorded `skipped`), waits for the running ones, and re-raises.
@@ -296,6 +300,71 @@ Two examples of the log's shape (from the acceptance test's campaign — six cas
 ```
 
 For wrapping real simulators (subprocess timeouts, `sbatch`-and-poll for HPC), see the recipes in [docs/API.md](docs/API.md).
+
+## Configuration
+
+Every engine parameter can live in a TOML file instead of the code. Load it with `Config.from_toml` and install it with `configure`; unset decorator keywords then resolve per call — **explicit keyword > config > built-in default**:
+
+```python
+from sequence_extensions.flow import Config, configure, flow, task
+
+configure(Config.from_toml("config.toml"))
+
+
+@task  # retries / timeout now come from the config
+@flow  # max_workers / log / summary too
+def campaign(cases_dir): ...
+```
+
+```toml
+# config.toml — every section and key is optional
+[flow]
+max_workers = 8            # default 16
+log = "output/runs"        # default "runs"; "" disables run logging
+summary = true             # default false
+
+[task]
+retries = 2                # default 0
+retry_delay_seconds = 0.5  # default 0.0
+timeout = 30.0             # default: omit (no timeout)
+
+[pool]
+graph_max_workers = 16     # GraphPool() default
+process_max_workers = 4    # ProcessGraphPool() default; omit → CPU count
+```
+
+Resolution happens at call time, so `configure()` in `main()` reaches module-level decorators regardless of import order. The whole file is validated on load — unknown keys and bad values fail immediately with the file, section, and key named. Pools constructed directly resolve at construction time: construct them after `configure()`, or pass `max_workers` explicitly. TOML has no `null`; an omitted key keeps the built-in default.
+
+## flow-runner
+
+The `flow-runner` command starts a flow from the config alone — one file selects the flow, passes its inputs, and tunes the engine:
+
+```toml
+# campaign.toml
+[run]
+module = "mypackage.flows"  # module scanned for @flow functions
+flow = "campaign"            # which one to run
+
+[inputs]                     # keyword arguments for the flow
+cases_dir = "cases"
+tolerance = 0.25
+
+[task]
+retries = 2
+timeout = 60.0
+```
+
+```
+$ flow-runner campaign.toml
+flow campaign: ok (1843 ms)
+log: runs/campaign-20261016T110258-b0e4a12e.jsonl
+result: {"count": 6, "mean_score": 0.71, "passed": 6, "all_passed": true}
+
+$ flow-runner campaign.toml --list   # flows in the module, with docstrings
+$ flow-runner campaign.toml --flow report   # override the selection
+```
+
+Same entry point as a module: `python -m sequence_extensions.flow_runner campaign.toml`. Exit codes: `0` the run succeeded, `1` the flow raised, `2` usage or config error — cron/CI/SLURM friendly. Flows needing non-TOML inputs (open connections, custom objects) belong in a small `main.py` that calls them directly. A config file names a module to import, so treat it as trusted code.
 
 ## Development
 

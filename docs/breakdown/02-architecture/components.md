@@ -9,7 +9,7 @@ status: current
 
 # Components
 
-The package decomposes into three subpackages with a strict dependency order: `flow` depends on `graph`; `ext` is self-contained.
+The package decomposes into three subpackages plus two standalone modules with a strict dependency order: `flow` depends on `graph`; `config` depends on nothing in the package; `flow_runner` depends on `config` and `flow`; `ext` is self-contained.
 
 ## `ext` — sequence helpers
 
@@ -33,6 +33,17 @@ The package decomposes into three subpackages with a strict dependency order: `f
 - **`_context`** — `RunContext` plus `ContextVar` plumbing; workers and attempt threads restore the run.
 - **`process_pool`** — `ProcessGraphPool`: a `GraphPool` subclass on a `ProcessPoolExecutor` (`CP-022`); workers buffer records, the parent replays them at settle time.
 
+## `config` — external configuration
+
+- **`config`** — `Config` frozen dataclasses (`[flow]`, `[task]`, `[pool]`, `[run]`, `[inputs]`), `from_toml` / `from_dict` loaders, `configure` / `active_config` / `reset_config` on a `ContextVar`, and the `UNSET` sentinel.
+- Strict loading: unknown sections and keys are errors; values type-checked and range-checked; every constructor validates (`DR-015`).
+- Precedence per parameter: explicit decorator keyword > active config > built-in default.
+
+## `flow_runner` — the CLI
+
+- `flow-runner` console script and `python -m` entry: load config, `configure`, import `[run] module`, scan for the `__flow__` marker, validate `[inputs]` against the flow signature, call (`CP-026`).
+- Exit codes: 0 ok, 1 flow failure, 2 usage or config error.
+
 ## Data flow
 
 - Input: a decorated Python function (the flow) calling tasks directly or via `.submit()`.
@@ -45,5 +56,7 @@ The package decomposes into three subpackages with a strict dependency order: `f
 - `ext`: the three classes; methods return extended types or plain values.
 - `graph`: `GraphFuture(function, *args, **kwargs)`, `result()`, `done()`; `GraphPool(max_workers)`, `result(gf)`, `bind(gf)`.
 - `flow`: `@task(retries, retry_delay_seconds, timeout, name)`, `task.submit(...)`, `@flow(name, max_workers, log, summary, pool)`; `pool=` accepts `GraphPool` or `ProcessGraphPool`.
+- `config`: `Config.from_toml(path)`, `configure(config)`, `active_config()`; unset `@task` / `@flow` keywords resolve per call from the active config (`DR-015`).
+- `flow_runner`: `flow-runner config.toml [--flow NAME] [--list]`.
 
 Engine semantics: `INFO-011`. Scope: `INFO-001`.

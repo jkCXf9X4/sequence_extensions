@@ -1,7 +1,7 @@
 """Generator utilities for sequence_extensions."""
 
-from collections.abc import Iterable, Iterator
-from typing import Callable, Optional, TypeVar
+from collections.abc import Callable, Iterable, Iterator
+from typing import TypeVar
 
 T = TypeVar("T")
 
@@ -25,7 +25,7 @@ class gen_ext:
     def recursive_gen(
         item: T,
         iter_f: Callable[[T], T],
-        stop_f: Optional[Callable[[T], bool]] = None,
+        stop_f: Callable[[T], bool] | None = None,
     ) -> Iterator[T]:
         """Iteratively walk a chain of items, yielding each next item.
 
