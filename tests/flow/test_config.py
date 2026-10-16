@@ -79,7 +79,7 @@ def test_defaults_match_the_built_ins():
     cfg = Config()
     assert cfg.flow == FlowConfig(max_workers=16, log="runs", summary=False)
     assert cfg.task == TaskConfig(retries=0, retry_delay_seconds=0.0, timeout=None)
-    assert cfg.pool == PoolConfig(graph_max_workers=16, process_max_workers=None)
+    assert cfg.pool == PoolConfig(process_max_workers=None)
     assert cfg.run == RunConfig(module=None, flow=None)
     assert cfg.inputs == {}
 
@@ -141,7 +141,6 @@ retry_delay_seconds = 0.5
 timeout = 30
 
 [pool]
-graph_max_workers = 4
 process_max_workers = 2
 """,
         encoding="utf-8",
@@ -151,7 +150,7 @@ process_max_workers = 2
     assert cfg.inputs == {"items": [1, 2, 3], "mode": "fast"}
     assert cfg.flow == FlowConfig(max_workers=8, log="output/runs", summary=True)
     assert cfg.task == TaskConfig(retries=2, retry_delay_seconds=0.5, timeout=30)
-    assert cfg.pool == PoolConfig(graph_max_workers=4, process_max_workers=2)
+    assert cfg.pool == PoolConfig(process_max_workers=2)
 
 
 def test_from_toml_partial_and_empty_files(tmp_path):
@@ -340,15 +339,15 @@ def test_failing_flow_records_error_status(tmp_path):
     assert boom.last_run["log"] is not None
 
 
-def test_pools_resolve_construction_defaults():
-    with use_config(Config(pool=PoolConfig(graph_max_workers=3, process_max_workers=2))):
-        assert GraphPool().max_workers == 3
+def test_process_pool_resolves_construction_default():
+    with use_config(Config(pool=PoolConfig(process_max_workers=2))):
         assert ProcessGraphPool().max_workers == 2
-    assert GraphPool().max_workers == 16  # built-in default, no config
-    assert ProcessGraphPool().max_workers is None  # executor default (CPU count)
-
-    with use_config(Config(pool=PoolConfig(graph_max_workers=3))):
-        assert GraphPool(max_workers=8).max_workers == 8  # explicit wins
+    assert ProcessGraphPool().max_workers is None  # no config: executor default (CPU count)
+    assert ProcessGraphPool(max_workers=8).max_workers == 8  # explicit wins
+    # The thread substrate stays config-free: fixed default, config cannot move it.
+    with use_config(Config(pool=PoolConfig(process_max_workers=2))):
+        assert GraphPool().max_workers == 16
+    assert GraphPool().max_workers == 16
 
 
 def test_process_pool_task_uses_configured_retries(tmp_path):

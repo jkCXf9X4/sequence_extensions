@@ -43,8 +43,13 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sequence_extensions import config
-from sequence_extensions.config import UNSET, active_config
+from sequence_extensions.config import (
+    DEFAULT_LOG_DIR as DEFAULT_LOG_DIR,  # re-exported for backwards compatibility
+)
+from sequence_extensions.config import (
+    UNSET,
+    active_config,
+)
 from sequence_extensions.flow._context import (
     RunContext,
     reset_current_run,
@@ -60,9 +65,8 @@ except ImportError:  # pragma: no cover - packaging safety net
     _PACKAGE_VERSION = "unknown"
 
 #: Default directory for run logs (relative to the current directory).
-#: Kept as a re-export: the constant lives in :mod:`sequence_extensions.config`.
-DEFAULT_LOG_DIR = config.DEFAULT_LOG_DIR
-
+#: Imported from :mod:`sequence_extensions.config`; the name re-exports here
+#: (and from ``sequence_extensions.flow``) for backwards compatibility.
 _LOG_PATH_TYPES = (str, Path)
 
 

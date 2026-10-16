@@ -1008,7 +1008,6 @@ retry_delay_seconds = 0.5  # default 0.0
 timeout = 30.0             # default: omit (no timeout)
 
 [pool]
-graph_max_workers = 16     # GraphPool() default (default 16)
 process_max_workers = 4    # ProcessGraphPool() default; omit → CPU count
 
 [run]                      # flow-runner selection (unused by configure)
@@ -1028,7 +1027,7 @@ Resolution mechanics worth knowing:
 - **Call time, not import time**: `configure()` in `main()` reaches module-level decorators regardless of import order.
 - **Threads**: the flow layer restores the active configuration in pool workers and timeout attempt threads around task bodies, so nested direct calls and `active_config()` reads see the submitting context.
 - **Processes**: `submit()` resolves the task policy in the submitting thread and ships concrete values across the boundary — worker processes never need the config.
-- **Pools constructed directly** (`GraphPool()`, `ProcessGraphPool()`) resolve at construction time: construct them after `configure()`, or pass `max_workers` explicitly.
+- **Pools constructed directly**: a bare `ProcessGraphPool()` resolves at construction time — construct it after `configure()`, or pass `max_workers` explicitly. The thread substrate stays config-free: `GraphPool` keeps its fixed default (16) and `@flow` sizes its own pool from `[flow] max_workers`.
 - **Determinism**: config values never enter run-log records; a run without `configure()` behaves exactly as before.
 
 ### `flow-runner` — run a flow from the command line

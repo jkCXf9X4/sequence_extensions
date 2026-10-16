@@ -9,7 +9,7 @@ status: current
 
 # Components
 
-The package decomposes into three subpackages plus two standalone modules with a strict dependency order: `flow` depends on `graph`; `config` depends on nothing in the package; `flow_runner` depends on `config` and `flow`; `ext` is self-contained.
+The package decomposes into three subpackages plus two standalone modules with a strict dependency order: `flow` depends on `graph` and `config`; `flow_runner` depends on `config` and `flow`; `graph` and `ext` are config-free (stdlib only, no package imports); `config` imports nothing from the package.
 
 ## `ext` — sequence helpers
 

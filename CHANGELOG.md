@@ -31,10 +31,12 @@ Decision `DR-015` in the product breakdown records the design
   a configuration for the thread; explicit decorator keywords keep
   winning.  Resolution is per call: unset `@task` keywords
   (`retries`, `retry_delay_seconds`, `timeout`), unset `@flow` keywords
-  (`max_workers`, `log`, `summary`), and bare pool construction
-  (`GraphPool()`, `ProcessGraphPool()`) resolve at call/construct time,
-  so a config installed in `main()` reaches module-level decorators
-  regardless of import order.  Worker threads and timeout attempt
+  (`max_workers`, `log`, `summary`), and a bare `ProcessGraphPool()`
+  resolve at call/construct time, so a config installed in `main()`
+  reaches module-level decorators regardless of import order.  The
+  thread substrate (`graph`) and the `ext` helpers stay config-free:
+  `GraphPool` keeps its fixed default, and `@flow` sizes its own pool
+  from `[flow] max_workers`.  Worker threads and timeout attempt
   threads restore the active configuration around task bodies; the
   process-pool path resolves the policy in the submitting thread and
   ships concrete values across the boundary.

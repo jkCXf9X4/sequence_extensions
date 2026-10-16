@@ -23,11 +23,12 @@ The flow layer (`sequence_extensions.flow`) is the audit-first engine, built on 
 
 ## Configuration (`DR-015`, `CP-026`)
 
-- Unset `@task` keywords (`retries`, `retry_delay_seconds`, `timeout`), unset `@flow` keywords (`max_workers`, `log`, `summary`), and bare pool construction resolve per call: explicit keyword > active config > built-in default.
+- Unset `@task` keywords (`retries`, `retry_delay_seconds`, `timeout`), unset `@flow` keywords (`max_workers`, `log`, `summary`), and a bare `ProcessGraphPool()` resolve per call: explicit keyword > active config > built-in default.
 - Resolution at call time, not decoration time: `configure()` after import reaches module-level decorators.
 - The active config lives in a `ContextVar` (`config.py`); pool workers and timeout attempt threads restore it around task bodies, same plumbing as the run context.
 - Process mode resolves the policy in the submitting thread and ships concrete values: executor dispatch pickles from its manager thread, and worker processes may not inherit the parent context. A task carrying `UNSET` never crosses the process boundary.
 - Pools constructed directly resolve at construction time: construct after `configure()` or pass `max_workers` explicitly.
+- The substrate and `ext` stay config-free: `GraphPool` keeps its fixed default (16); `@flow` sizes its own pool from `[flow] max_workers`. Only the flow layer reads the active config.
 - Config values never enter run-log records; a run without `configure()` behaves exactly as before (e2e reference unchanged).
 
 ## Semantics

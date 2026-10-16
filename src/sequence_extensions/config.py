@@ -25,7 +25,6 @@ file format is TOML, read with the standard library's ``tomllib``::
     timeout = 30.0              # default: omit (no timeout)
 
     [pool]
-    graph_max_workers = 16      # default 16 (GraphPool)
     process_max_workers = 4     # default: omit (CPU count, ProcessGraphPool)
 
 Every section and key is optional: an omitted key keeps its built-in
@@ -39,10 +38,12 @@ Resolution is per call, keyword-first:
 
 Resolution happens at call time, not at decoration time: a module of
 decorated tasks and flows picks up a config installed after import, so
-``configure()`` in ``main()`` reaches module-level decorators.  Pools
-constructed directly (``GraphPool()`` / ``ProcessGraphPool()``) resolve
-at construction time — construct them after ``configure()`` or pass
-``max_workers`` explicitly.
+``configure()`` in ``main()`` reaches module-level decorators.  A
+``ProcessGraphPool`` constructed without ``max_workers`` resolves at
+construction time — construct it after ``configure()`` or pass
+``max_workers`` explicitly.  The thread substrate (``graph``) and the
+``ext`` helpers stay config-free: a ``GraphPool`` keeps its fixed
+default, and ``@flow`` sizes its own pool from ``[flow].max_workers``.
 
 The active config lives in a :class:`contextvars.ContextVar`, the same
 plumbing the run context uses; worker threads started by the flow layer
@@ -185,13 +186,16 @@ class FlowConfig:
 
 @dataclass(frozen=True)
 class PoolConfig:
-    """``[pool]`` — defaults for pools constructed without ``max_workers``."""
+    """``[pool]`` — default for a ``ProcessGraphPool`` constructed bare.
 
-    graph_max_workers: int = 16
+    The thread substrate stays config-free: ``GraphPool`` keeps its
+    fixed default (16), and ``@flow`` sizes its own pool from
+    ``[flow].max_workers``.
+    """
+
     process_max_workers: int | None = None
 
     def __post_init__(self) -> None:
-        _check_int(self.graph_max_workers, "graph_max_workers", minimum=1)
         if self.process_max_workers is not None:
             _check_int(self.process_max_workers, "process_max_workers", minimum=1)
 
@@ -291,7 +295,7 @@ def _inputs(data: Mapping, where: str) -> dict:
 _KEYS = {
     "flow": {"max_workers", "log", "summary"},
     "task": {"retries", "retry_delay_seconds", "timeout"},
-    "pool": {"graph_max_workers", "process_max_workers"},
+    "pool": {"process_max_workers"},
     "run": {"module", "flow"},
 }
 

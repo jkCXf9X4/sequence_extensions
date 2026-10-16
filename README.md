@@ -329,11 +329,10 @@ retry_delay_seconds = 0.5  # default 0.0
 timeout = 30.0             # default: omit (no timeout)
 
 [pool]
-graph_max_workers = 16     # GraphPool() default
 process_max_workers = 4    # ProcessGraphPool() default; omit → CPU count
 ```
 
-Resolution happens at call time, so `configure()` in `main()` reaches module-level decorators regardless of import order. The whole file is validated on load — unknown keys and bad values fail immediately with the file, section, and key named. Pools constructed directly resolve at construction time: construct them after `configure()`, or pass `max_workers` explicitly. TOML has no `null`; an omitted key keeps the built-in default.
+Resolution happens at call time, so `configure()` in `main()` reaches module-level decorators regardless of import order. The whole file is validated on load — unknown keys and bad values fail immediately with the file, section, and key named. A `ProcessGraphPool` constructed directly resolves at construction time: construct it after `configure()`, or pass `max_workers` explicitly. The thread substrate stays config-free — `GraphPool` keeps its fixed default of 16, and `@flow` sizes its own pool from `[flow] max_workers`. TOML has no `null`; an omitted key keeps the built-in default.
 
 ## flow-runner
 
