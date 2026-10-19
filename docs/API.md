@@ -955,7 +955,7 @@ def simulate(case): ...
 from sequence_extensions.flow import flow
 
 
-@flow(name="campaign", max_workers=16, log="runs", summary=False, pool=None)
+@flow(name="campaign", max_workers=16, log="runs", summary=False, fixed_clock=False, pool=None)
 def campaign(cases_dir): ...
 ```
 
@@ -965,9 +965,10 @@ def campaign(cases_dir): ...
 | `max_workers` | `16` | thread pool size for the run's `submit()` calls |
 | `log` | `"runs"` | directory for `<run_id>.jsonl`; `None` disables the file |
 | `summary` | `False` | log item counts for long containers instead of items |
+| `fixed_clock` | `False` | reference mode: byte-identical logs for identical runs (see below) |
 | `pool` | `None` | a caller-owned pool — a `GraphPool` (threads) or a `ProcessGraphPool` (processes); never settled by the flow |
 
-- **Defaults are configurable**: `max_workers`, `log`, and `summary` left unset resolve per call — explicit keyword > active config (`[flow]`, see [Configuration](#configuration)) > built-in default.
+- **Defaults are configurable**: `max_workers`, `log`, `summary`, and `fixed_clock` left unset resolve per call — explicit keyword > active config (`[flow]`, see [Configuration](#configuration)) > built-in default.
 - The wrapper carries `__flow__` (the flow name — how `flow-runner` discovers it) and `last_run` (a dict with `run_id`, `status`, `log`, `duration_ms` of the most recent call; concurrent calls race, last writer wins).
 
 
@@ -975,7 +976,7 @@ def campaign(cases_dir): ...
 - **Drain-on-return** — the flow returns only after every submitted task has settled, so the log is complete on return.
 - **Failure** — a failed flow cancels its own pool's pending tasks (each recorded `skipped`), waits for running ones, records `run_end` with `status: "error"`, and re-raises.
 - A caller-owned pool is never settled: success and failure both drain; the owner owns the lifecycle.
-- `run_id` format: `<flow>-<UTC timestamp>-<short uuid>`.
+- `run_id` format: `<flow>-<UTC timestamp>-<short uuid>`; in reference mode `<flow>-fixed`.
 - **Concurrent flows are safe in one process**: pool exit cancels only that pool's own nodes, so two flows — each on its own pool — can run side by side.
 - Nested flows work: an inner `@flow` gets its own run, pool, and log.
 - On a `ProcessGraphPool`, settle-time records (replayed worker records, skip records) are written by the flow before `run_end`; an unpicklable payload settles its node with `ProcessDispatchError` and records `skipped` / `dispatch failed`.
@@ -1001,6 +1002,7 @@ def campaign(cases_dir): ...
 max_workers = 8            # default 16
 log = "output/runs"        # default "runs"; "" disables run logging
 summary = true             # default false
+fixed_clock = false        # default false; reference mode — see below
 
 [task]
 retries = 2                # default 0
@@ -1022,13 +1024,15 @@ items = [1, 2, 3]
 
 **`configure(config)`** — install `config` as the active configuration for the calling context; returns a reset token. **`reset_config(token)`** — restore. **`active_config()`** — read. **`use_config(config)`** — context manager: run a block under a configuration.
 
+**Embedding in an application**: install once at startup with `configure`, call flows as functions, and read the wrapper's `last_run` for the verdict (`run_id`, `status`, `log`, `duration_ms`) — no log parsing needed. Worker threads inherit the active configuration. With no config installed, everything runs on the built-in defaults.
+
 Resolution mechanics worth knowing:
 
 - **Call time, not import time**: `configure()` in `main()` reaches module-level decorators regardless of import order.
 - **Threads**: the flow layer restores the active configuration in pool workers and timeout attempt threads around task bodies, so nested direct calls and `active_config()` reads see the submitting context.
 - **Processes**: `submit()` resolves the task policy in the submitting thread and ships concrete values across the boundary — worker processes never need the config.
 - **Pools constructed directly**: a bare `ProcessGraphPool()` resolves at construction time — construct it after `configure()`, or pass `max_workers` explicitly. The thread substrate stays config-free: `GraphPool` keeps its fixed default (16) and `@flow` sizes its own pool from `[flow] max_workers`.
-- **Determinism**: config values never enter run-log records; a run without `configure()` behaves exactly as before.
+- **Determinism**: config values never enter run-log records; a run without `configure()` behaves exactly as before. The one config key that shapes the log itself is `fixed_clock` — reference mode, documented with the [run log](#the-run-log--the-executed-truth).
 
 ### `flow-runner` — run a flow from the command line
 
@@ -1051,6 +1055,7 @@ result: {"count": 6, "mean_score": 0.71, "passed": 6, "all_passed": true}
 - **Exit codes**: `0` run succeeded, `1` the flow raised, `2` usage or config error (missing file, invalid TOML, unknown key, no flow selected, inputs that do not match the signature).
 - **Inputs** are TOML values passed as keyword arguments — recorded in `run_start` by the existing serialization policy. Flows needing non-TOML inputs (open connections, custom objects) belong in a small `main.py` that calls them directly.
 - A config file names a module to import: treat it as trusted code.
+- **In a pipeline** (make, CI, cron, batch): the caller branches on the exit code; one TOML per environment, the pipeline picks the file; `[flow] log` places the run log where the pipeline collects its artifacts; `--list` shows what can run before running it.
 
 ### The run log — the executed truth
 
@@ -1067,6 +1072,8 @@ Record kinds:
 - Task `status`: `ok` (attempt succeeded), `error`, `timeout`, or `skipped` (`attempt: 0` — the node never executed: a dependency failed, the payload could not be dispatched to a process (`reason: "dispatch failed"`), or the flow failed and cancelled it).
 - Serialization policy (`jsonable`): paths log as `{"path": ..., "sha256": ...}` (hashed when the file exists); `bytes` as length plus sha256; datetimes as ISO 8601; sets as sorted lists; unknown values as `str(value)`. Bulky payloads return a `Path` by convention — never inlined.
 - `summary=True` replaces containers longer than 8 items with `{"type": ..., "len": ...}`.
+
+**Reference mode** (`RunLog(path, fixed_clock=True)`, reached through `@flow(fixed_clock=True)` or `[flow] fixed_clock = true`): for storing logs as reference files — golden files in git — an identical run produces a byte-identical file. Records are buffered and written at `close` in canonical order (`run_start`, task records by task / attempt / inputs, `run_end`), with `seq` assigned in that order; every engine-written timestamp becomes `FIXED_CLOCK` (`"1970-01-01T00:00:00+00:00"`), `duration_ms` becomes `0`, and `worker` becomes `FIXED_WORKER` (`"fixed"`). Execution facts — what ran, on which inputs, with which outcome — are untouched. The trade: a reference-mode file holds nothing until the flow returns and the log closes.
 
 Reading a log back:
 

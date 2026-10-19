@@ -6,7 +6,9 @@ The decorated function is called exactly as before; the wrapper adds:
   and a JSON-lines audit log, one file per run.  Default location:
   ``runs/<run_id>.jsonl`` under the current directory; ``log=`` selects
   another directory; ``log=None`` disables the file (tasks still run,
-  just unlogged).
+  just unlogged).  ``fixed_clock=True`` (reference mode) pins the id to
+  ``<flow>-fixed`` and makes an identical run produce a byte-identical
+  log — see :mod:`sequence_extensions.flow.runlog`.
 * **a bounded pool** — a :class:`~sequence_extensions.graph.GraphPool`
   with ``max_workers`` threads that the run's ``task.submit()`` calls
   use, unless a caller-owned ``pool=`` is supplied (never settled by
@@ -74,8 +76,10 @@ def _utcnow() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _new_run_id(flow_name: str) -> str:
+def _new_run_id(flow_name: str, *, fixed: bool = False) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", flow_name).strip("-") or "flow"
+    if fixed:  # reference mode: one stable id, so the log file overwrites itself
+        return f"{safe}-fixed"
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     return f"{safe}-{stamp}-{uuid.uuid4().hex[:8]}"
 
@@ -172,12 +176,13 @@ def flow(
     max_workers=UNSET,
     log=UNSET,
     summary=UNSET,
+    fixed_clock=UNSET,
     pool: GraphPool | None = None,
 ):
     """Decorate a function as a flow: run identity + pool + audit log.
 
-    Keywords (``max_workers``, ``log``, ``summary``) left unset resolve
-    per call from the active configuration — see
+    Keywords (``max_workers``, ``log``, ``summary``, ``fixed_clock``)
+    left unset resolve per call from the active configuration — see
     :mod:`sequence_extensions.config`; an explicit keyword always wins.
 
     Keywords:
@@ -190,6 +195,12 @@ def flow(
       ``None`` disables the file.
     * ``summary`` — summarize bulky values in the log (item counts
       instead of items); paths are always path-plus-hash.
+    * ``fixed_clock`` — reference mode: the run id is pinned (the log
+      file overwrites itself) and an identical run produces a
+      byte-identical log — timing pinned, durations zero, workers
+      constant, records in canonical order.  For storing logs as
+      reference files; see
+      :class:`~sequence_extensions.flow.runlog.RunLog`.
     * ``pool`` — a caller-owned pool to submit on instead of a fresh
       per-run thread pool: a :class:`~sequence_extensions.graph.GraphPool`
       (threads) or a :class:`~sequence_extensions.flow.ProcessGraphPool`
@@ -223,12 +234,17 @@ def flow(
             workers = max_workers if max_workers is not UNSET else cfg.flow.max_workers
             log_dir = log if log is not UNSET else cfg.flow.log
             summarize = summary if summary is not UNSET else cfg.flow.summary
+            fixed = fixed_clock if fixed_clock is not UNSET else cfg.flow.fixed_clock
             if log_dir == "":  # the config-file spelling of "disabled"
                 log_dir = None
-            run_id = _new_run_id(flow_name)
+            run_id = _new_run_id(flow_name, fixed=fixed)
             runlog = None
             if log_dir is not None:
-                runlog = RunLog(Path(log_dir) / f"{run_id}.jsonl", summary=summarize)
+                runlog = RunLog(
+                    Path(log_dir) / f"{run_id}.jsonl",
+                    summary=summarize,
+                    fixed_clock=fixed,
+                )
             ctx = RunContext(run_id=run_id, flow_name=flow_name, runlog=runlog)
             started = time.perf_counter()
             status = "ok"

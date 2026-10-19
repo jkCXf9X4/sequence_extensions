@@ -17,7 +17,9 @@ file format is TOML, read with the standard library's ``tomllib``::
     [flow]
     max_workers = 8            # default 16
     log = "output/runs"        # default "runs"; "" disables run logging
-    summary = true              # default false
+    summary = true             # default false
+    fixed_clock = true         # default false; byte-stable logs for
+                               # reference storage (see below)
 
     [task]
     retries = 2                 # default 0
@@ -52,6 +54,12 @@ travels with it.
 
 TOML has no ``null``: omit a key to keep its default.  ``log = ""`` is
 the one spelling for "disable run logging" and normalizes to ``None``.
+
+``fixed_clock`` opts a run into reference mode: the run executes as if
+on a frozen clock, so the log of an identical run comes out
+byte-identical — for storing run logs as reference files (golden files
+in git) without churn.  See
+:class:`sequence_extensions.flow.runlog.RunLog` for what the mode pins.
 """
 
 from __future__ import annotations
@@ -174,10 +182,12 @@ class FlowConfig:
     max_workers: int = 16
     log: str | Path | None = DEFAULT_LOG_DIR
     summary: bool = False
+    fixed_clock: bool = False
 
     def __post_init__(self) -> None:
         _check_int(self.max_workers, "max_workers", minimum=1)
         _check_bool(self.summary, "summary")
+        _check_bool(self.fixed_clock, "fixed_clock")
         if self.log is not None and not isinstance(self.log, (str, Path)):
             raise ValueError(f"log must be a directory path, None, or '', got {self.log!r}")
         if self.log == "":  # the TOML spelling of "disabled" (TOML has no null)
@@ -293,7 +303,7 @@ def _inputs(data: Mapping, where: str) -> dict:
 
 
 _KEYS = {
-    "flow": {"max_workers", "log", "summary"},
+    "flow": {"max_workers", "log", "summary", "fixed_clock"},
     "task": {"retries", "retry_delay_seconds", "timeout"},
     "pool": {"process_max_workers"},
     "run": {"module", "flow"},

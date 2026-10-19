@@ -23,7 +23,7 @@ The package `sequence-extensions` (v2.0.0) is a pure Python library plus one con
 - `flow/__init__.py` — public surface of the flow layer
 - `flow/task.py` — `@task`, `TaskFunction` (attempt loop, timeout join, per-call policy resolution), `TaskTimeoutError`
 - `flow/flow.py` — `@flow` (run identity, pool ownership, drain, failure handling, `__flow__` marker, `last_run`)
-- `flow/runlog.py` — `RunLog` writer/reader, `jsonable` serialization policy, `SCHEMA_VERSION`
+- `flow/runlog.py` — `RunLog` writer/reader, `jsonable` serialization policy, `SCHEMA_VERSION`; `fixed_clock` reference mode (buffered canonical flush at close, pinned timing, `DR-016`)
 - `flow/_context.py` — `RunContext` and the `ContextVar` current-run plumbing
 - `flow/process_pool.py` — `ProcessGraphPool` (process executor, parent-side record replay), `ProcessDispatchError`
 - `flow_runner/__init__.py` — the `flow-runner` CLI: selection, discovery, inputs, exit codes

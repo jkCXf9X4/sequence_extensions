@@ -2,7 +2,7 @@
 id: INFO-010
 type: info
 title: Use cases
-summary: The use-case catalog — thirteen capability leaves (CP-016 to CP-028) concretizing the INFO-001 goal
+summary: The use-case catalog — fourteen capability leaves (CP-016 to CP-029) concretizing the INFO-001 goal
 date: 2026-10-14
 status: current
 ---
@@ -26,6 +26,7 @@ The use cases concretize the goal in `INFO-001`. Each is a capability leaf, cite
 - `CP-026` — set a run's parameters outside the code: one TOML file tunes the engine, picks the flow, sets its inputs; explicit keywords keep winning; `flow-runner` launches it.
 - `CP-027` — embed the engine in a host application: config installed at startup, flows called as functions, verdict read programmatically.
 - `CP-028` — start runs from a shell or pipeline: `flow-runner` in make, CI, cron, and batch scripts; exit codes branch, the run log is the artifact.
+- `CP-029` — keep a run log byte-stable for reference storage: `fixed_clock` pins run id, timing, worker, and record order; identical runs, identical bytes.
 
 ## Owns
 

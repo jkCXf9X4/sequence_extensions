@@ -28,6 +28,8 @@ Records live in the cold-storage archive; extract one with `pb archive read <ID>
   RunLog grows the reading side — filter selects, summarize condenses to the per-task account and verdict, diff compares two runs semantically (identity-keyed, timing excluded); IMP-022 implemented
 - **DR-015** — External configuration and flow-runner — TOML config, per-call resolution, module-scan discovery · accepted · 2026-10-16 · `DR-015`
   Engine parameters resolve per call from a TOML Config installed by configure() — explicit keyword > config > built-in default — and flow-runner launches a flow by scanning [run].module for the __flow__ marker
+- **DR-016** — fixed_clock reference mode — byte-identical run logs for reference storage · accepted · 2026-10-19 · `DR-016`
+  fixed_clock opts a run into reference mode — pinned run id, pinned timing, constant worker, canonical record order at close — so an identical run produces a byte-identical log file
 
 ### Architecture
 

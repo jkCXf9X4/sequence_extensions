@@ -7,11 +7,13 @@ run to compare equal to the reference — ``RunLog.diff`` over the logs
 comparison.  The package-version field in ``run_start`` is excluded in
 addition to ``DIFF_EXCLUDE``: it is metadata, not behavior.
 
-The run id is pinned (a fixed id per flow), so the log filename and the
-id inside every record are constant between runs.  The scratch tree
-(``tests/e2e/out/`` — versioned, one stable subtree per flow) keeps its
-shape across runs: repeated runs leave only timing-field differences in
-the logs and no file churn at all.
+The runs use the engine's reference mode (``fixed_clock``): the run id
+is pinned (a fixed id per flow, so the log filename and the id inside
+every record are constant) and the log comes out byte-identical for an
+identical run — timing pinned, records in canonical order.  The
+scratch tree (``tests/e2e/out/`` — versioned, one stable subtree per
+flow) therefore never churns in git: repeated runs rewrite the same
+bytes.
 
 A failure means behavior changed between versions.  Intended changes
 regenerate the reference; unintended ones are regressions.
@@ -23,7 +25,6 @@ Regenerate the reference::
 
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import re
@@ -33,6 +34,7 @@ from pathlib import Path
 import pytest
 
 from e2e.flows import campaign, failing_campaign
+from sequence_extensions.config import Config, FlowConfig, use_config
 from sequence_extensions.flow import DIFF_EXCLUDE, RunLog
 
 E2E = Path(__file__).resolve().parent
@@ -45,29 +47,21 @@ CASES = Path("tests/e2e/cases")
 #: of ``DIFF_EXCLUDE`` so the gate fires only on real drift.
 _E2E_EXCLUDE = DIFF_EXCLUDE | {"version"}
 
-#: The module that builds run ids.  Imported through importlib because
-#: the ``flow`` package re-exports the ``flow`` *decorator*, shadowing
-#: the submodule attribute a plain ``import ... as`` would resolve to.
-_FLOW_MODULE = importlib.import_module("sequence_extensions.flow.flow")
+#: Reference-mode configuration for every run: pinned run id and
+#: byte-stable logs (see the module docstring).
+_REFERENCE_MODE = Config(flow=FlowConfig(fixed_clock=True))
 
 
 def _fixed_run_id(flow_name: str) -> str:
-    """A stable run id: same flow, same id, every run.
-
-    The log filename (``<run_id>.jsonl``) and the id inside every record
-    stay constant, so repeated runs leave the versioned ``out/`` tree
-    with only timing-field differences — no file churn.
-    """
+    """The id ``fixed_clock`` mode pins: same flow, same id, every run."""
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", flow_name).strip("-") or "flow"
     return f"{safe}-fixed"
 
 
 @pytest.fixture(autouse=True)
-def _from_repo_root_with_pinned_run_id(monkeypatch):
-    """Run from the repository root (paths end up in the logs) with the
-    run id pinned, so scratch and reference paths stay stable."""
+def _from_repo_root(monkeypatch):
+    """Run from the repository root (paths end up in the logs)."""
     monkeypatch.chdir(REPO_ROOT)
-    monkeypatch.setattr(_FLOW_MODULE, "_new_run_id", _fixed_run_id)
 
 
 def _clean(out: Path) -> None:
@@ -114,9 +108,10 @@ def _compare_with_reference(flow_name: str, out: Path) -> None:
 
 
 def _run_and_check(flow_name: str, out: Path, run_flow) -> None:
-    """Clean one flow's scratch, run it, then save and/or compare."""
+    """Clean one flow's scratch, run it in reference mode, then save and/or compare."""
     _clean(out)
-    run_flow()
+    with use_config(_REFERENCE_MODE):
+        run_flow()
     if os.environ.get("UPDATE_REF"):
         _save_reference(flow_name, out)
     _compare_with_reference(flow_name, out)

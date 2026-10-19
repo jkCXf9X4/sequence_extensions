@@ -30,7 +30,7 @@ from sequence_extensions.config import (
     use_config,
 )
 from sequence_extensions.flow import ProcessGraphPool, flow, task
-from sequence_extensions.flow.runlog import RunLog
+from sequence_extensions.flow.runlog import FIXED_CLOCK, FIXED_WORKER, RunLog
 from sequence_extensions.flow.task import TaskTimeoutError
 from sequence_extensions.graph import GraphPool
 
@@ -61,6 +61,19 @@ def outer():
 def plain(value):
     """Return the value unchanged."""
     return value
+
+
+@task
+def echo(value):
+    """Return the value unchanged (deterministic task for reference-mode tests)."""
+    return value
+
+
+@flow
+def fan(values):
+    """Submit every value at once, then gather — completion order may jitter."""
+    futures = [echo.submit(v) for v in values]
+    return [f.result() for f in futures]
 
 
 @pytest.fixture(autouse=True)
@@ -95,6 +108,8 @@ def test_sections_validate_on_construction():
         FlowConfig(max_workers=0)
     with pytest.raises(ValueError, match="summary must be true or false"):
         FlowConfig(summary="yes")
+    with pytest.raises(ValueError, match="fixed_clock must be true or false"):
+        FlowConfig(fixed_clock="yes")
     with pytest.raises(ValueError, match="log must be a directory path"):
         FlowConfig(log=3)
     with pytest.raises(ValueError, match="process_max_workers must be >= 1"):
@@ -134,6 +149,7 @@ mode = "fast"
 max_workers = 8
 log = "output/runs"
 summary = true
+fixed_clock = true
 
 [task]
 retries = 2
@@ -148,7 +164,7 @@ process_max_workers = 2
     cfg = Config.from_toml(path)
     assert cfg.run == RunConfig(module="mypackage.flows", flow="campaign")
     assert cfg.inputs == {"items": [1, 2, 3], "mode": "fast"}
-    assert cfg.flow == FlowConfig(max_workers=8, log="output/runs", summary=True)
+    assert cfg.flow == FlowConfig(max_workers=8, log="output/runs", summary=True, fixed_clock=True)
     assert cfg.task == TaskConfig(retries=2, retry_delay_seconds=0.5, timeout=30)
     assert cfg.pool == PoolConfig(process_max_workers=2)
 
@@ -375,3 +391,68 @@ def test_process_pool_task_uses_configured_retries(tmp_path):
 def test_unset_sentinel_is_opaque():
     assert repr(UNSET) == "UNSET"
     assert UNSET is not None
+
+
+# ---------------------------------------------------------------- #
+# fixed_clock: reference mode — byte-stable logs for reference storage
+# ---------------------------------------------------------------- #
+def test_fixed_clock_off_by_default(tmp_path):
+    with use_config(Config(flow=FlowConfig(log=str(tmp_path)))):
+        plain(1)
+    path = next(tmp_path.glob("plain-*.jsonl"))
+    assert not path.name.endswith("-fixed.jsonl")  # a real, per-run id
+    records = RunLog.records(path)
+    assert records[0]["started"] != FIXED_CLOCK
+    assert all(r["run_id"] == records[0]["run_id"] for r in records)
+
+
+def test_fixed_clock_from_config_pins_identity_and_timing(tmp_path):
+    with use_config(Config(flow=FlowConfig(log=str(tmp_path), fixed_clock=True))):
+        plain(2)
+    records = RunLog.records(tmp_path / "plain-fixed.jsonl")
+    assert [r["record"] for r in records] == ["run_start", "run_end"]
+    assert all(r["run_id"] == "plain-fixed" for r in records)
+    assert records[0]["started"] == FIXED_CLOCK
+    assert records[-1]["ended"] == FIXED_CLOCK
+    assert records[-1]["duration_ms"] == 0
+
+
+def test_fixed_clock_keyword_beats_config(tmp_path):
+    with use_config(Config(flow=FlowConfig(log=str(tmp_path), fixed_clock=True))):
+
+        @flow(fixed_clock=False, log=str(tmp_path))
+        def literal():
+            return 1
+
+        literal()
+    path = next(p for p in tmp_path.glob("literal-*.jsonl") if not p.name.endswith("-fixed.jsonl"))
+    assert RunLog.records(path)[0]["started"] != FIXED_CLOCK
+
+
+def test_fixed_clock_identical_runs_are_byte_identical(tmp_path):
+    values = list(range(8))
+    with use_config(Config(flow=FlowConfig(log=str(tmp_path), fixed_clock=True))):
+        fan(values)
+        first = (tmp_path / "fan-fixed.jsonl").read_bytes()
+        fan(values)  # completion order may jitter; the bytes may not
+        second = (tmp_path / "fan-fixed.jsonl").read_bytes()
+    assert first == second
+    assert first  # a real log, not an empty one
+
+
+def test_fixed_clock_process_replay_is_pinned(tmp_path):
+    pool = ProcessGraphPool(max_workers=2)
+
+    @flow(pool=pool, log=str(tmp_path), fixed_clock=True)
+    def fanout(values):
+        futures = [echo.submit(v) for v in values]
+        return [f.result() for f in futures]
+
+    fanout(list(range(6)))
+    first = (tmp_path / "fanout-fixed.jsonl").read_bytes()
+    fanout(list(range(6)))
+    assert (tmp_path / "fanout-fixed.jsonl").read_bytes() == first
+    for record in RunLog.filter(RunLog.records(tmp_path / "fanout-fixed.jsonl"), record="task"):
+        assert record["start"] == FIXED_CLOCK  # worker-side timing pinned at replay
+        assert record["duration_ms"] == 0
+        assert record["worker"] == FIXED_WORKER

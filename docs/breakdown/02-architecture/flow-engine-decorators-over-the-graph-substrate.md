@@ -17,13 +17,13 @@ The flow layer (`sequence_extensions.flow`) is the audit-first engine, built on 
 - `@flow` wraps a function: run identity, a `GraphPool` (owned or caller-supplied), and a JSON-lines run log.
 - The `@flow` wrapper carries `__flow__` (the flow name, runner discovery) and `last_run` (a dict: `run_id`, `status`, `log`, `duration_ms`; concurrent calls race, last writer wins).
 - Undecorated helpers stay plain functions; fan-in, gates, and drivers are user code.
-- `runlog` writes one record per event: `run_start`, one per task attempt, `run_end`.
+- `runlog` writes one record per event: `run_start`, one per task attempt, `run_end`. `fixed_clock` reference mode (`CP-029`, `DR-016`) buffers and flushes at close — pinned timing, constant worker, canonical order — for byte-identical reference files.
 - `_context` carries the run (identity, log, pool, submitted nodes) in a `ContextVar`; workers and attempt threads restore it — `ContextVar` values do not cross threads on their own.
 - `process_pool` — `ProcessGraphPool`, a `GraphPool` subclass on a `ProcessPoolExecutor` (`CP-022`): same bind/result/exit surface, worker processes instead of threads.
 
 ## Configuration (`DR-015`, `CP-026`)
 
-- Unset `@task` keywords (`retries`, `retry_delay_seconds`, `timeout`), unset `@flow` keywords (`max_workers`, `log`, `summary`), and a bare `ProcessGraphPool()` resolve per call: explicit keyword > active config > built-in default.
+- Unset `@task` keywords (`retries`, `retry_delay_seconds`, `timeout`), unset `@flow` keywords (`max_workers`, `log`, `summary`, `fixed_clock`), and a bare `ProcessGraphPool()` resolve per call: explicit keyword > active config > built-in default.
 - Resolution at call time, not decoration time: `configure()` after import reaches module-level decorators.
 - The active config lives in a `ContextVar` (`config.py`); pool workers and timeout attempt threads restore it around task bodies, same plumbing as the run context.
 - Process mode resolves the policy in the submitting thread and ships concrete values: executor dispatch pickles from its manager thread, and worker processes may not inherit the parent context. A task carrying `UNSET` never crosses the process boundary.

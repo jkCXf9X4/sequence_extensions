@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`fixed_clock` — reference mode** (`@flow(fixed_clock=True)` / `[flow] fixed_clock`):
+  a run executes as if on a frozen clock, so an identical run produces a
+  byte-identical log — for storing run logs as reference files (golden
+  files in git) without churn.  The run id pins to `<flow>-fixed` (the
+  log file overwrites itself), engine-written timestamps pin to
+  `1970-01-01T00:00:00+00:00`, `duration_ms` to `0`, the `worker` field
+  to a constant, and records are written at close in canonical order
+  (`run_start`, tasks by task / attempt / inputs, `run_end`) instead of
+  completion order.  Default off; timing fields are the only thing
+  pinned — execution facts are untouched.  The e2e harness now uses the
+  option instead of monkeypatching the id builder, so
+  `tests/e2e/out/logs/` no longer churns between runs (decision
+  `DR-016` in the product breakdown).
+- **Larger-workflow documentation** — README and `docs/API.md` now
+  document both incorporation paths: driving runs from a shell or
+  pipeline (`flow-runner` in make, CI, cron, batch scripts — exit-code
+  branching, one TOML per environment, the run log as the pipeline
+  artifact) and embedding the engine in a host Python application
+  (`configure()` at startup, flows called as functions, the verdict
+  read from `flow.last_run`, `use_config` scoping).
+
 ## [2.0.0] - 2026-10-16
 
 The external-configuration release: every engine parameter can live

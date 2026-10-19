@@ -22,6 +22,13 @@ condenses one run to its per-task account and verdict; and
 check.  Comparison identifies records by what ran, never by position,
 and drops wall-clock and worker fields by default
 (:data:`DIFF_EXCLUDE`): wall time is not an execution fact.
+
+Reference mode (``RunLog(..., fixed_clock=True)``) serves the other
+kind of determinism: identical runs produce byte-identical files, for
+storing logs as reference artifacts (golden files in git).  Records
+are buffered and written at close, in canonical order, with timing
+pinned (:data:`FIXED_CLOCK`, ``duration_ms`` 0) and workers constant
+(:data:`FIXED_WORKER`).
 """
 
 from __future__ import annotations
@@ -48,6 +55,56 @@ _SUMMARY_CONTAINER_LIMIT = 8
 DIFF_EXCLUDE = frozenset(
     {"seq", "run_id", "start", "end", "started", "ended", "duration_ms", "worker"}
 )
+
+#: The instant ``fixed_clock`` mode stamps on every engine-written
+#: timing field (the epoch — obvious, and never a real reading).
+FIXED_CLOCK = "1970-01-01T00:00:00+00:00"
+
+#: What ``fixed_clock`` mode writes instead of the executing worker's
+#: thread name: worker identity is not an execution fact.
+FIXED_WORKER = "fixed"
+
+#: Engine-written timing fields ``fixed_clock`` mode pins.
+_FIXED_TIMING_FIELDS = ("start", "end", "started", "ended")
+
+
+def _pin_timing(record: dict) -> dict:
+    """Reference-mode copy of a record: timing pinned, worker constant."""
+    out = dict(record)
+    for field in _FIXED_TIMING_FIELDS:
+        if field in out:
+            out[field] = FIXED_CLOCK
+    if "duration_ms" in out:
+        out["duration_ms"] = 0
+    if "worker" in out:
+        out["worker"] = FIXED_WORKER
+    return out
+
+
+def _canonical_order(item) -> tuple:
+    """Sort key for a buffered ``(arrival, record)`` pair.
+
+    ``run_start`` first, ``run_end`` last, task records between — by
+    what ran (task, attempt, inputs), never by completion order: on a
+    frozen clock, completion order carries no information.  Arrival
+    index only breaks exact ties.
+    """
+    arrival, rec = item
+    kind = rec.get("record")
+    if kind == "run_start":
+        return (0, "", -1, "", "", arrival)
+    if kind == "run_end":
+        return (2, "", -1, "", "", arrival)
+    attempt = rec.get("attempt")
+    attempt = attempt if isinstance(attempt, int) else -1
+    return (
+        1,
+        str(rec.get("task")),
+        attempt,
+        _canon(rec.get("args")),
+        _canon(rec.get("kwargs")),
+        arrival,
+    )
 
 
 def _file_sha256(path: Path):
@@ -197,14 +254,26 @@ class RunLog:
     added to every record on write.  Writing to a closed (or never opened)
     log raises — the flow layer closes the log only after every record is
     in, so a late write is a bug, not a dropped line.
+
+    ``fixed_clock=True`` opts the log into reference mode: records are
+    buffered and written at :meth:`close`, in canonical order (``run_start``,
+    task records by task / attempt / inputs, ``run_end``) with ``seq``
+    assigned in that order; engine-written timing fields are pinned to
+    :data:`FIXED_CLOCK`, ``duration_ms`` to ``0``, and ``worker`` to
+    :data:`FIXED_WORKER`.  The log of an identical run comes out
+    byte-identical — for reference-file storage (golden files in git).
+    The trade: a reference-mode file holds nothing until close.
     """
 
-    def __init__(self, path, *, summary: bool = False):
+    def __init__(self, path, *, summary: bool = False, fixed_clock: bool = False):
         self.path = Path(path)
         self.summary = bool(summary)
+        self.fixed_clock = bool(fixed_clock)
         self._lock = threading.Lock()
         self._seq = 0
         self._fh = None
+        # Reference mode buffers records; canonical flush happens on close.
+        self._buffer: list[tuple[int, dict]] | None = [] if fixed_clock else None
 
     # ------------------------------------------------------------ #
     # Lifecycle
@@ -215,8 +284,10 @@ class RunLog:
         self._fh = self.path.open("w", encoding="utf-8")
 
     def close(self) -> None:
-        """Close the file (idempotent)."""
+        """Close the file (idempotent).  Reference mode flushes here."""
         if self._fh is not None:
+            if self._buffer is not None:
+                self._flush_canonical()
             self._fh.close()
             self._fh = None
 
@@ -224,14 +295,29 @@ class RunLog:
     # Writing / reading
     # ------------------------------------------------------------ #
     def write(self, record: dict) -> None:
-        """Append one record as a JSON line (thread-safe, flushed)."""
+        """Append one record as a JSON line (thread-safe, flushed).
+
+        Reference mode (``fixed_clock``) buffers the record instead; the
+        canonical, pinned lines reach the file at :meth:`close`.
+        """
         if self._fh is None:
             raise RuntimeError(f"RunLog.write on a closed log: {self.path}")
         with self._lock:
+            if self._buffer is not None:
+                self._buffer.append((len(self._buffer), dict(record)))
+                return
             self._seq += 1
             line = {"seq": self._seq, "schema": SCHEMA_VERSION, **record}
             self._fh.write(json.dumps(line, default=str, ensure_ascii=False) + "\n")
             self._fh.flush()
+
+    def _flush_canonical(self) -> None:
+        """Reference-mode flush: pinned records in canonical order, renumbered."""
+        for _arrival, record in sorted(self._buffer, key=_canonical_order):
+            self._seq += 1
+            line = {"seq": self._seq, "schema": SCHEMA_VERSION, **_pin_timing(record)}
+            self._fh.write(json.dumps(line, default=str, ensure_ascii=False) + "\n")
+        self._fh.flush()
 
     @staticmethod
     def records(path) -> list:

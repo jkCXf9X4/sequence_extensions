@@ -11,6 +11,8 @@ import pytest
 
 from sequence_extensions.flow.runlog import (
     _SUMMARY_CONTAINER_LIMIT,
+    FIXED_CLOCK,
+    FIXED_WORKER,
     SCHEMA_VERSION,
     RunLog,
     jsonable,
@@ -134,6 +136,83 @@ def test_runlog_write_closed_raises(tmp_path):
     log.close()
     with pytest.raises(RuntimeError, match="closed"):
         log.write({"record": "x"})
+
+
+# ---------------------------------------------------------------- #
+# RunLog writer: reference mode (fixed_clock)
+# ---------------------------------------------------------------- #
+def test_reference_mode_buffers_until_close(tmp_path):
+    path = tmp_path / "ref.jsonl"
+    log = RunLog(path, fixed_clock=True)
+    log.open()
+    log.write({"record": "run_start"})
+    assert path.read_text(encoding="utf-8") == ""  # nothing until close
+    log.close()
+    assert len(RunLog.records(path)) == 1
+
+
+def test_reference_mode_pins_timing_and_orders_canonically(tmp_path):
+    path = tmp_path / "ref.jsonl"
+    log = RunLog(path, fixed_clock=True)
+    log.open()
+    # Deliberately out of canonical order, with real-looking timing.
+    log.write(
+        {
+            "record": "task",
+            "run_id": "f-fixed",
+            "task": "beta",
+            "attempt": 1,
+            "status": "ok",
+            "args": [2],
+            "kwargs": {},
+            "start": "2026-10-19T06:00:00+00:00",
+            "end": "2026-10-19T06:00:01+00:00",
+            "duration_ms": 7,
+            "worker": "graph-worker_3",
+            "result": 4,
+        }
+    )
+    log.write(
+        {
+            "record": "run_end",
+            "run_id": "f-fixed",
+            "status": "ok",
+            "ended": "2026-10-19T06:00:02+00:00",
+            "duration_ms": 9,
+            "result": 4,
+        }
+    )
+    log.write({"record": "run_start", "run_id": "f-fixed", "started": "2026-10-19T06:00:00+00:00"})
+    log.close()
+
+    recs = RunLog.records(path)
+    assert [r["record"] for r in recs] == ["run_start", "task", "run_end"]
+    assert [r["seq"] for r in recs] == [1, 2, 3]  # renumbered in canonical order
+    run_start, task, run_end = recs
+    assert run_start["started"] == FIXED_CLOCK
+    assert run_end["ended"] == FIXED_CLOCK
+    assert run_end["duration_ms"] == 0
+    assert task["start"] == FIXED_CLOCK
+    assert task["end"] == FIXED_CLOCK
+    assert task["duration_ms"] == 0
+    assert task["worker"] == FIXED_WORKER
+    assert task["result"] == 4  # execution facts untouched
+
+
+def test_reference_mode_orders_tasks_by_identity_not_arrival(tmp_path):
+    path = tmp_path / "ref.jsonl"
+    log = RunLog(path, fixed_clock=True)
+    log.open()
+    for name, attempt in [("b", 1), ("a", 2), ("a", 1), ("b", 2)]:
+        log.write({"record": "task", "task": name, "attempt": attempt, "status": "ok"})
+    log.close()
+    recs = RunLog.records(path)
+    assert [(r["task"], r["attempt"]) for r in recs] == [
+        ("a", 1),
+        ("a", 2),
+        ("b", 1),
+        ("b", 2),
+    ]
 
 
 def test_runlog_records_roundtrip(tmp_path):

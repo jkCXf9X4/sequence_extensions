@@ -322,6 +322,7 @@ def campaign(cases_dir): ...
 max_workers = 8            # default 16
 log = "output/runs"        # default "runs"; "" disables run logging
 summary = true             # default false
+fixed_clock = false        # default false; reference mode (see below)
 
 [task]
 retries = 2                # default 0
@@ -333,6 +334,8 @@ process_max_workers = 4    # ProcessGraphPool() default; omit → CPU count
 ```
 
 Resolution happens at call time, so `configure()` in `main()` reaches module-level decorators regardless of import order. The whole file is validated on load — unknown keys and bad values fail immediately with the file, section, and key named. A `ProcessGraphPool` constructed directly resolves at construction time: construct it after `configure()`, or pass `max_workers` explicitly. The thread substrate stays config-free — `GraphPool` keeps its fixed default of 16, and `@flow` sizes its own pool from `[flow] max_workers`. TOML has no `null`; an omitted key keeps the built-in default.
+
+`fixed_clock = true` (or `@flow(fixed_clock=True)`) opts a run into **reference mode**: the run executes as if on a frozen clock, so an identical run produces a byte-identical log. The run id pins to `<flow>-fixed` (the log file overwrites itself instead of accumulating), every engine-written timestamp becomes `1970-01-01T00:00:00+00:00`, `duration_ms` becomes `0`, the `worker` field becomes constant, and records are written in canonical order — `run_start`, tasks by task/attempt/inputs, `run_end` — instead of completion order. Built for storing run logs as reference files (golden files in git) without timestamp churn; the trade is that the file holds nothing until the flow returns.
 
 ## flow-runner
 
@@ -364,6 +367,75 @@ $ flow-runner campaign.toml --flow report   # override the selection
 ```
 
 Same entry point as a module: `python -m sequence_extensions.flow_runner campaign.toml`. Exit codes: `0` the run succeeded, `1` the flow raised, `2` usage or config error — cron/CI/SLURM friendly. Flows needing non-TOML inputs (open connections, custom objects) belong in a small `main.py` that calls them directly. A config file names a module to import, so treat it as trusted code.
+
+## Larger workflows
+
+Two ways to drive the engine from outside its own code — a shell or pipeline on the CLI, or an embedding application on the library. Both steer the same TOML file ([Configuration](#configuration)).
+
+### From a shell or pipeline
+
+`flow-runner` fits make, CI, cron, and batch scripts: one command, no driver script per run, and the outcome lands in the exit code.
+
+```make
+# Makefile — one target per config
+campaign:
+	flow-runner configs/nightly.toml
+
+report:
+	flow-runner configs/report.toml
+```
+
+```yaml
+# .github/workflows/campaign.yml — run, gate on the exit code, keep the log
+- run: pip install .
+- run: flow-runner configs/ci.toml
+- uses: actions/upload-artifact@v4
+  if: always()                    # archive the log even when the flow fails
+  with:
+    name: run-log
+    path: artifacts/runs/         # = [flow] log in ci.toml
+```
+
+The pipeline picks the config file, so one file per environment keeps runs apart:
+
+```
+configs/
+├── ci.toml        # small pools, log into artifacts/
+├── nightly.toml   # more retries, longer timeouts
+└── report.toml    # another flow, other inputs
+```
+
+- **Branch on the exit code**: `0` success, `1` the flow raised, `2` usage or config error — cron, CI, and SLURM see the same codes.
+- **Fail before the first task**: a bad config fails at load with the file, section, and key named; nothing has run yet.
+- **The log is the artifact**: `[flow] log` puts the JSON-lines file where the pipeline collects it; the account line (status, duration, log path) names it.
+- **Look before you run**: `--list` shows the flows in the module with their docstrings; `--flow NAME` overrides the selection.
+- **Varying inputs per invocation** means one TOML per variant — inputs come from the file, there is no `--set` flag.
+- **Store logs as golden files**: `fixed_clock = true` in the config makes an identical run produce a byte-identical log (pinned run id, pinned timing, canonical record order) — commit it, and re-running the pipeline leaves git clean.
+
+### Embedded in an application
+
+The engine is a library: no service to run, no threads started at import, no dependencies beyond Python. An application installs a config at startup and calls flows like functions.
+
+```python
+# app.py
+from sequence_extensions.flow import Config, configure
+
+from mypackage.flows import campaign
+
+configure(Config.from_toml("config.toml"))  # once, at startup
+
+verdict = campaign(cases_dir="cases")  # returns the flow's result
+last = campaign.last_run  # run_id, status, log, duration_ms
+if last["status"] != "ok":
+    raise RuntimeError(f"campaign failed, see {last['log']}")
+archive(last["log"])  # keep the JSONL beside app data
+```
+
+- **No import-order constraint**: `configure()` at startup reaches module-level decorators — resolution happens at call time.
+- **Scoped configuration**: `use_config(cfg)` runs one block under a config (per tenant, per request in a worker); `reset_config(token)` restores the previous one.
+- **Quiet when unwanted**: `log = ""` in the config disables run logging — tests and short-lived jobs keep the disk clean.
+- **Determinism holds**: config values never enter run-log records, so identical code and inputs still diff identical.
+- Flows needing open connections or custom objects are called directly like this; the runner is the convenience for TOML-shaped inputs.
 
 ## Development
 

@@ -35,5 +35,6 @@ What users need: the use-case catalog — needs stated in user-observable terms,
 - **CP-026** [UC-26 Set a run's parameters outside the code](uc-26-set-a-runs-parameters-outside-the-code.md) — engine parameters and flow selection live in one TOML file; explicit keywords keep winning; the file launches the run without a code change
 - **CP-027** [UC-27 Embed the engine in a host application](uc-27-embed-the-engine-in-a-host-application.md) — host application calls flows as functions, installs config at startup, reads the verdict programmatically — no service, no dependencies
 - **CP-028** [UC-28 Start runs from a shell or pipeline](uc-28-start-runs-from-a-shell-or-pipeline.md) — make, CI, cron, and batch scripts start flows through flow-runner, branch on exit codes, keep the run log as the artifact
-- **INFO-010** [Use cases](use-cases.md) — The use-case catalog — thirteen capability leaves (CP-016 to CP-028) concretizing the INFO-001 goal
+- **CP-029** [UC-29 Keep a run log byte-stable for reference storage](uc-29-keep-a-run-log-byte-stable-for-reference-storage.md) — reference mode: fixed_clock pins run id, timing, worker, and record order — identical runs produce byte-identical log files
+- **INFO-010** [Use cases](use-cases.md) — The use-case catalog — fourteen capability leaves (CP-016 to CP-029) concretizing the INFO-001 goal
 <!-- pb:index:end -->
