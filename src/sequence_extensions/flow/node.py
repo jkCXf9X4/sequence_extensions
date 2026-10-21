@@ -51,6 +51,7 @@ import re
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sequence_extensions.flow._context import (
@@ -66,7 +67,7 @@ from sequence_extensions.flow._context import (
     in_worker,
 )
 from sequence_extensions.flow._options import UNSET, validate_node_policy
-from sequence_extensions.flow.process_pool import ProcessGraphPool, _process_node_runner
+from sequence_extensions.flow.process_pool import _process_node_runner
 from sequence_extensions.flow.runlog import jsonable
 from sequence_extensions.graph.graph_future import GraphFuture
 
@@ -132,9 +133,8 @@ class FlowFuture(GraphFuture):
         super().__init__(*args, **kwargs)
         self.path: tuple = ()
         self.parent_attempt = None
-        self.flow_attempted = False
-        self.process_records = None
-        self.process_attempted = False
+        self.attempted = False
+        self.process_records: list[dict] | None = None
 
     def result(self, timeout=None):
         if in_worker() and not self.future.done():
@@ -162,6 +162,276 @@ def gather(futures):
     return future
 
 
+@dataclass
+class _AttemptState:
+    attempt: int = 0
+    finished: int = 0
+    done: bool = False
+    timer: threading.Timer | None = None
+    inner: object = None
+
+
+class _AttemptRunner:
+    """One node's attempt loop: retry, timeout, logging, and settlement."""
+
+    def __init__(
+        self,
+        node,
+        args,
+        kwargs,
+        ctx: RunContext | None,
+        *,
+        parent_token: AttemptToken | None,
+        run_attempt_token: AttemptToken | None,
+        retries: int,
+        delay: float,
+        timeout: float | None,
+    ):
+        self.node = node
+        self.args = args
+        self.kwargs = kwargs
+        self.ctx = ctx
+        self.parent_token = parent_token
+        self.run_attempt_token = run_attempt_token
+        self.delay = delay
+        self.timeout = timeout
+        self.max_attempts = retries + 1
+        self.path = tuple(current_node_path()) + (node.name,)
+        self.parent_attempt = current_node_attempt()
+        self.worker_name = threading.current_thread().name
+        self.base_worker = in_worker()
+        self.base_process = in_process_worker()
+        self.lock = threading.Lock()
+        self.state = _AttemptState()
+        self.outcome = FlowOutcome()
+        if ctx is not None:
+            ctx.outcomes.append(self.outcome)
+
+    def run(self) -> FlowOutcome:
+        self._start(1)
+        return self.outcome
+
+    def _finish(self, attempt, status, value, token, started_at, started_clock):
+        with self.lock:
+            if (
+                self.state.done
+                or self.state.attempt != attempt
+                or self.state.finished == attempt
+            ):
+                return
+            self.state.finished = attempt
+            timer = self.state.timer
+            self.state.timer = None
+        if timer is not None:
+            timer.cancel()
+        duration_ms = int((time.perf_counter() - started_clock) * 1000)
+        if status == "error" and isinstance(value, BaseException) and not isinstance(
+            value, Exception
+        ):
+            value = RuntimeError(f"{type(value).__qualname__}: {value}")
+        error = None if status == "ok" else value
+        if status == "timeout":
+            error = NodeTimeoutError(self.node.name, self.timeout, attempt)
+            token.abandoned.set()
+            with self.lock:
+                inner = self.state.inner
+            if inner is not None:
+                try:
+                    if isinstance(inner, GraphFuture):
+                        inner.future.cancel()
+                    else:
+                        inner.cancel()
+                except Exception:
+                    pass
+        if self.ctx is not None and self.ctx.runlog is not None:
+            self.node._log_attempt(
+                self.ctx,
+                self.path,
+                self.parent_attempt,
+                attempt,
+                status,
+                self.args,
+                self.kwargs,
+                value,
+                error,
+                token,
+                self.run_attempt_token,
+                started_at,
+                duration_ms,
+                allow_abandoned=(status == "timeout"),
+                worker=self.worker_name,
+            )
+        if status == "ok":
+            with self.lock:
+                self.state.done = True
+            self.outcome.set_result(value)
+            return
+        if self.ctx is not None and self.ctx.cancelled.is_set():
+            with self.lock:
+                self.state.done = True
+            self.outcome.set_exception(error)
+            return
+        if self.parent_token is not None and self.parent_token.abandoned_in_chain():
+            with self.lock:
+                self.state.done = True
+            self.outcome.set_exception(error)
+            return
+        if attempt < self.max_attempts:
+            if self.delay > 0:
+                timer = threading.Timer(self.delay, lambda: self._start(attempt + 1))
+                timer.daemon = True
+                timer.start()
+            else:
+                self._start(attempt + 1)
+            return
+        with self.lock:
+            self.state.done = True
+        self.outcome.set_exception(error)
+
+    def _after_body(self, attempt, value, token, started_at, started_clock, elapsed):
+        if self.base_process and _is_future(value):
+            self._finish(
+                attempt,
+                "error",
+                RuntimeError("a process worker cannot return a live future"),
+                token,
+                started_at,
+                started_clock,
+            )
+            return
+        if not _is_future(value) and _contains_future(value):
+            self._finish(
+                attempt,
+                "error",
+                RuntimeError(
+                    "a node returned a container holding futures; return one future "
+                    "(wrap the collection with gather(...))"
+                ),
+                token,
+                started_at,
+                started_clock,
+            )
+            return
+        if _is_future(value):
+            if self.ctx is None or self.ctx.pool is None:
+                self._finish(
+                    attempt,
+                    "error",
+                    RuntimeError("a node returning a future requires an active run"),
+                    token,
+                    started_at,
+                    started_clock,
+                )
+                return
+            if isinstance(value, GraphFuture):
+                try:
+                    self.ctx.pool.bind(value)
+                except Exception as exc:  # dependency cycle, dispatch error
+                    self._finish(attempt, "error", exc, token, started_at, started_clock)
+                    return
+            with self.lock:
+                if self.state.done or self.state.finished == attempt:
+                    return
+                self.state.inner = value
+            if self.timeout is not None:
+                remaining = self.timeout - elapsed
+                if remaining <= 0:
+                    self._finish(attempt, "timeout", None, token, started_at, started_clock)
+                    return
+                timer = threading.Timer(
+                    remaining,
+                    lambda: self._finish(
+                        attempt, "timeout", None, token, started_at, started_clock
+                    ),
+                )
+                timer.daemon = True
+                with self.lock:
+                    self.state.timer = timer
+                timer.start()
+
+            def _on_done(future, attempt=attempt, token=token):
+                try:
+                    result = future.result()
+                except BaseException as exc:
+                    self._finish(attempt, "error", exc, token, started_at, started_clock)
+                else:
+                    self._finish(attempt, "ok", result, token, started_at, started_clock)
+
+            value.add_done_callback(_on_done)
+        else:
+            self._finish(attempt, "ok", value, token, started_at, started_clock)
+
+    def _run_body(self, attempt, token):
+        with execution_scope(
+            ctx=self.ctx,
+            path=self.path,
+            attempt=attempt,
+            token=token,
+            run_token=self.run_attempt_token,
+            worker=self.base_worker,
+            process_worker=self.base_process,
+        ):
+            if self.ctx is not None and self.ctx.cancelled.is_set():
+                raise RuntimeError(
+                    f"run cancelled before node '{self.node.name}' attempt {attempt}"
+                )
+            if self.parent_token is not None and self.parent_token.abandoned_in_chain():
+                raise RuntimeError(
+                    f"attempt {attempt} of node '{self.node.name}' is abandoned"
+                )
+            return self.node.fn(*self.args, **self.kwargs)
+
+    def _start(self, attempt):
+        with self.lock:
+            if self.state.done or self.state.finished >= attempt:
+                return
+            self.state.attempt = attempt
+            self.state.inner = None
+            # A run-level timeout token is an ancestor of the root attempt,
+            # so abandoning it drops every descendant record.
+            token = AttemptToken(self.parent_token or self.run_attempt_token)
+        started_clock = time.perf_counter()
+        started_at = _utcnow()
+        if self.timeout is None:
+            try:
+                value = self._run_body(attempt, token)
+            except BaseException as exc:
+                self._finish(attempt, "error", exc, token, started_at, started_clock)
+            else:
+                self._after_body(
+                    attempt,
+                    value,
+                    token,
+                    started_at,
+                    started_clock,
+                    time.perf_counter() - started_clock,
+                )
+            return
+
+        box = {}
+
+        def _target():
+            try:
+                box["value"] = self._run_body(attempt, token)
+            except BaseException as exc:
+                box["error"] = exc
+
+        thread = threading.Thread(
+            target=_target, name=f"{self.node.name}-attempt", daemon=True
+        )
+        thread.start()
+        thread.join(self.timeout)
+        elapsed = time.perf_counter() - started_clock
+        if thread.is_alive():
+            self._finish(attempt, "timeout", None, token, started_at, started_clock)
+        elif "error" in box:
+            self._finish(attempt, "error", box["error"], token, started_at, started_clock)
+        else:
+            self._after_body(
+                attempt, box.get("value"), token, started_at, started_clock, elapsed
+            )
+
+
 class NodeFunction:
     """The object ``@node`` returns: still callable, plus ``.submit()``.
 
@@ -170,13 +440,20 @@ class NodeFunction:
     """
 
     def __init__(self, fn, *, retries=UNSET, retry_delay_seconds=UNSET, timeout=UNSET, name=None):
+        if not callable(fn):
+            raise TypeError(f"@node expects a callable, got {fn!r}")
+        if name is not None and (not isinstance(name, str) or not name):
+            raise ValueError(f"name must be a non-empty string, got {name!r}")
         validate_node_policy(retries, retry_delay_seconds, timeout)
         self.fn = fn
         self.retries = retries
         self.retry_delay_seconds = retry_delay_seconds
         self.timeout = timeout
         self.name = name or getattr(fn, "__name__", "node")
-        functools.update_wrapper(self, fn)
+        # Copy the function's metadata, but not arbitrary attributes: a
+        # decorated function may carry its own ``retries`` / ``timeout`` /
+        # ``name`` attributes, and those must not override the node policy.
+        functools.update_wrapper(self, fn, updated=())
         # Process-pool support: the decorator replaces the module-level
         # name with this NodeFunction, so pickling the raw function by
         # reference would fail pickle's identity check.  Rebind the raw
@@ -276,7 +553,7 @@ class NodeFunction:
 
         parent_token = token
         run_attempt_token = current_run_attempt_token()
-        if isinstance(ctx.pool, ProcessGraphPool):
+        if ctx.pool.process_workers:
             # Process mode: the node's function must be picklable, so the
             # runner is this module-level function carrying the node and a
             # plain-dict run header; the worker buffers run-log records and
@@ -293,6 +570,7 @@ class NodeFunction:
                 "run_id": ctx.run_id,
                 "node_name": ctx.node_name,
                 "summary": bool(ctx.runlog is not None and ctx.runlog.summary),
+                "node_defaults": ctx.options.node_defaults,
                 "parent_path": list(current_node_path()),
                 "parent_attempt": current_node_attempt(),
             }
@@ -304,7 +582,7 @@ class NodeFunction:
             parent_attempt = current_node_attempt()
 
             def _runner(*resolved_args, **resolved_kwargs):
-                gf.flow_attempted = True
+                gf.attempted = True
                 with execution_scope(
                     ctx=ctx,
                     path=parent_path,
@@ -356,238 +634,19 @@ class NodeFunction:
         parent_token: AttemptToken | None,
         run_attempt_token: AttemptToken | None,
     ) -> FlowOutcome:
-        """Run the attempt loop; return a future settled at the final outcome.
-
-        A body may return a concrete value or a future.  Futures are bound
-        to the run pool and settled by callbacks; the calling worker is not
-        held.  Retry delays and timeouts are timers.
-        """
-        outcome = FlowOutcome()
-        if ctx is not None:
-            ctx.outcomes.append(outcome)
+        """Run the attempt loop; return a future settled at the final outcome."""
         retries, delay, timeout = self._effective_policy()
-        max_attempts = retries + 1
-        path = tuple(current_node_path()) + (self.name,)
-        parent_attempt = current_node_attempt()
-        worker_name = threading.current_thread().name
-        base_worker = in_worker()
-        base_process = in_process_worker()
-        lock = threading.Lock()
-        state = {"attempt": 0, "finished": 0, "done": False, "timer": None, "inner": None}
-
-        def finish(attempt, status, value, token, started_at, started_clock):
-            with lock:
-                if state["done"] or state["attempt"] != attempt or state["finished"] == attempt:
-                    return
-                state["finished"] = attempt
-                timer = state["timer"]
-                state["timer"] = None
-            if timer is not None:
-                timer.cancel()
-            duration_ms = int((time.perf_counter() - started_clock) * 1000)
-            if status == "error" and isinstance(value, BaseException) and not isinstance(
-                value, Exception
-            ):
-                value = RuntimeError(f"{type(value).__qualname__}: {value}")
-            error = None if status == "ok" else value
-            if status == "timeout":
-                error = NodeTimeoutError(self.name, timeout, attempt)
-                token.abandoned.set()
-                inner = state["inner"]
-                if inner is not None:
-                    try:
-                        if isinstance(inner, GraphFuture):
-                            inner.future.cancel()
-                        else:
-                            inner.cancel()
-                    except Exception:
-                        pass
-            if ctx is not None and ctx.runlog is not None:
-                self._log_attempt(
-                    ctx,
-                    path,
-                    parent_attempt,
-                    attempt,
-                    status,
-                    args,
-                    kwargs,
-                    value,
-                    error,
-                    token,
-                    run_attempt_token,
-                    started_at,
-                    duration_ms,
-                    allow_abandoned=(status == "timeout"),
-                    worker=worker_name,
-                )
-            if status == "ok":
-                with lock:
-                    state["done"] = True
-                outcome.set_result(value)
-                return
-            if ctx is not None and ctx.cancelled.is_set():
-                with lock:
-                    state["done"] = True
-                outcome.set_exception(error)
-                return
-            if parent_token is not None and parent_token.abandoned_in_chain():
-                with lock:
-                    state["done"] = True
-                outcome.set_exception(error)
-                return
-            if attempt < max_attempts:
-                if delay > 0:
-                    timer = threading.Timer(delay, lambda: start(attempt + 1))
-                    timer.daemon = True
-                    timer.start()
-                else:
-                    start(attempt + 1)
-                return
-            with lock:
-                state["done"] = True
-            outcome.set_exception(error)
-
-        def after_body(attempt, value, token, started_at, started_clock, elapsed):
-            if in_process_worker() and _is_future(value):
-                finish(
-                    attempt,
-                    "error",
-                    RuntimeError("a process worker cannot return a live future"),
-                    token,
-                    started_at,
-                    started_clock,
-                )
-                return
-            if not _is_future(value) and _contains_future(value):
-                finish(
-                    attempt,
-                    "error",
-                    RuntimeError(
-                        "a node returned a container holding futures; return one future "
-                        "(wrap the collection with gather(...))"
-                    ),
-                    token,
-                    started_at,
-                    started_clock,
-                )
-                return
-            if _is_future(value):
-                if ctx is None or ctx.pool is None:
-                    finish(
-                        attempt,
-                        "error",
-                        RuntimeError("a node returning a future requires an active run"),
-                        token,
-                        started_at,
-                        started_clock,
-                    )
-                    return
-                if isinstance(value, GraphFuture):
-                    try:
-                        ctx.pool.bind(value)
-                    except Exception as exc:  # dependency cycle, dispatch error
-                        finish(attempt, "error", exc, token, started_at, started_clock)
-                        return
-                with lock:
-                    if state["done"] or state["finished"] == attempt:
-                        return
-                    state["inner"] = value
-                if timeout is not None:
-                    remaining = timeout - elapsed
-                    if remaining <= 0:
-                        finish(attempt, "timeout", None, token, started_at, started_clock)
-                        return
-                    timer = threading.Timer(
-                        remaining,
-                        lambda: finish(attempt, "timeout", None, token, started_at, started_clock),
-                    )
-                    timer.daemon = True
-                    with lock:
-                        state["timer"] = timer
-                    timer.start()
-
-                def _on_done(future, attempt=attempt, token=token):
-                    try:
-                        result = future.result()
-                    except BaseException as exc:
-                        finish(attempt, "error", exc, token, started_at, started_clock)
-                    else:
-                        finish(attempt, "ok", result, token, started_at, started_clock)
-
-                value.add_done_callback(_on_done)
-            else:
-                finish(attempt, "ok", value, token, started_at, started_clock)
-
-        def run_body(attempt, token):
-            with execution_scope(
-                ctx=ctx,
-                path=path,
-                attempt=attempt,
-                token=token,
-                run_token=run_attempt_token,
-                worker=base_worker,
-                process_worker=base_process,
-            ):
-                if ctx is not None and ctx.cancelled.is_set():
-                    raise RuntimeError(
-                        f"run cancelled before node '{self.name}' attempt {attempt}"
-                    )
-                if parent_token is not None and parent_token.abandoned_in_chain():
-                    raise RuntimeError(
-                        f"attempt {attempt} of node '{self.name}' is abandoned"
-                    )
-                return self.fn(*args, **kwargs)
-
-        def start(attempt):
-            with lock:
-                if state["done"] or state["finished"] >= attempt:
-                    return
-                state["attempt"] = attempt
-                state["inner"] = None
-                # A run-level timeout token is an ancestor of the root
-                # attempt, so abandoning it drops every descendant record.
-                token = AttemptToken(parent_token or run_attempt_token)
-            started_clock = time.perf_counter()
-            started_at = _utcnow()
-            if timeout is None:
-                try:
-                    value = run_body(attempt, token)
-                except BaseException as exc:
-                    finish(attempt, "error", exc, token, started_at, started_clock)
-                else:
-                    after_body(
-                        attempt,
-                        value,
-                        token,
-                        started_at,
-                        started_clock,
-                        time.perf_counter() - started_clock,
-                    )
-                return
-
-            box = {}
-
-            def _target():
-                try:
-                    box["value"] = run_body(attempt, token)
-                except BaseException as exc:
-                    box["error"] = exc
-
-            thread = threading.Thread(
-                target=_target, name=f"{self.name}-attempt", daemon=True
-            )
-            thread.start()
-            thread.join(timeout)
-            elapsed = time.perf_counter() - started_clock
-            if thread.is_alive():
-                finish(attempt, "timeout", None, token, started_at, started_clock)
-            elif "error" in box:
-                finish(attempt, "error", box["error"], token, started_at, started_clock)
-            else:
-                after_body(attempt, box.get("value"), token, started_at, started_clock, elapsed)
-
-        start(1)
-        return outcome
+        return _AttemptRunner(
+            self,
+            args,
+            kwargs,
+            ctx,
+            parent_token=parent_token,
+            run_attempt_token=run_attempt_token,
+            retries=retries,
+            delay=delay,
+            timeout=timeout,
+        ).run()
 
     def _log_attempt(
         self,

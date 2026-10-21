@@ -16,6 +16,7 @@ default.  ``log=None`` disables the file.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,8 @@ def _check_int(value, name: str, *, minimum: int | None = None) -> None:
 def _check_number(value, name: str, *, minimum=None) -> None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{name} must be a number, got {value!r}")
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be finite, got {value!r}")
     if minimum is not None and value < minimum:
         raise ValueError(f"{name} must be >= {minimum}, got {value}")
 
@@ -127,15 +130,15 @@ class RunOptions:
     """
 
     name: str | None = None
-    max_workers: Any = UNSET
-    log: Any = UNSET
-    summary: Any = UNSET
-    fixed_clock: Any = UNSET
+    max_workers: int | _Unset = UNSET
+    log: str | Path | None | _Unset = UNSET
+    summary: bool | _Unset = UNSET
+    fixed_clock: bool | _Unset = UNSET
     pool: Any = None
-    retries: Any = UNSET
-    retry_delay_seconds: Any = UNSET
-    timeout: Any = UNSET
-    node_defaults: Any = UNSET
+    retries: int | _Unset = UNSET
+    retry_delay_seconds: float | int | _Unset = UNSET
+    timeout: float | int | None | _Unset = UNSET
+    node_defaults: NodePolicy | None | _Unset = UNSET
 
     def __post_init__(self) -> None:
         if self.name is not None:

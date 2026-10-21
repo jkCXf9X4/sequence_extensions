@@ -353,7 +353,11 @@ class RunLog:
                 self._buffer.append((len(self._buffer), dict(record)))
                 return
             self._seq += 1
-            line = {"seq": self._seq, "schema": SCHEMA_VERSION, **record}
+            line = {"seq": self._seq, "schema": SCHEMA_VERSION}
+            line.update(record)
+            # Engine fields win: a record cannot spoof its own sequence.
+            line["seq"] = self._seq
+            line["schema"] = SCHEMA_VERSION
             self._fh.write(json.dumps(line, default=str, ensure_ascii=False) + "\n")
             self._fh.flush()
 
@@ -361,7 +365,10 @@ class RunLog:
         """Reference-mode flush: pinned records in canonical order, renumbered."""
         for _arrival, record in sorted(self._buffer, key=_canonical_order):
             self._seq += 1
-            line = {"seq": self._seq, "schema": SCHEMA_VERSION, **_pin_timing(record)}
+            line = {"seq": self._seq, "schema": SCHEMA_VERSION}
+            line.update(_pin_timing(record))
+            line["seq"] = self._seq
+            line["schema"] = SCHEMA_VERSION
             self._fh.write(json.dumps(line, default=str, ensure_ascii=False) + "\n")
         self._fh.flush()
 

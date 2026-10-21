@@ -53,6 +53,68 @@ def test_run_writes_run_start_and_run_end(tmp_path):
     assert run.log == Path(next(Path(tmp_path).glob("*.jsonl")))
 
 
+def test_owned_pool_is_settled_if_drain_raises(monkeypatch):
+    import sequence_extensions.flow.run as run_module
+    from sequence_extensions.graph import GraphPool
+
+    settled = []
+    original_exit = GraphPool.__exit__
+
+    def record_exit(pool, *args):
+        settled.append(pool)
+        return original_exit(pool, *args)
+
+    monkeypatch.setattr(GraphPool, "__exit__", record_exit)
+    monkeypatch.setattr(
+        run_module,
+        "_drain",
+        lambda ctx: (_ for _ in ()).throw(RuntimeError("drain boom")),
+    )
+
+    @node
+    def campaign():
+        return 1
+
+    with pytest.raises(RuntimeError, match="drain boom"):
+        execute_flow(campaign, options=RunOptions(log=None))
+    assert len(settled) == 1
+
+
+def test_run_timeout_does_not_block_on_pending_caller_owned_nodes(tmp_path):
+    from sequence_extensions.graph import GraphPool
+
+    @node
+    def slow(i):
+        time.sleep(0.5)
+        return i
+
+    @node
+    def root():
+        slow.submit(1)
+        second = slow.submit(2)
+        return second
+
+    shared = GraphPool(max_workers=1)
+    started = time.perf_counter()
+    try:
+        with pytest.raises(NodeTimeoutError):
+            execute_flow(
+                root,
+                options=RunOptions(log=tmp_path, pool=shared, timeout=0.1),
+            )
+        elapsed = time.perf_counter() - started
+    finally:
+        shared.__exit__(None, None, None)
+
+    assert elapsed < 0.4
+    recs = _read_log(tmp_path)
+    assert recs[-1]["record"] == "run_end"
+    assert recs[-1]["status"] == "timeout"
+    assert any(
+        record.get("reason") == "pending at run end" for record in _node_records(recs)
+    )
+
+
 def test_run_id_is_unique_and_prefixed():
     @node
     def campaign():

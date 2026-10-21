@@ -78,8 +78,8 @@ class RunContext:
 
     def __repr__(self):
         return (
-            f"<RunContext {self.run_id!r} pool={type(self.pool).__name__} "
-            f"nodes={len(self.nodes)}>"
+            f"<RunContext {self.run_id!r} node={self.node_name!r} "
+            f"pool={type(self.pool).__name__} nodes={len(self.nodes)}>"
         )
 
 

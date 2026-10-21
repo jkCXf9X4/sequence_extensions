@@ -191,11 +191,63 @@ def test_unbound_node_fn_never_called():
     assert called == [1]
 
 
+def test_graphfuture_requires_a_function():
+    with pytest.raises(TypeError, match="function"):
+        GraphFuture()
+
+
 def test_graphfuture_kwargs_constructor():
     """GraphFuture(function=fn, args=(1,2)) works (no positional-only)."""
     with GraphPool(max_workers=2) as p:
         gf = GraphFuture(function=fn_1, args=(1, 2))
         assert p.result(gf) == 1
+
+
+def test_graphfuture_positional_function_does_not_reserve_node_argument_names():
+    """With a positional function, ``args`` and ``function`` are node kwargs."""
+
+    def fn(args, function):
+        return args, function
+
+    with GraphPool(max_workers=2) as p:
+        gf = GraphFuture(fn, args="hello", function=3)
+        assert p.result(gf) == ("hello", 3)
+
+
+def test_concurrent_binds_on_one_pool_are_safe():
+    with GraphPool(max_workers=8) as p:
+        nodes = [GraphFuture(fn_1, i, y=1) for i in range(20)]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+            list(ex.map(p.bind, nodes))
+        assert [node.result(timeout=2) for node in nodes] == list(range(20))
+
+
+def test_cancelled_queued_node_does_not_run_its_body():
+    called = []
+    with GraphPool(max_workers=1) as p:
+        p.bind(GraphFuture(lambda: time.sleep(0.2)))
+        pending = GraphFuture(lambda: called.append(1))
+        p.bind(pending)
+        time.sleep(0.05)
+    assert pending.cancelled() is True
+    assert called == []
+
+
+def test_bind_after_exit_cancels_the_whole_reachable_graph():
+    pool = GraphPool(max_workers=1)
+    pool.__exit__(None, None, None)
+    dep = GraphFuture(lambda: 1)
+    root = GraphFuture(fn_2, dep, 4)
+    pool.bind(root)
+    assert dep.cancelled() is True
+    assert root.cancelled() is True
+
+
+def test_pool_rejects_invalid_max_workers():
+    with pytest.raises(ValueError, match="max_workers"):
+        GraphPool(max_workers=0)
+    with pytest.raises(ValueError, match="max_workers"):
+        GraphPool(max_workers=True)
 
 
 def test_pool_result_timeout_param():

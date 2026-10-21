@@ -41,7 +41,6 @@ inside an active run is rejected.
 from __future__ import annotations
 
 import concurrent.futures
-import contextlib
 import re
 import threading
 import time
@@ -49,7 +48,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from sequence_extensions.flow._context import (
     AttemptToken,
@@ -71,6 +70,8 @@ except ImportError:  # pragma: no cover - packaging safety net
 
 __all__ = ["Run", "execute_flow"]
 
+RunStatus = Literal["ok", "error", "timeout"]
+
 
 @dataclass(frozen=True)
 class Run:
@@ -79,7 +80,7 @@ class Run:
     result: Any
     run_id: str
     node: str
-    status: str  # "ok" | "error" | "timeout"
+    status: RunStatus
     log: Path | None
     duration_ms: int
     attempt: int
@@ -155,141 +156,176 @@ def execute_flow(node: NodeFunction, *args, options: RunOptions | None = None, *
 # ---------------------------------------------------------------- #
 # One run attempt
 # ---------------------------------------------------------------- #
-def _install_run(ctx: RunContext):
-    """Install the run context and reset the execution position/worker markers."""
-    stack = contextlib.ExitStack()
-    stack.enter_context(
-        execution_scope(
-            ctx=ctx,
-            path=(),
-            attempt=None,
-            token=None,
-            run_token=None,
-            worker=False,
-            process_worker=False,
+class _RunAttempt:
+    """One documented run attempt: identity, log, pool, drain, and result."""
+
+    def __init__(self, node, args, kwargs, options: RunOptions, attempt: int):
+        self.node = node
+        self.args = args
+        self.kwargs = kwargs
+        self.options = options
+        self.attempt = attempt
+        self.run_id = _new_run_id(options.name, fixed=bool(options.fixed_clock))
+        self.runlog = (
+            RunLog(
+                Path(options.log) / f"{self.run_id}.jsonl",
+                summary=bool(options.summary),
+                fixed_clock=bool(options.fixed_clock),
+            )
+            if options.log is not None
+            else None
         )
-    )
-    return stack
+        self.owned_pool = None
+        self.pool = options.pool
+        if self.pool is None:
+            self.owned_pool = GraphPool(max_workers=options.max_workers)
+            self.pool = self.owned_pool
+        self.ctx = RunContext(
+            run_id=self.run_id,
+            node_name=options.name,
+            runlog=self.runlog,
+            pool=self.pool,
+            options=options,
+        )
+        self.started_clock = time.perf_counter()
+        self.started = _utcnow()
+        self.status: RunStatus = "ok"
+        self.result = None
+        self.error: BaseException | None = None
+        self.duration_ms = 0
+        self.ended = self.started
+        self.pool_settled = False
 
+    def run(self) -> Run:
+        try:
+            with execution_scope(
+                ctx=self.ctx,
+                path=(),
+                attempt=None,
+                token=None,
+                run_token=None,
+                worker=False,
+                process_worker=False,
+            ):
+                self._write_start()
+                self._execute_root()
+                self._finish_records()
+        finally:
+            self._close()
+        run = self._build_run()
+        if self.status != "ok":
+            _attach_run(self.error, run)
+            raise self.error
+        return run
 
-def _restore_run(stack) -> None:
-    stack.close()
+    def _write_start(self) -> None:
+        if self.runlog is None:
+            return
+        self.runlog.open()
+        self.runlog.write(
+            {
+                "record": "run_start",
+                "run_id": self.run_id,
+                "node": self.options.name,
+                "attempt": self.attempt,
+                "started": self.started,
+                "version": _PACKAGE_VERSION,
+                "args": [
+                    jsonable(a, summary=bool(self.options.summary)) for a in self.args
+                ],
+                "kwargs": {
+                    k: jsonable(v, summary=bool(self.options.summary))
+                    for k, v in self.kwargs.items()
+                },
+            }
+        )
+
+    def _execute_root(self) -> None:
+        try:
+            self.result = _call_root(
+                self.node,
+                self.args,
+                self.kwargs,
+                self.options.timeout,
+                self.ctx,
+                self.attempt,
+            )
+        except BaseException as exc:
+            self.error = exc
+            run_level_timeout = (
+                isinstance(exc, NodeTimeoutError)
+                and getattr(exc, "run_timeout", None) == self.run_id
+            )
+            self.status = "timeout" if run_level_timeout else "error"
+            self.ctx.cancelled.set()
+
+    def _finish_records(self) -> None:
+        if self.status == "ok":
+            _drain(self.ctx)
+            self._settle_pool()
+            _write_settle_records(self.ctx, run_failed=False)
+        else:
+            self._settle_pool()
+            if self.status != "timeout":
+                _drain(self.ctx)
+            _write_settle_records(self.ctx, run_failed=True)
+
+        self.duration_ms = int((time.perf_counter() - self.started_clock) * 1000)
+        self.ended = _utcnow()
+        if self.runlog is None:
+            return
+        end_record: dict = {
+            "record": "run_end",
+            "run_id": self.run_id,
+            "status": self.status,
+            "ended": self.ended,
+            "duration_ms": self.duration_ms,
+        }
+        if self.status == "ok":
+            end_record["result"] = jsonable(
+                self.result, summary=bool(self.options.summary)
+            )
+        else:
+            end_record["error"] = {
+                "type": type(self.error).__qualname__,
+                "message": str(self.error),
+            }
+        self.runlog.write(end_record)
+
+    def _settle_pool(self) -> None:
+        if self.owned_pool is not None:
+            _settle(self.owned_pool)
+            self.pool_settled = True
+
+    def _close(self) -> None:
+        try:
+            if self.owned_pool is not None and not self.pool_settled:
+                # Unexpected failure before the normal settle branch: the
+                # run still owns the pool and must not leak its executor.
+                _settle(self.owned_pool)
+        finally:
+            if self.runlog is not None:
+                # Safety net: an abandoned attempt must never write again.
+                self.runlog.abandon()
+                self.runlog.close()
+
+    def _build_run(self) -> Run:
+        return Run(
+            result=self.result,
+            run_id=self.run_id,
+            node=self.options.name,
+            status=self.status,
+            log=self.runlog.path if self.runlog is not None else None,
+            duration_ms=self.duration_ms,
+            attempt=self.attempt,
+            started=self.started,
+            ended=self.ended,
+            error=self.error,
+        )
 
 
 def _run_once(node, args, kwargs, options, attempt) -> Run:
-    run_id = _new_run_id(options.name, fixed=bool(options.fixed_clock))
-
-    runlog = None
-    if options.log is not None:
-        runlog = RunLog(
-            Path(options.log) / f"{run_id}.jsonl",
-            summary=bool(options.summary),
-            fixed_clock=bool(options.fixed_clock),
-        )
-
-    owned_pool = None
-    pool = options.pool
-    if pool is None:
-        owned_pool = GraphPool(max_workers=options.max_workers)
-        pool = owned_pool
-
-    ctx = RunContext(
-        run_id=run_id,
-        node_name=options.name,
-        runlog=runlog,
-        pool=pool,
-        options=options,
-    )
-
-    started_clock = time.perf_counter()
-    started = _utcnow()
-    status = "ok"
-    result = None
-    error: BaseException | None = None
-    duration_ms = 0
-    ended = started
-    run_tokens = _install_run(ctx)
-    try:
-        if runlog is not None:
-            runlog.open()
-            start_record = {
-                "record": "run_start",
-                "run_id": run_id,
-                "node": options.name,
-                "attempt": attempt,
-                "started": started,
-                "version": _PACKAGE_VERSION,
-                "args": [jsonable(a, summary=bool(options.summary)) for a in args],
-                "kwargs": {
-                    k: jsonable(v, summary=bool(options.summary)) for k, v in kwargs.items()
-                },
-            }
-            runlog.write(start_record)
-
-        try:
-            result = _call_root(node, args, kwargs, options.timeout, ctx, attempt)
-        except BaseException as exc:
-            error = exc
-            run_level_timeout = (
-                isinstance(exc, NodeTimeoutError)
-                and getattr(exc, "run_timeout", None) == run_id
-            )
-            status = "timeout" if run_level_timeout else "error"
-            ctx.cancelled.set()
-
-        if status == "ok":
-            _drain(ctx)
-            if owned_pool is not None:
-                _settle(owned_pool)
-            _write_settle_records(ctx, run_failed=False)
-        else:
-            if owned_pool is not None:
-                _settle(owned_pool)
-            if status != "timeout":
-                _drain(ctx)
-            _write_settle_records(ctx, run_failed=True)
-
-        duration_ms = int((time.perf_counter() - started_clock) * 1000)
-        ended = _utcnow()
-        if runlog is not None:
-            end_record: dict = {
-                "record": "run_end",
-                "run_id": run_id,
-                "status": status,
-                "ended": ended,
-                "duration_ms": duration_ms,
-            }
-            if status == "ok":
-                end_record["result"] = jsonable(result, summary=bool(options.summary))
-            else:
-                end_record["error"] = {
-                    "type": type(error).__qualname__,
-                    "message": str(error),
-                }
-            runlog.write(end_record)
-    finally:
-        _restore_run(run_tokens)
-        if runlog is not None:
-            # Safety net: an abandoned attempt must never write again.
-            runlog.abandon()
-            runlog.close()
-
-    run = Run(
-        result=result,
-        run_id=run_id,
-        node=options.name,
-        status=status,
-        log=runlog.path if runlog is not None else None,
-        duration_ms=duration_ms,
-        attempt=attempt,
-        started=started,
-        ended=ended,
-        error=error,
-    )
-    if status != "ok":
-        _attach_run(error, run)
-        raise error
-    return run
+    return _RunAttempt(node, args, kwargs, options, attempt).run()
 
 
 def _call_root(node, args, kwargs, timeout, ctx, attempt):
@@ -404,11 +440,18 @@ def _write_settle_records(ctx: RunContext, *, run_failed: bool) -> None:
         for record in node.process_records or ():
             ctx.runlog.write(record)
     for node in ctx.nodes:
-        if node.flow_attempted or node.process_attempted:
+        if node.attempted:
             continue
         if node.cancelled():
             if run_failed:
                 ctx.runlog.write(_settle_record(ctx, node, reason="cancelled (run failed)"))
+            continue
+        if not node.done():
+            # A run-level timeout deliberately skips the drain.  A
+            # caller-owned pool may still have pending nodes here; never
+            # block on their exception just to write a settle record.
+            if run_failed:
+                ctx.runlog.write(_settle_record(ctx, node, reason="pending at run end"))
             continue
         try:
             exc = node.exception()

@@ -41,7 +41,7 @@ The composition release: one `@node` primitive and an explicit
 - **`TaskTimeoutError` is now `NodeTimeoutError`** (attributes `.node`,
   `.timeout`, `.attempt`).
 - **Policy values are type-checked.**  `retries` must be an integer;
-  `retry_delay_seconds` and `timeout` must be numbers.  Previously
+  `retry_delay_seconds` and `timeout` must be finite numbers.  Previously
   `@node(retries=2.0)` / `RunOptions(retries=2.0)` were silently
   truncated, and a string delay raised `TypeError`.
 - **`flow-runner` config**: `[flow]` -> `[run]`, `[task]` -> `[node]`;
@@ -68,6 +68,28 @@ The composition release: one `@node` primitive and an explicit
 - **`fixed_clock` reference mode** — byte-identical logs for identical
   runs, including concurrent and nested node fan-out.  Root-level retries
   are rejected in this mode.
+
+### Fixed
+
+- Process workers keep `RunOptions.node_defaults` for nodes called
+  directly inside a worker body.
+- A run-level timeout no longer blocks while writing settle records for
+  pending nodes of a caller-owned pool.
+- `GraphFuture` no longer reserves the node argument names `function` and
+  `args` when the function is positional.
+- `functools.update_wrapper` no longer lets function attributes override
+  an explicit node policy.
+- `GraphPool` serializes concurrent binds, does not recreate an executor
+  after shutdown, and does not run a queued node whose future was already
+  cancelled.
+- `RunLog` protects its engine fields `seq` and `schema` from record
+  spoofing.
+
+### Changed
+
+- The node attempt loop and one run attempt are explicit internal objects
+  (`_AttemptRunner`, `_RunAttempt`); behavior and public surface are
+  unchanged.
 
 ## [2.0.0] - 2026-10-16
 

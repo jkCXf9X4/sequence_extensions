@@ -65,7 +65,38 @@ def test_node_metadata_preserved():
     assert documented.__wrapped__ is not None
 
 
-def test_node_rejects_negative_retries():
+def test_node_policy_is_not_overwritten_by_function_attributes():
+    def f():
+        return 1
+
+    f.retries = 99
+    f.timeout = 99
+    f.name = "wrong"
+
+    g = node(f, retries=1, timeout=2, name="right")
+    assert g.retries == 1
+    assert g.timeout == 2
+    assert g.name == "right"
+
+
+def test_submit_does_not_reserve_args_or_function_as_node_arguments():
+    @node
+    def kwonly(*, args, function):
+        return args, function
+
+    @node
+    def root():
+        return kwonly.submit(args="hello", function=3)
+
+    run = execute_flow(root, options=RunOptions(log=None))
+    assert run.result == ("hello", 3)
+
+
+def test_node_rejects_non_callable_and_invalid_name():
+    with pytest.raises(TypeError, match="callable"):
+        node(42)
+    with pytest.raises(ValueError, match="name"):
+        node(lambda: 1, name=123)
     with pytest.raises(ValueError, match="retries"):
         node(lambda: 1, retries=-1)
 

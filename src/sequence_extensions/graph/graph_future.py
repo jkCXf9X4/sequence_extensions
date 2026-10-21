@@ -40,6 +40,16 @@ def _dependency_future(dep):
     return dep.future if isinstance(dep, GraphFuture) else dep
 
 
+def _set_exception_if_pending(future, exc) -> None:
+    """Settle ``future`` with ``exc`` unless cancellation won the race."""
+    if future.done():
+        return
+    try:
+        future.set_exception(exc)
+    except concurrent.futures.InvalidStateError:
+        pass
+
+
 class GraphFuture:
     """
     A small dependency-graph future.
@@ -57,23 +67,34 @@ class GraphFuture:
     this node so its result becomes this node's result.
     """
 
-    def __init__(self, function, *args, **kwargs):
-        """Create a node; Future values among ``args``/``kwargs`` become dependencies.
+    def __init__(self, *args, **kwargs):
+        """Create a node; Future values among the arguments become dependencies.
 
         Both :class:`GraphFuture` and plain :class:`concurrent.futures.Future`
         values are awaited before the function runs, so a node can depend on a
         future produced outside the graph layer.
+
+        The function is normally the first positional argument.  The
+        ``GraphFuture(function=fn, args=(...))`` keyword form is also
+        accepted.  When a positional function is present, ``function`` and
+        ``args`` in ``kwargs`` are ordinary arguments for the node instead
+        of constructor keywords — a node may legitimately accept parameters
+        with those names.
         """
+        if args:
+            function = args[0]
+            positional = args[1:]
+        elif "function" in kwargs:
+            function = kwargs.pop("function")
+            positional = tuple(kwargs.pop("args", ()))
+        else:
+            raise TypeError("GraphFuture() missing required argument: 'function'")
+
         self.function = function
         self.name = getattr(function, "__name__", str(function))
 
-        # ``args=(...)`` keyword form is accepted as positional arguments
-        # (the constructor is not positional-only).
-        if "args" in kwargs:
-            args = tuple(kwargs.pop("args"))
-
         # Keep positional order via integer keys: {0: arg0, 1: arg1, **kwargs}
-        self.arguments = {**{i: arg for i, arg in enumerate(args)}, **kwargs}
+        self.arguments = {**{i: arg for i, arg in enumerate(positional)}, **kwargs}
         self.dependencies = [x for x in self.arguments.values() if _is_dependency(x)]
 
         self.queued = False
@@ -199,9 +220,13 @@ class GraphFuture:
     def _run(self) -> None:
         """Execute this node's function on a worker thread and settle ``future``."""
         if self._pool is None:
-            self.future.set_exception(
-                RuntimeError("GraphFuture executed without a bound GraphPool")
+            _set_exception_if_pending(
+                self.future, RuntimeError("GraphFuture executed without a bound GraphPool")
             )
+            return
+        if self.future.done():
+            # The pool may have cancelled this node after it was queued but
+            # before the worker picked it up; do not run side effects then.
             return
         try:
             args, kwargs = self._resolve_arguments()
@@ -209,7 +234,10 @@ class GraphFuture:
 
             if isinstance(result, GraphFuture):
                 # Chain the inner graph into the pool; forward its result.
-                self._pool._bind_graph(result)
+                # ``source=self`` keeps the running node in the cycle set,
+                # so a node that returns itself (directly or through a
+                # dependency) is rejected instead of waiting forever.
+                self._pool._bind_graph(result, source=self)
                 result.future.add_done_callback(self._forward_result)
             elif isinstance(result, concurrent.futures.Future):
                 # A node may return a plain future (e.g. a deferred flow
@@ -283,17 +311,29 @@ class GraphPool:
     bounds concurrency.
     """
 
-    def __init__(self, max_workers: int = 16):
+    #: Pool subclasses that ship work to separate processes override this.
+    process_workers = False
+
+    def __init__(self, max_workers: int | None = 16):
         """Create a pool; the executor is created lazily on first use."""
+        if max_workers is not None and (
+            isinstance(max_workers, bool)
+            or not isinstance(max_workers, int)
+            or max_workers < 1
+        ):
+            raise ValueError(f"max_workers must be a positive integer or None, got {max_workers!r}")
         self.max_workers = max_workers
         self._executor = None
         self._shutdown = False
         self._entered = False
         self._nodes = []  # every bound node, so __exit__ can cancel stragglers
         self._node_ids = set()
-        # Pool-level DFS state so re-entrant ``_bind_graph`` calls (a node
-        # whose function returns a GraphFuture that chains back into the
-        # graph being bound) detect the in-progress visit as a cycle.
+        # Serializes binding and pool lifecycle: public binds, binds from
+        # node bodies returning futures, and shutdown all touch _visiting /
+        # _nodes / _node_ids.  It is an RLock because _wire -> _submit_node
+        # runs while the binder holds it.
+        self._bind_lock = threading.RLock()
+        # Pool-level DFS state; protected by _bind_lock.
         self._visiting = set()
         _LIVE_POOLS.add(self)
 
@@ -302,6 +342,8 @@ class GraphPool:
     # ------------------------------------------------------------ #
     def _ensure_executor(self) -> None:
         """Lazily create the executor so the pool also works outside ``with``."""
+        if self._shutdown:
+            return
         if self._executor is None:
             self._executor = concurrent.futures.ThreadPoolExecutor(
                 max_workers=self.max_workers, thread_name_prefix="graph-worker"
@@ -309,11 +351,12 @@ class GraphPool:
 
     def __enter__(self) -> "GraphPool":
         """Create the executor and return the pool (rejects ANY re-entry)."""
-        if self._entered:
-            raise RuntimeError("GraphPool.__enter__ called more than once")
-        self._entered = True
-        self._shutdown = False
-        self._ensure_executor()
+        with self._bind_lock:
+            if self._entered:
+                raise RuntimeError("GraphPool.__enter__ called more than once")
+            self._entered = True
+            self._shutdown = False
+            self._ensure_executor()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -324,13 +367,20 @@ class GraphPool:
         one process do not interfere.  A node never bound to any pool is
         left pending — bind nodes through ``pool.result()`` / ``pool.bind()``.
         """
-        self._shutdown = True
-        for node in list(self._nodes):
+        # Do not hold the bind lock across executor.shutdown(wait=True):
+        # a worker returning a GraphFuture may be waiting for that lock.
+        with self._bind_lock:
+            self._shutdown = True
+            nodes = list(self._nodes)
+            executor = self._executor
+        for node in nodes:
             if not node.future.done():
                 node.future.cancel()
-        if self._executor:
-            self._executor.shutdown(wait=True, cancel_futures=True)
-            self._executor = None
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
+            with self._bind_lock:
+                if self._executor is executor:
+                    self._executor = None
         # Return None -> propagate any exception from the ``with`` body.
 
     # ------------------------------------------------------------ #
@@ -367,44 +417,69 @@ class GraphPool:
         ships the node's function and resolved arguments to a worker
         process instead of running ``node._run`` on a worker thread.
         """
-        if self._shutdown:
-            # Pool is exiting: don't enqueue fresh work; settle as cancelled.
-            try:
-                node.future.set_exception(concurrent.futures.CancelledError())
-            except concurrent.futures.InvalidStateError:
-                pass
-            return
-        self._ensure_executor()
-        self._executor.submit(node._run)
+        with self._bind_lock:
+            if self._shutdown:
+                # Pool is exiting: don't enqueue fresh work; settle as cancelled.
+                node.future.cancel()
+                return
+            self._ensure_executor()
+            executor = self._executor
+        try:
+            executor.submit(node._run)
+        except Exception as exc:
+            _set_exception_if_pending(node.future, exc)
 
-    def _bind_graph(self, gf: GraphFuture) -> None:
+    def _bind_graph(self, gf: GraphFuture, *, source=None) -> None:
         """
         Walk the dependency graph (post-order) and wire every node.
 
         Cycle detection: a node seen again while still being visited (a DFS
         back-edge) means the graph is cyclic, and a ValueError is raised
-        instead of deadlocking forever in ``result()``.
+        instead of deadlocking forever in ``result()``.  ``source`` is the
+        node whose body is chaining ``gf``; keeping it in the visit set
+        catches a node that returns itself.
+
+        All binds on one pool are serialized.  Without this, concurrent
+        binds would corrupt the shared ``_visiting`` set (false cycles) and
+        append nodes without a common ordering.  A shut-down pool still
+        wires nodes so their futures settle as cancelled; it just cannot
+        create a new executor.
         """
-        self._ensure_executor()
-        seen = set()
-
-        def visit(node):
-            nid = id(node)
-            if nid in self._visiting:
-                raise ValueError("dependency cycle detected")
-            if nid in seen:
-                return
-            self._visiting.add(nid)
-            seen.add(nid)
+        with self._bind_lock:
+            self._ensure_executor()
+            seen = set()
+            visited_nodes = []
+            source_id = id(source) if source is not None else None
+            if source_id is not None:
+                if source_id in self._visiting:
+                    raise ValueError("dependency cycle detected")
+                self._visiting.add(source_id)
             try:
-                for dep in node.dependencies:
-                    if isinstance(dep, GraphFuture):
-                        visit(dep)
-                node._wire(self)
-                if nid not in self._node_ids:
-                    self._node_ids.add(nid)
-                    self._nodes.append(node)
-            finally:
-                self._visiting.discard(nid)
+                def visit(node):
+                    nid = id(node)
+                    if nid in self._visiting:
+                        raise ValueError("dependency cycle detected")
+                    if nid in seen:
+                        return
+                    self._visiting.add(nid)
+                    seen.add(nid)
+                    visited_nodes.append(node)
+                    try:
+                        for dep in node.dependencies:
+                            if isinstance(dep, GraphFuture):
+                                visit(dep)
+                        node._wire(self)
+                        if nid not in self._node_ids:
+                            self._node_ids.add(nid)
+                            self._nodes.append(node)
+                    finally:
+                        self._visiting.discard(nid)
 
-        visit(gf)
+                visit(gf)
+                if self._shutdown:
+                    for node in visited_nodes:
+                        if not node.future.done():
+                            node.future.cancel()
+            finally:
+                if source_id is not None:
+                    self._visiting.discard(source_id)

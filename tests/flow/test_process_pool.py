@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from sequence_extensions.flow import (
+    NodePolicy,
     NodeTimeoutError,
     ProcessDispatchError,
     ProcessGraphPool,
@@ -105,6 +106,41 @@ def _returns_a_future():
 # ---------------------------------------------------------------- #
 # Results and record replay
 # ---------------------------------------------------------------- #
+def test_process_worker_keeps_node_defaults_for_direct_calls(tmp_path):
+    counter = tmp_path / "calls"
+    counter.write_text("0")
+
+    @node
+    def leaf():
+        n = int(counter.read_text()) + 1
+        counter.write_text(str(n))
+        if n == 1:
+            raise RuntimeError("first attempt")
+        return n
+
+    @node(retries=0)
+    def outer():
+        return leaf()
+
+    @node(retries=0)
+    def root():
+        return outer.submit()
+
+    pool = ProcessGraphPool(max_workers=1)
+    with pool:
+        run = execute_flow(
+            root,
+            options=RunOptions(
+                log=None,
+                pool=pool,
+                node_defaults=NodePolicy(retries=1),
+            ),
+        )
+
+    assert run.result == 2
+    assert counter.read_text() == "2"
+
+
 def test_process_pool_results_and_records(tmp_path):
     pool = ProcessGraphPool(max_workers=2)
 
@@ -363,6 +399,7 @@ def test_process_pool_submit_after_exit_settles_cancelled():
     pool.bind(gf)
     with pytest.raises(concurrent.futures.CancelledError):
         gf.result(timeout=2)
+    assert pool._executor is None
 
 
 def test_concurrent_runs_one_process_pool_per_run(tmp_path):

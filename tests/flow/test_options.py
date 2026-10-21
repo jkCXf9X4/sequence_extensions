@@ -32,6 +32,10 @@ def test_node_policy_validates():
         NodePolicy(timeout=0)
     with pytest.raises(ValueError, match="retries must be an integer"):
         NodePolicy(retries="two")
+    with pytest.raises(ValueError, match="finite"):
+        NodePolicy(retry_delay_seconds=float("nan"))
+    with pytest.raises(ValueError, match="finite"):
+        NodePolicy(timeout=float("inf"))
 
 
 def test_run_options_validate_explicit_values():
@@ -51,6 +55,8 @@ def test_run_options_validate_explicit_values():
         RunOptions(retries=2.0)
     with pytest.raises(ValueError, match="timeout"):
         RunOptions(timeout=0)
+    with pytest.raises(ValueError, match="finite"):
+        RunOptions(timeout=float("nan"))
     with pytest.raises(ValueError, match="node_defaults"):
         RunOptions(node_defaults={"retries": 1})
 

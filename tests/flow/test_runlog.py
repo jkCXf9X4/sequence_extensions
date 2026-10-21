@@ -130,6 +130,16 @@ def test_runlog_write_adds_seq_and_schema(tmp_path):
     assert all(r["schema"] == SCHEMA_VERSION for r in recs)
 
 
+def test_runlog_write_cannot_spoof_seq_or_schema(tmp_path):
+    log = RunLog(tmp_path / "run.jsonl")
+    log.open()
+    log.write({"record": "run_start", "seq": 99, "schema": 99})
+    log.close()
+    rec = RunLog.records(tmp_path / "run.jsonl")[0]
+    assert rec["seq"] == 1
+    assert rec["schema"] == SCHEMA_VERSION
+
+
 def test_runlog_abandon_drops_later_records(tmp_path):
     log = RunLog(tmp_path / "run.jsonl")
     log.open()

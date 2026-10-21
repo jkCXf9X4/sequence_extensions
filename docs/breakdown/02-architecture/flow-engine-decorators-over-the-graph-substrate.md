@@ -57,6 +57,7 @@ The flow layer (`sequence_extensions.flow`) is the audit-first engine, built on 
 - Nodes and arguments must be picklable; module-level `@node` functions pickle (the raw function is aliased under a private module name at decoration).
 - Worker attempt records buffer in the worker and replay in the run thread before `run_end`; a dispatch or transport failure settles the node with `ProcessDispatchError` and a `skipped` record, reason `dispatch failed`.
 - Dependencies resolve in the parent: a failed dependency skips the dependent without a process round-trip.
+- A node called directly inside a process worker still resolves unset policy from `RunOptions.node_defaults`; only `.submit()` and returning a live future are process-worker restrictions.
 - `NodeTimeoutError` crosses the boundary intact (custom `__reduce__`).
 - Process workers cannot submit or return live futures; process-mode fan-out is built in the parent process.  `execute_flow` inside a process worker is rejected in 3.0.
 

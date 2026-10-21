@@ -736,13 +736,13 @@ def recursive_gen(item: T, iter_f: Callable[[T], T], stop_f: Optional[Callable[[
 ### `__init__`
 
 ```python
-def __init__(self, function, *args, **kwargs)
+def __init__(self, *args, **kwargs)
 ```
 
-- **Parameters:** `function` (`Callable`) — the node's function; the keyword form `GraphFuture(function=fn, ...)` also works. `*args` / `**kwargs` — arguments for `function`; any `GraphFuture` or `concurrent.futures.Future` values among them become **dependencies** (their results are substituted in before execution).
+- **Parameters:** the function is normally the first positional argument. The keyword form `GraphFuture(function=fn, args=(...))` is also accepted. `*args` / `**kwargs` are arguments for `function`; any `GraphFuture` or `concurrent.futures.Future` values among them become **dependencies** (their results are substituted in before execution). When a positional function is present, a keyword named `function` or `args` is an ordinary node argument, not a constructor keyword.
 - **Returns:** nothing (constructor).
-- **Raises:** nothing.
-- **Description:** Create a node; `GraphFuture` values among `args`/`kwargs` become dependencies.
+- **Raises:** `TypeError` when no function is supplied.
+- **Description:** Create a node; `GraphFuture` values among the arguments become dependencies.
 
 ### `result`
 
@@ -951,6 +951,7 @@ worker cannot submit or return a live future.
 - **Picklable payloads:** nodes and arguments must survive `pickle` — module-level functions and plain data. `@node`-decorated module-level functions pickle (the raw function is aliased under a private module name at decoration). A lambda, a closure, or an unpicklable argument fails at dispatch: the node settles with `ProcessDispatchError` and the run log records `skipped` / `dispatch failed`.
 - **Run-log records replay in the parent:** a worker cannot write the run's open log file, so the worker buffers its attempt records and the run writes them before `run_end` — the log is still complete the moment the run returns.
 - **Dependencies resolve in the parent:** a failed dependency skips the dependent without a process round-trip (same `skipped` record as thread mode).
+- **Node defaults follow direct calls:** a node called directly inside a process worker still resolves unset policy from `RunOptions.node_defaults`; only `.submit()` and returning a live future are process-worker restrictions.
 - **Limits:** a node body running in a *process worker* cannot submit or return a live future (the worker has no pool); the root body runs on the driver, so a future it returns is bound in the parent and process-mode fan-out is built there. `execute_flow` inside a process worker is rejected in 3.0; a timed-out attempt is abandoned as a daemon thread *in the worker process*; errors must be picklable to cross the boundary.
 - Under the default *fork* start method (Linux), function closures defined at call time also pickle; under *spawn* (Windows, macOS default), module-level nodes only.
 

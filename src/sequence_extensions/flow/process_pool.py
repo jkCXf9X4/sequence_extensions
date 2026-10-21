@@ -35,7 +35,11 @@ import threading
 
 from sequence_extensions.flow._context import RunContext, execution_scope
 from sequence_extensions.flow._options import RunOptions
-from sequence_extensions.graph.graph_future import GraphFuture, GraphPool
+from sequence_extensions.graph.graph_future import (
+    GraphFuture,
+    GraphPool,
+    _set_exception_if_pending,
+)
 
 __all__ = ["ProcessDispatchError", "ProcessGraphPool"]
 
@@ -83,7 +87,7 @@ def _process_node_runner(node_fn, run_info, *args, **kwargs):
         run_id=run_info["run_id"],
         node_name=run_info["node_name"],
         runlog=sink,
-        options=RunOptions(),
+        options=RunOptions(node_defaults=run_info.get("node_defaults")),
     )
     error = None
     with execution_scope(
@@ -110,12 +114,16 @@ class ProcessGraphPool(GraphPool):
     executor's own default (the CPU count).
     """
 
+    process_workers = True
+
     def __init__(self, max_workers=None):
         """Create a process pool; ``None`` keeps the executor's CPU-count default."""
         super().__init__(max_workers=max_workers)
 
     def _ensure_executor(self) -> None:
         """Lazily create the process executor (subclass seam)."""
+        if self._shutdown:
+            return
         if self._executor is None:
             self._executor = concurrent.futures.ProcessPoolExecutor(max_workers=self.max_workers)
 
@@ -126,22 +134,23 @@ class ProcessGraphPool(GraphPool):
         failed dependency settles the node with that exception — the
         same path thread mode takes inside ``GraphFuture._run``.
         """
-        if self._shutdown:
-            try:
-                node.future.set_exception(concurrent.futures.CancelledError())
-            except concurrent.futures.InvalidStateError:
-                pass
-            return
-        self._ensure_executor()
+        with self._bind_lock:
+            if self._shutdown:
+                node.future.cancel()
+                return
+            self._ensure_executor()
+            executor = self._executor
         try:
             args, kwargs = node._resolve_arguments()
         except Exception as exc:
-            node.future.set_exception(exc)  # dependency failure
+            _set_exception_if_pending(node.future, exc)  # dependency failure
             return
         try:
-            pfuture = self._executor.submit(node.function, *args, **kwargs)
+            pfuture = executor.submit(node.function, *args, **kwargs)
         except Exception as exc:
-            node.future.set_exception(ProcessDispatchError(f"{type(exc).__name__}: {exc}"))
+            _set_exception_if_pending(
+                node.future, ProcessDispatchError(f"{type(exc).__name__}: {exc}")
+            )
             return
 
         def _settle(pfuture, node=node):
@@ -163,7 +172,7 @@ class ProcessGraphPool(GraphPool):
                 if isinstance(outcome, _ProcessOutcome):
                     # Visible to done-callbacks before the settle completes.
                     node.process_records = outcome.records
-                    node.process_attempted = True
+                    node.attempted = True
                     if outcome.error is None:
                         node.future.set_result(outcome.value)
                     else:
