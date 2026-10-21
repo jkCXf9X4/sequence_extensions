@@ -30,6 +30,10 @@ Records live in the cold-storage archive; extract one with `pb archive read <ID>
   Engine parameters resolve per call from a TOML Config installed by configure() — explicit keyword > config > built-in default — and flow-runner launches a flow by scanning [run].module for the __flow__ marker
 - **DR-016** — fixed_clock reference mode — byte-identical run logs for reference storage · accepted · 2026-10-19 · `DR-016`
   fixed_clock opts a run into reference mode — pinned run id, pinned timing, constant worker, canonical record order at close — so an identical run produces a byte-identical log file
+- **DR-017** — One node primitive and explicit runs · accepted · 2026-10-21 · `DR-017`
+  3.0 replaces the @task/@flow split and global configuration with one @node primitive and execute_flow(node, options=RunOptions(...)); nested flows are child runs with parent linkage
+- **DR-018** — Compose with nodes, not nested runs · accepted · 2026-10-21 · `DR-018`
+  remove child runs; a node tree is one run and one log, submitted composites return futures, and gather combines them without blocking a worker
 
 ### Architecture
 

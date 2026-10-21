@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from sequence_extensions.flow import RunLog, flow, task
+from sequence_extensions.flow import RunLog, RunOptions, execute_flow, node
 
 #: case name -> csv value; score = value / 100
 CASE_VALUES = {
@@ -54,7 +54,7 @@ def _write_cases(cases_dir: Path) -> Path:
 # ---------------------------------------------------------------- #
 # The campaign
 # ---------------------------------------------------------------- #
-@task(retries=2, retry_delay_seconds=0.05)
+@node(retries=2, retry_delay_seconds=0.05)
 def simulate(case: Path) -> dict:
     """Simulate one case; score = value / 100."""
     time.sleep(0.15)
@@ -65,7 +65,7 @@ def simulate(case: Path) -> dict:
     return {"case": case.stem, "score": value / 100}
 
 
-@task
+@node
 def evaluate(sim: dict, tolerance: float) -> dict:
     """Evaluate one simulation against the tolerance."""
     return {
@@ -90,15 +90,12 @@ def aggregate(evaluations: list) -> dict:
     }
 
 
-def _make_campaign(log_dir):
-    @flow(log=log_dir, name="campaign")
-    def campaign(cases_dir: Path, tolerance: float = TOLERANCE) -> dict:
-        cases = discover(cases_dir)  # sequential
-        sims = [simulate.submit(c) for c in cases]  # concurrent map
-        evals = [evaluate.submit(s, tolerance=tolerance) for s in sims]  # edges
-        return aggregate([e.result() for e in evals])  # gather
-
-    return campaign
+@node
+def campaign(cases_dir: Path, tolerance: float = TOLERANCE) -> dict:
+    cases = discover(cases_dir)  # sequential
+    sims = [simulate.submit(c) for c in cases]  # concurrent map
+    evals = [evaluate.submit(s, tolerance=tolerance) for s in sims]  # edges
+    return aggregate([e.result() for e in evals])  # gather
 
 
 # ---------------------------------------------------------------- #
@@ -107,10 +104,14 @@ def _make_campaign(log_dir):
 def test_campaign_verdict_and_audit_log(tmp_path):
     _FLAKED.clear()
     cases_dir = _write_cases(tmp_path / "cases")
-    campaign = _make_campaign(tmp_path / "logs")
 
     t0 = time.perf_counter()
-    verdict = campaign(cases_dir)
+    run = execute_flow(
+        campaign,
+        cases_dir,
+        options=RunOptions(log=tmp_path / "logs", name="campaign"),
+    )
+    verdict = run.result
     wall = time.perf_counter() - t0
 
     # 1. identical verdict to the benchmark (all four engines agreed)
@@ -129,16 +130,16 @@ def test_campaign_verdict_and_audit_log(tmp_path):
 
     assert [r["seq"] for r in recs] == list(range(1, len(recs) + 1))
     assert recs[0]["record"] == "run_start"
-    assert recs[0]["flow"] == "campaign"
+    assert recs[0]["node"] == "campaign"
     assert recs[0]["args"][0]["path"] == str(cases_dir)
     assert recs[-1]["record"] == "run_end"
     assert recs[-1]["status"] == "ok"
     assert recs[-1]["result"]["count"] == 6
     assert recs[-1]["result"]["passed"] == 2
 
-    task_records = [r for r in recs if r["record"] == "task"]
-    sim_records = [r for r in task_records if r["task"] == "simulate"]
-    eval_records = [r for r in task_records if r["task"] == "evaluate"]
+    task_records = [r for r in recs if r["record"] == "node"]
+    sim_records = [r for r in task_records if r["node"] == "simulate"]
+    eval_records = [r for r in task_records if r["node"] == "evaluate"]
 
     # 7 simulate attempts: 6 cases + 1 retry of case_3
     assert len(sim_records) == 7

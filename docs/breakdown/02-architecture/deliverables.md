@@ -9,7 +9,7 @@ status: current
 
 # Deliverables
 
-`sequence_extensions` is a Python library (>= 3.9, no runtime dependencies) that delivers three subpackages; `ext` and `graph` re-export from the package root, `flow` is imported as its own package.
+`sequence_extensions` is a Python library (>= 3.11, no runtime dependencies) that delivers three subpackages; `ext` and `graph` re-export from the package root, `flow` is imported as its own package.
 
 ## Subpackages
 
@@ -21,11 +21,12 @@ status: current
   - `GraphFuture` nodes form a DAG; each node runs a function once its dependencies complete.
   - `GraphPool` drives scheduling on a bounded thread pool.
 - **`flow`** — the flow engine: parallel, deterministic, audited (`INFO-011`).
-  - `@task` — retry (`retries`), backoff (`retry_delay_seconds`), and `timeout` policy around a function.
-  - `@flow` — run identity, bounded or caller-owned pool, JSON-lines run log.
+  - `@node` — retry (`retries`), backoff (`retry_delay_seconds`), and `timeout` policy around a function; `.submit()`.
+  - `execute_flow` — run identity, bounded or caller-owned pool, JSON-lines run log; returns a `Run`.
+  - Nested node composition — future-first fan-out, one run/log, `path`/`parent_attempt`, composite policy over a returned future.
   - `RunLog` — writer and reader for the run log: `records`, plus the reading toolkit — `filter`, `summarize` (the compact account, `CP-024`), `diff` (the determinism check, `CP-025`); `jsonable` serialization policy.
   - `ProcessGraphPool` — a `GraphPool` subclass running tasks in worker processes (`CP-022`); `ProcessDispatchError` — a payload could not reach a worker.
-  - `TaskTimeoutError` — a `TimeoutError` naming the task.
+  - `NodeTimeoutError` — a `TimeoutError` naming the node.
 
 ## API surface at a glance
 
@@ -34,7 +35,7 @@ Root re-exports (`sequence_extensions.__all__`):
 - `ext`: `list_ext`, `dict_ext`, `gen_ext`, `KeyValueTuple`.
 - `graph`: `GraphFuture`, `GraphPool`, `graph_future`.
 
-The `flow` package: `from sequence_extensions.flow import task, flow, RunLog, TaskTimeoutError, ProcessGraphPool, ProcessDispatchError, DIFF_EXCLUDE`.
+The `flow` package: `from sequence_extensions.flow import node, execute_flow, gather, Run, RunOptions, NodePolicy, FlowFuture, FlowOutcome, RunLog, NodeTimeoutError, ProcessGraphPool, ProcessDispatchError, DIFF_EXCLUDE`.
 
 ## Out of scope
 

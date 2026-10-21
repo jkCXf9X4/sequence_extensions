@@ -1,23 +1,25 @@
 """JSON-lines audit log — the executed truth of a flow run.
 
 One file per run, one JSON object per line, written while things happen
-(attempt granularity for tasks).  The log is the product: diffable,
+(attempt granularity for nodes).  The log is the product: diffable,
 greppable, and language-neutral.  Large payloads are never inlined; by
-convention a task returns a :class:`~pathlib.Path` for anything bulky, and
+convention a node returns a :class:`~pathlib.Path` for anything bulky, and
 paths are logged as path plus content hash.
 
 Record kinds (all get ``seq`` and ``schema`` added on write):
 
-* ``run_start`` — written by ``@flow`` at entry (identity, args).
-* ``task`` — one record per task attempt: ``status`` is ``ok`` (with
-  ``result``), ``error`` (with ``error``), ``timeout`` (with ``error``),
-  or ``skipped`` (``attempt`` 0 — the node never executed because a
-  dependency failed or the flow failed and cancelled it).
-* ``run_end`` — written at exit (``status`` ok/error, result or error).
+* ``run_start`` — written by ``execute_flow`` at entry (identity, args).
+* ``node`` — one record per node attempt: ``status`` is ``ok`` (with
+  ``result``), ``error``, ``timeout``, or ``skipped`` (``attempt`` 0 —
+  the node never executed because a dependency failed or the run failed
+  and cancelled it).  ``path`` is the node-name chain that executed and
+  ``parent_attempt`` is the enclosing node's attempt number.
+* ``run_end`` — written at exit (``status`` ok/error/timeout, result or
+  error).
 
 Reading side: :meth:`RunLog.records` reads a log back whole;
 :meth:`RunLog.filter` selects records; :meth:`RunLog.summarize`
-condenses one run to its per-task account and verdict; and
+condenses one run to its per-node account and verdict; and
 :meth:`RunLog.diff` compares two runs semantically — the determinism
 check.  Comparison identifies records by what ran, never by position,
 and drops wall-clock and worker fields by default
@@ -43,17 +45,26 @@ from typing import Any
 from sequence_extensions.graph.graph_future import GraphFuture
 
 #: Bumped whenever the record format changes in a way readers must know about.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 #: Containers longer than this are replaced by a count in summary mode.
 _SUMMARY_CONTAINER_LIMIT = 8
 
 #: Fields :meth:`RunLog.diff` drops before comparing: record order
-#: (``seq``), run identity (``run_id``), and wall-clock / worker timing
-#: — none of them are determinism claims.  Pass a replacement set to
+#: (``seq``), run identity (``run_id``), and wall-clock / worker timing —
+#: none of them are determinism claims.  Pass a replacement set to
 #: ``exclude=`` to compare more (or less).
 DIFF_EXCLUDE = frozenset(
-    {"seq", "run_id", "start", "end", "started", "ended", "duration_ms", "worker"}
+    {
+        "seq",
+        "run_id",
+        "start",
+        "end",
+        "started",
+        "ended",
+        "duration_ms",
+        "worker",
+    }
 )
 
 #: The instant ``fixed_clock`` mode stamps on every engine-written
@@ -84,22 +95,25 @@ def _pin_timing(record: dict) -> dict:
 def _canonical_order(item) -> tuple:
     """Sort key for a buffered ``(arrival, record)`` pair.
 
-    ``run_start`` first, ``run_end`` last, task records between — by
-    what ran (task, attempt, inputs), never by completion order: on a
-    frozen clock, completion order carries no information.  Arrival
-    index only breaks exact ties.
+    ``run_start`` first, ``run_end`` last, node records between — by
+    what ran (path, parent attempt, attempt, inputs), never by completion
+    order: on a frozen clock, completion order carries no information.
+    Arrival index only breaks exact ties.
     """
     arrival, rec = item
     kind = rec.get("record")
     if kind == "run_start":
-        return (0, "", -1, "", "", arrival)
+        return (0, "", -1, -1, "", "", arrival)
     if kind == "run_end":
-        return (2, "", -1, "", "", arrival)
+        return (2, "", -1, -1, "", "", arrival)
+    parent_attempt = rec.get("parent_attempt")
+    parent_attempt = parent_attempt if isinstance(parent_attempt, int) else -1
     attempt = rec.get("attempt")
     attempt = attempt if isinstance(attempt, int) else -1
     return (
         1,
-        str(rec.get("task")),
+        "\x00".join(str(part) for part in (rec.get("path") or [rec.get("node")])),
+        parent_attempt,
         attempt,
         _canon(rec.get("args")),
         _canon(rec.get("kwargs")),
@@ -198,20 +212,33 @@ def _canon(value) -> str:
     return json.dumps(value, sort_keys=True, default=str)
 
 
+def _path_of(rec) -> tuple:
+    """The node-name path of a record, as a hashable tuple."""
+    path = rec.get("path")
+    if isinstance(path, (list, tuple)) and path:
+        return tuple(str(item) for item in path)
+    node = rec.get("node")
+    return (str(node),) if node is not None else ()
+
+
 def _diff_identity(rec) -> tuple:
     """The identity of a record for comparison.
 
-    Task records: (task, attempt, args, kwargs) — an attempt is what
-    ran, on which inputs, for the which time, so a fan-out (many
-    attempts of one task) compares case by case.  Run records: their
-    kind (one per run).  Never the record's position.
+    Node records: (path, parent attempt, attempt, args, kwargs) — an
+    attempt is what ran, where in the node tree, on which inputs, for the
+    which time, so a fan-out (many attempts of one node) compares case by
+    case and a retried composite's re-executed descendants stay distinct.
+    Run records: their kind (one per run).  Never the record's position.
     """
-    if rec.get("record") == "task":
+    if rec.get("record") == "node":
+        parent_attempt = rec.get("parent_attempt")
+        parent_attempt = parent_attempt if isinstance(parent_attempt, int) else -1
         attempt = rec.get("attempt")
         attempt = attempt if isinstance(attempt, int) else -1
         return (
-            "task",
-            str(rec.get("task")),
+            "node",
+            _path_of(rec),
+            parent_attempt,
             attempt,
             _canon(rec.get("args")),
             _canon(rec.get("kwargs")),
@@ -221,13 +248,16 @@ def _diff_identity(rec) -> tuple:
 
 def _identity_out(key) -> dict:
     """The jsonable, printable form of a diff identity."""
-    if key[0] == "task":
+    if key[0] == "node":
+        path = list(key[1])
         return {
-            "record": "task",
-            "task": key[1],
-            "attempt": key[2],
-            "args": json.loads(key[3]),
-            "kwargs": json.loads(key[4]),
+            "record": "node",
+            "node": path[-1] if path else None,
+            "path": path,
+            "parent_attempt": key[2],
+            "attempt": key[3],
+            "args": json.loads(key[4]),
+            "kwargs": json.loads(key[5]),
         }
     return {"record": key[0]}
 
@@ -272,6 +302,7 @@ class RunLog:
         self._lock = threading.Lock()
         self._seq = 0
         self._fh = None
+        self._abandoned = False
         # Reference mode buffers records; canonical flush happens on close.
         self._buffer: list[tuple[int, dict]] | None = [] if fixed_clock else None
 
@@ -282,6 +313,16 @@ class RunLog:
         """Create the parent directory and open the file for writing."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._fh = self.path.open("w", encoding="utf-8")
+
+    def abandon(self) -> None:
+        """Drop every later record.
+
+        A run-level timeout cannot preempt the abandoned attempt thread;
+        it may keep producing records after ``run_end``.  Those records
+        describe work that is still running and must not corrupt the log,
+        so writes after this call are no-ops.
+        """
+        self._abandoned = True
 
     def close(self) -> None:
         """Close the file (idempotent).  Reference mode flushes here."""
@@ -298,11 +339,16 @@ class RunLog:
         """Append one record as a JSON line (thread-safe, flushed).
 
         Reference mode (``fixed_clock``) buffers the record instead; the
-        canonical, pinned lines reach the file at :meth:`close`.
+        canonical, pinned lines reach the file at :meth:`close`.  Records
+        arriving after :meth:`abandon` are dropped.
         """
+        if self._abandoned:
+            return
         if self._fh is None:
             raise RuntimeError(f"RunLog.write on a closed log: {self.path}")
         with self._lock:
+            if self._abandoned:
+                return
             if self._buffer is not None:
                 self._buffer.append((len(self._buffer), dict(record)))
                 return
@@ -334,23 +380,28 @@ class RunLog:
     # Reading: selection, summary, comparison
     # ------------------------------------------------------------ #
     @staticmethod
-    def filter(records, *, record=None, task=None, status=None, attempt=None) -> list:
+    def filter(
+        records, *, record=None, node=None, status=None, attempt=None, path=None
+    ) -> list:
         """Records matching every given field; ``None`` means no constraint.
 
-        ``record`` selects the record kind (``"run_start"`` /
-        ``"task"`` / ``"run_end"``); ``task``, ``status`` and ``attempt``
+        ``record`` selects the record kind (``"run_start"`` / ``"node"``
+        / ``"run_end"``); ``node``, ``status``, ``attempt`` and ``path``
         select the same-named fields.  A record without a constrained
         field never matches.  Input order is preserved.
         """
         out = []
+        wanted_path = None if path is None else list(path)
         for rec in _as_records(records):
             if record is not None and rec.get("record") != record:
                 continue
-            if task is not None and rec.get("task") != task:
+            if node is not None and rec.get("node") != node:
                 continue
             if status is not None and rec.get("status") != status:
                 continue
             if attempt is not None and rec.get("attempt") != attempt:
+                continue
+            if wanted_path is not None and list(rec.get("path") or []) != wanted_path:
                 continue
             out.append(rec)
         return out
@@ -359,73 +410,85 @@ class RunLog:
     def summarize(records) -> dict:
         """A compact, jsonable account of a run.
 
-        Run level: ``flow`` and ``run_id`` (from ``run_start``) and
+        Run level: ``node`` and ``run_id`` (from ``run_start``) and
         ``status`` — the verdict (from ``run_end``; absent when the log
-        has none — an interrupted run).  Per task, in first-appearance
+        has none — an interrupted run).  Per node path, in first-appearance
         order: ``attempts`` (executions — a skip is not an attempt),
         ``statuses`` in record order, the last recorded ``status``, and
-        ``duration_ms`` summed over executions (backoff sleeps
-        excluded).
+        ``duration_ms`` summed over executions (backoff sleeps excluded).
         """
         run = {}
-        tasks = {}
+        nodes = {}
         for rec in _as_records(records):
             kind = rec.get("record")
             if kind == "run_start":
-                run["flow"] = rec.get("flow")
+                run["node"] = rec.get("node")
                 run["run_id"] = rec.get("run_id")
             elif kind == "run_end":
                 run["status"] = rec.get("status")
-            elif kind == "task":
-                name = rec.get("task")
-                detail = tasks.setdefault(
-                    name,
-                    {"task": name, "attempts": 0, "statuses": [], "duration_ms": 0},
+            elif kind == "node":
+                path = _path_of(rec)
+                detail = nodes.setdefault(
+                    path,
+                    {
+                        "node": path[-1] if path else rec.get("node"),
+                        "path": list(path),
+                        "attempts": 0,
+                        "statuses": [],
+                        "duration_ms": 0,
+                    },
                 )
                 detail["statuses"].append(rec.get("status"))
                 if rec.get("attempt", 0):
                     detail["attempts"] += 1
                     detail["duration_ms"] += rec.get("duration_ms") or 0
-        for detail in tasks.values():
+        for detail in nodes.values():
             detail["status"] = detail["statuses"][-1]
-        return {**run, "tasks": list(tasks.values())}
+        return {**run, "nodes": list(nodes.values())}
 
     @staticmethod
     def diff(left, right, *, exclude=DIFF_EXCLUDE) -> dict:
         """Compare two runs semantically — the determinism check.
 
-        Records are identified by what ran — task, inputs, attempt
-        number (run records by kind) — never by position (``seq``).
-        Fields named in ``exclude`` (default :data:`DIFF_EXCLUDE`:
-        record order, run identity, wall-clock and worker fields) are
-        dropped before comparing, and a future argument's ``done``
-        snapshot is ignored — wall time is not an execution fact.  With
-        duplicate identities, the last record wins.
+        Records are identified by what ran — node path, parent attempt,
+        attempt, inputs (run records by kind) — never by position
+        (``seq``).  Fields named in ``exclude`` (default
+        :data:`DIFF_EXCLUDE`: record order, run identity, wall-clock and
+        worker fields) are dropped before comparing, and a future
+        argument's ``done`` snapshot is ignored — wall time is not an
+        execution fact.  With duplicate identities, the last record wins.
 
         Returns a jsonable report, stably ordered: ``equal``; records
-        ``only_left`` / ``only_right``; and one ``changed`` entry per
-        shared identity that differs, carrying each differing field
-        with its left and right values.
+        ``only_left`` / ``only_right``; one ``changed`` entry per shared
+        identity that differs, carrying each differing field with its
+        left and right values.
         """
-        left_side = _diff_side(_as_records(left), exclude)
-        right_side = _diff_side(_as_records(right), exclude)
-        only_left = sorted(left_side.keys() - right_side.keys())
-        only_right = sorted(right_side.keys() - left_side.keys())
-        changed = []
-        for key in sorted(left_side.keys() & right_side.keys()):
-            lrec, rrec = left_side[key], right_side[key]
-            differing = {}
-            for field in sorted(set(lrec) | set(rrec)):
-                if lrec.get(field) != rrec.get(field):
-                    differing[field] = {
-                        "left": lrec.get(field),
-                        "right": rrec.get(field),
-                    }
-            if differing:
-                changed.append({**_identity_out(key), "fields": differing})
-        return {
-            "equal": not (only_left or only_right or changed),
-            "only_left": [_identity_out(k) for k in only_left],
-            "only_right": [_identity_out(k) for k in only_right],
-            "changed": changed,
-        }
+        left_recs = _as_records(left)
+        right_recs = _as_records(right)
+        return _diff_records(left_recs, right_recs, exclude)
+
+
+def _diff_records(left_records, right_records, exclude) -> dict:
+    """The flat comparison of two record lists."""
+    left_side = _diff_side(left_records, exclude)
+    right_side = _diff_side(right_records, exclude)
+    only_left = sorted(left_side.keys() - right_side.keys())
+    only_right = sorted(right_side.keys() - left_side.keys())
+    changed = []
+    for key in sorted(left_side.keys() & right_side.keys()):
+        lrec, rrec = left_side[key], right_side[key]
+        differing = {}
+        for field in sorted(set(lrec) | set(rrec)):
+            if lrec.get(field) != rrec.get(field):
+                differing[field] = {
+                    "left": lrec.get(field),
+                    "right": rrec.get(field),
+                }
+        if differing:
+            changed.append({**_identity_out(key), "fields": differing})
+    return {
+        "equal": not (only_left or only_right or changed),
+        "only_left": [_identity_out(k) for k in only_left],
+        "only_right": [_identity_out(k) for k in only_right],
+        "changed": changed,
+    }

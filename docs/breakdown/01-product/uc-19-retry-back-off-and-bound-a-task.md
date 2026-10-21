@@ -2,7 +2,7 @@
 id: CP-019
 type: capability
 title: UC-19 Retry, back off, and bound a task
-summary: a flaky task is tried again after a pause; a hanging task is cut off by a per-attempt wall-clock budget
+summary: a flaky node is tried again after a pause; a hanging node is cut off by a per-attempt wall-clock budget
 date: 2026-10-14
 status: current
 ---
@@ -11,9 +11,9 @@ status: current
 
 ## Scenario
 
-- A simulator flakes once per case: the campaign must retry it, not crash.
-- A hung simulator must not hang the campaign: a wall budget bounds it.
-- A retrying task waits between attempts; the pause is part of the policy.
+- A simulator flakes once per case: the run must retry it, not crash.
+- A hung simulator must not hang the run: a wall budget bounds it.
+- A retrying node waits between attempts; the pause is part of the policy.
 
 ## Acceptance
 
@@ -25,7 +25,7 @@ status: current
 
 ## Evidence
 
-- `tests/flow/test_task.py` — retry counts, backoff wall time, timeout promptness, per-attempt budget, wrapping.
+- `tests/flow/test_node.py` — retry counts, backoff wall time, timeout promptness, per-attempt budget, wrapping.
 
 ## Owns
 

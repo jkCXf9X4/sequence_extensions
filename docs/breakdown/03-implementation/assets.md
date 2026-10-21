@@ -9,7 +9,7 @@ status: current
 
 # Implementation asset map
 
-The package `sequence-extensions` (v2.0.0) is a pure Python library plus one console script: src layout, Python >= 3.11, MIT, zero runtime dependencies. About 2,450 source lines. Component design lives in `INFO-003`; the flow engine design in `INFO-011`.
+The package `sequence-extensions` (v3.0.0) is a pure Python library plus one console script: src layout, Python >= 3.11, MIT, zero runtime dependencies. About 3,800 source lines. Component design lives in `INFO-003`; the flow engine design in `INFO-011`.
 
 ## Layout
 
@@ -18,13 +18,13 @@ The package `sequence-extensions` (v2.0.0) is a pure Python library plus one con
 - `ext/list_ext.py` — `list_ext(list)`: map, filter, reduce, window, conversions, predicates
 - `ext/dict_ext.py` — `dict_ext(dict)` and `KeyValueTuple` over (key, value) pairs
 - `ext/gen_ext.py` — `gen_ext` static helpers: `to_list`, `recursive_gen`
-- `graph/graph_future.py` — `GraphFuture` DAG node and `GraphPool` (bounded thread pool, event-driven); unchanged substrate
-- `config.py` — `Config` dataclasses, `from_toml` / `from_dict`, `configure` / `active_config` / `reset_config` / `use_config`, `UNSET` sentinel, `validate_task_policy` (`DR-015`)
+- `graph/graph_future.py` — `GraphFuture` DAG node and `GraphPool` (bounded thread pool, event-driven); accepts graph and plain futures (`DR-018`)
 - `flow/__init__.py` — public surface of the flow layer
-- `flow/task.py` — `@task`, `TaskFunction` (attempt loop, timeout join, per-call policy resolution), `TaskTimeoutError`
-- `flow/flow.py` — `@flow` (run identity, pool ownership, drain, failure handling, `__flow__` marker, `last_run`)
-- `flow/runlog.py` — `RunLog` writer/reader, `jsonable` serialization policy, `SCHEMA_VERSION`; `fixed_clock` reference mode (buffered canonical flush at close, pinned timing, `DR-016`)
-- `flow/_context.py` — `RunContext` and the `ContextVar` current-run plumbing
+- `flow/_options.py` — `RunOptions`, `NodePolicy`, `UNSET`, validation and default resolution
+- `flow/node.py` — `@node`, `NodeFunction` (deferred attempt state machine, future-first fan-out, `gather`, blocking guard), `NodeTimeoutError`
+- `flow/run.py` — `execute_flow`, `Run` (top-level run identity, pool ownership, drain, retries/timeout)
+- `flow/runlog.py` — `RunLog` writer/reader (schema 2), `jsonable`, `filter`/`summarize`/`diff`; `fixed_clock` reference mode, `abandon` for late records
+- `flow/_context.py` — `RunContext`, node path/attempt/worker `ContextVar` plumbing, attempt tokens
 - `flow/process_pool.py` — `ProcessGraphPool` (process executor, parent-side record replay), `ProcessDispatchError`
 - `flow_runner/__init__.py` — the `flow-runner` CLI: selection, discovery, inputs, exit codes
 - `flow_runner/__main__.py` — `python -m sequence_extensions.flow_runner` entry
@@ -32,7 +32,7 @@ The package `sequence-extensions` (v2.0.0) is a pure Python library plus one con
 ## Entry points
 
 - CLI: `flow-runner config.toml` (console script) and `python -m sequence_extensions.flow_runner config.toml`
-- Public surface: root re-exports (`ext`, `graph`) plus `from sequence_extensions.flow import task, flow, RunLog, Config, configure`
-- Flow input: decorated Python functions; a TOML config sets defaults, selects the flow, and supplies its inputs (`CP-026`)
-- Run output: the flow's return value plus `runs/<run_id>.jsonl` (default directory)
-- Key config: `pyproject.toml` (pytest `pythonpath = ["src"]`, coverage `fail_under = 90`, ruff line-length 100); run-time config: one TOML file per run (`[flow]`, `[task]`, `[pool]`, `[run]`, `[inputs]`)
+- Public surface: root re-exports (`ext`, `graph`) plus `from sequence_extensions.flow import node, execute_flow, gather, Run, RunOptions, NodePolicy, FlowFuture, FlowOutcome, RunLog`
+- Run input: a root `@node` plus `RunOptions`; a TOML file selects the node and supplies its inputs (`CP-026`)
+- Run output: `Run.result` plus `runs/<run_id>.jsonl` (default directory)
+- Key config: `pyproject.toml` (pytest `pythonpath = ["src"]`, coverage `fail_under = 90`, ruff line-length 100); run-time config: one TOML file per runner invocation (`[run]`, `[node]`, `[inputs]`)

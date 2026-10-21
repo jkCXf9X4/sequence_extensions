@@ -2,7 +2,7 @@
 id: INFO-010
 type: info
 title: Use cases
-summary: The use-case catalog — fourteen capability leaves (CP-016 to CP-029) concretizing the INFO-001 goal
+summary: The use-case catalog — fifteen capability leaves (CP-016 to CP-030) concretizing the INFO-001 goal
 date: 2026-10-14
 status: current
 ---
@@ -24,9 +24,10 @@ The use cases concretize the goal in `INFO-001`. Each is a capability leaf, cite
 - `CP-024` — see what a run did: one compact account of a completed run — attempts, statuses, and time per task, plus the verdict — and selection of the records of interest.
 - `CP-025` — verify two runs executed identically: same code and inputs, same execution — completion order, clock readings, and worker identity never count.
 - `CP-026` — set a run's parameters outside the code: one TOML file tunes the engine, picks the flow, sets its inputs; explicit keywords keep winning; `flow-runner` launches it.
-- `CP-027` — embed the engine in a host application: config installed at startup, flows called as functions, verdict read programmatically.
+- `CP-027` — embed the engine in a host application: `execute_flow` with per-call `RunOptions`, verdict read from the returned `Run`.
 - `CP-028` — start runs from a shell or pipeline: `flow-runner` in make, CI, cron, and batch scripts; exit codes branch, the run log is the artifact.
 - `CP-029` — keep a run log byte-stable for reference storage: `fixed_clock` pins run id, timing, worker, and record order; identical runs, identical bytes.
+- `CP-030` — compose nodes: a reusable node tree runs as a step in a larger tree — one run, one log, future-first fan-out, and composite policy for the subtree.
 
 ## Owns
 

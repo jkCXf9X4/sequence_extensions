@@ -7,6 +7,8 @@ stream.
 
 | Date | ID | Decision | Layers | Status | Record |
 |---|---|---|---|---|---|
+| 2026-10-21 | DR-018 | Compose with nodes, not nested runs | product, architecture, implementation, verification | accepted | `DR-018` |
+| 2026-10-21 | DR-017 | One node primitive and explicit runs | product, architecture, implementation, verification | accepted | `DR-017` |
 | 2026-10-19 | DR-016 | fixed_clock reference mode — byte-identical run logs for reference storage | product, architecture, implementation, verification | accepted | `DR-016` |
 | 2026-10-16 | DR-015 | External configuration and flow-runner — TOML config, per-call resolution, module-scan discovery | product, architecture, implementation, verification, operation | accepted | `DR-015` |
 | 2026-10-14 | DR-014 | e2e harness under tests — versioned scratch, pinned run id | verification, implementation | accepted | `DR-014` |

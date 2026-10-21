@@ -16,16 +16,16 @@ status: current
 
 ## Acceptance
 
-- The campaign's record holds 15 entries: 2 bookends, 7 simulate attempts (6 cases plus one retried), 6 evaluations.
+- The campaign's record holds 16 entries: 2 bookends, the root node, 7 simulate attempts (6 cases plus one retried), and 6 evaluations.
 - Each case's attempts are numbered in order; a failed first attempt is recorded, then the successful one.
-- A task whose dependency failed gets exactly one record marking it skipped.
+- A node whose dependency failed gets exactly one record marking it skipped.
 - The record is complete the moment the campaign returns.
 - The record is plain text, one entry per line, greppable and diffable.
 
 ## Evidence
 
-- `tests/flow/test_runlog.py` — serialization policy, writer thread safety.
-- `tests/flow/test_flow.py` — skipped records, bookends, summary mode.
+- `tests/flow/test_runlog.py` — serialization policy, writer thread safety, schema 2.
+- `tests/flow/test_run.py` — skipped records, bookends, summary mode.
 - `tests/flow/test_acceptance.py` — full log assertions.
 
 ## Owns

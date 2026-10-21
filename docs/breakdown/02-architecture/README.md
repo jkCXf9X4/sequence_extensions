@@ -24,5 +24,5 @@ What is delivered and how it is organized: the public surface, component decompo
 <!-- GENERATED FILE — do not edit. Regenerate with pb-registers. -->
 - **INFO-002** [Deliverables](deliverables.md) — What sequence_extensions delivers — three subpackages, the public API surface, and explicit out-of-scope items
 - **INFO-003** [Components](components.md) — Component decomposition of ext/, graph/, flow/ — responsibilities, data flow, and interface contracts
-- **INFO-011** [Flow engine — decorators over the graph substrate](flow-engine-decorators-over-the-graph-substrate.md) — The flow layer wraps plain functions with @task policy and @flow wiring; futures as arguments are dependency edges; the run log is the executed truth of a run
+- **INFO-011** [Flow engine — one node primitive over the graph substrate](flow-engine-decorators-over-the-graph-substrate.md) — The flow layer wraps plain functions with @node policy; execute_flow opens a run; futures as arguments are dependency edges; the run log is the executed truth of a run
 <!-- pb:index:end -->

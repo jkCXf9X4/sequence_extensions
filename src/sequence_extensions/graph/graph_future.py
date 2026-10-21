@@ -30,6 +30,16 @@ def _shutdown_live_pools() -> None:
 atexit.register(_shutdown_live_pools)
 
 
+def _is_dependency(value) -> bool:
+    """A graph node may depend on another graph node or a plain Future."""
+    return isinstance(value, (GraphFuture, concurrent.futures.Future))
+
+
+def _dependency_future(dep):
+    """The underlying ``concurrent.futures.Future`` of a dependency."""
+    return dep.future if isinstance(dep, GraphFuture) else dep
+
+
 class GraphFuture:
     """
     A small dependency-graph future.
@@ -47,7 +57,12 @@ class GraphFuture:
     """
 
     def __init__(self, function, *args, **kwargs):
-        """Create a node; GraphFuture values among ``args``/``kwargs`` become dependencies."""
+        """Create a node; Future values among ``args``/``kwargs`` become dependencies.
+
+        Both :class:`GraphFuture` and plain :class:`concurrent.futures.Future`
+        values are awaited before the function runs, so a node can depend on a
+        future produced outside the graph layer.
+        """
         self.function = function
         self.name = getattr(function, "__name__", str(function))
 
@@ -58,7 +73,7 @@ class GraphFuture:
 
         # Keep positional order via integer keys: {0: arg0, 1: arg1, **kwargs}
         self.arguments = {**{i: arg for i, arg in enumerate(args)}, **kwargs}
-        self.dependencies = [x for x in self.arguments.values() if isinstance(x, GraphFuture)]
+        self.dependencies = [x for x in self.arguments.values() if _is_dependency(x)]
 
         self.queued = False
         self.future = concurrent.futures.Future()
@@ -66,10 +81,10 @@ class GraphFuture:
         # Guards the check-then-set of ``queued`` and the submit decision so a
         # node is never scheduled twice (and its function never double-runs).
         self._lock = threading.RLock()
-        # Dependents ({GraphFuture}) that have already attached a done-callback
-        # to this node's future — guarantees each callback is attached at most
-        # once (per dependent), which kills the re-attach recursion loop.
-        self._callback_attached = set()
+        # Dependency ids whose done-callback is already attached to this node.
+        # One callback per dependency is enough; repeated binds must not attach
+        # a second one.
+        self._attached_dep_ids = set()
 
     # ------------------------------------------------------------ #
     # Introspection
@@ -146,18 +161,16 @@ class GraphFuture:
         with self._lock:
             if self.queued:
                 return
-            pending = [d for d in self.dependencies if not d.future.done()]
+            pending = [d for d in self.dependencies if not _dependency_future(d).done()]
             if pending:
                 for dep in pending:
-                    with dep._lock:
-                        if self in dep._callback_attached:
-                            continue
-                        dep._callback_attached.add(self)
-                        need_attach = True
-                    if need_attach:
-                        dep.future.add_done_callback(
-                            lambda _f, node=self, p=pool: node._on_dep_done(p)
-                        )
+                    dep_id = id(dep)
+                    if dep_id in self._attached_dep_ids:
+                        continue
+                    self._attached_dep_ids.add(dep_id)
+                    _dependency_future(dep).add_done_callback(
+                        lambda _f, node=self, p=pool: node._on_dep_done(p)
+                    )
                 return
         self._submit(pool)
 
@@ -166,7 +179,7 @@ class GraphFuture:
         with self._lock:
             if self.queued:
                 return
-            if not all(d.future.done() for d in self.dependencies):
+            if not all(_dependency_future(d).done() for d in self.dependencies):
                 return
         self._submit(pool)
 
@@ -197,6 +210,10 @@ class GraphFuture:
                 # Chain the inner graph into the pool; forward its result.
                 self._pool._bind_graph(result)
                 result.future.add_done_callback(self._forward_result)
+            elif isinstance(result, concurrent.futures.Future):
+                # A node may return a plain future (e.g. a deferred flow
+                # attempt). No worker waits: the callback forwards its result.
+                result.add_done_callback(self._forward_result)
             else:
                 try:
                     self.future.set_result(result)
@@ -236,7 +253,7 @@ class GraphFuture:
         kw = {k: v for k, v in self.arguments.items() if not isinstance(k, int)}
 
         def materialize(v):
-            return v.future.result() if isinstance(v, GraphFuture) else v
+            return _dependency_future(v).result() if _is_dependency(v) else v
 
         args = [materialize(pos[k]) for k in sorted(pos)]
         kwargs = {k: materialize(v) for k, v in kw.items()}
@@ -379,7 +396,8 @@ class GraphPool:
             seen.add(nid)
             try:
                 for dep in node.dependencies:
-                    visit(dep)
+                    if isinstance(dep, GraphFuture):
+                        visit(dep)
                 node._wire(self)
                 if not any(n is node for n in self._nodes):
                     self._nodes.append(node)

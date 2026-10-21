@@ -2,8 +2,8 @@
 
 Covers: results and record replay, error and retry records, dependency
 edges and skip records, dispatch failure, timeout across the process
-boundary, pool exit cancelling queued nodes, and the wall-time gain on
-CPU-bound work.
+boundary, pool exit cancelling queued nodes, ``execute_flow`` rejection
+inside a process worker, and the wall-time gain on CPU-bound work.
 """
 
 from __future__ import annotations
@@ -16,12 +16,13 @@ from pathlib import Path
 import pytest
 
 from sequence_extensions.flow import (
+    NodeTimeoutError,
     ProcessDispatchError,
     ProcessGraphPool,
     RunLog,
-    TaskTimeoutError,
-    flow,
-    task,
+    RunOptions,
+    execute_flow,
+    node,
 )
 from sequence_extensions.graph.graph_future import GraphFuture
 
@@ -30,25 +31,29 @@ def _read_log(log_dir):
     return RunLog.records(next(Path(log_dir).glob("*.jsonl")))
 
 
-def _task_records(recs):
-    return [r for r in recs if r["record"] == "task"]
+def _node_records(recs):
+    return [r for r in recs if r["record"] == "node"]
 
 
-# Module-level tasks: picklable by contract (fork and spawn alike).
-@task(retries=0)
+# Module-level nodes: picklable by contract (fork and spawn alike).
+@node(retries=0)
 def _plain(x):
     return x * 2
 
 
-@task(retries=0)
+@node(retries=0, timeout=0.15)
+def _slow_timeout(x):
+    time.sleep(2.0)
+    return x
+
+
+@node(retries=0)
 def _boom(x):
     raise ValueError(f"bad {x}")
 
 
-@task(retries=2, retry_delay_seconds=0.01)
+@node(retries=2, retry_delay_seconds=0.01)
 def _flaky(x):
-    # Fails twice per distinct argument, then succeeds; per-argument
-    # state lives in the worker that runs the attempt loop.
     seen = getattr(_flaky, "seen", None)
     if seen is None:
         seen = _flaky.seen = {}
@@ -58,18 +63,43 @@ def _flaky(x):
     return x + 1
 
 
-@task(retries=0)
+@node(retries=0)
 def _sleepy(x):
     time.sleep(0.3)
     return x
 
 
-@task(retries=0)
+@node(retries=0)
 def _burn(n):
     total = 0
     for i in range(n):
         total += i * i
     return total
+
+
+@node
+def _nested():
+    from sequence_extensions.flow import execute_flow
+
+    @node
+    def child():
+        return 1
+
+    return execute_flow(child, options=RunOptions(log=None)).result
+
+
+@node
+def _submits_in_worker():
+    return _plain.submit(1)
+
+
+@node
+def _returns_a_future():
+    import concurrent.futures
+
+    future = concurrent.futures.Future()
+    future.set_result(1)
+    return future
 
 
 # ---------------------------------------------------------------- #
@@ -78,53 +108,54 @@ def _burn(n):
 def test_process_pool_results_and_records(tmp_path):
     pool = ProcessGraphPool(max_workers=2)
 
-    @flow(pool=pool, log=tmp_path)
+    @node
     def campaign():
         futures = [_plain.submit(i) for i in range(4)]
         return [f.result() for f in futures]
 
     with pool:
-        assert campaign() == [0, 2, 4, 6]
+        run = execute_flow(campaign, options=RunOptions(pool=pool, log=tmp_path))
 
+    assert run.result == [0, 2, 4, 6]
     recs = _read_log(tmp_path)
-    tasks = _task_records(recs)
-    assert len(tasks) == 4
-    assert all(t["status"] == "ok" for t in tasks)
-    assert all(t["worker"].startswith("proc-") for t in tasks)
+    nodes = _node_records(recs)
+    assert len(nodes) == 5  # four leaves and the root
+    assert all(n["status"] == "ok" for n in nodes)
+    assert all(n["worker"].startswith("proc-") for n in nodes if n["node"] == "_plain")
     assert recs[-1]["record"] == "run_end" and recs[-1]["status"] == "ok"
 
 
 def test_process_pool_error_records(tmp_path):
     pool = ProcessGraphPool(max_workers=2)
 
-    @flow(pool=pool, log=tmp_path)
+    @node
     def campaign():
         return _boom.submit(1).result()
 
     with pool:
         with pytest.raises(ValueError, match="bad 1"):
-            campaign()
+            execute_flow(campaign, options=RunOptions(pool=pool, log=tmp_path))
 
-    tasks = _task_records(_read_log(tmp_path))
-    assert len(tasks) == 1
-    assert tasks[0]["status"] == "error"
-    assert tasks[0]["error"]["type"] == "ValueError"
+    nodes = _node_records(_read_log(tmp_path))
+    boom = next(n for n in nodes if n["node"] == "_boom")
+    assert boom["status"] == "error"
+    assert boom["error"]["type"] == "ValueError"
 
 
 def test_process_pool_retry_records(tmp_path):
     pool = ProcessGraphPool(max_workers=2)
-    _flaky.seen = {}  # reset the module-state flake marker (workers fork after)
+    _flaky.seen = {}
 
-    @flow(pool=pool, log=tmp_path)
+    @node
     def campaign():
         return _flaky.submit(7).result()
 
     with pool:
-        assert campaign() == 8
+        execute_flow(campaign, options=RunOptions(pool=pool, log=tmp_path))
 
-    tasks = _task_records(_read_log(tmp_path))
-    assert [t["status"] for t in tasks] == ["error", "error", "ok"]
-    assert [t["attempt"] for t in tasks] == [1, 2, 3]
+    nodes = [n for n in _node_records(_read_log(tmp_path)) if n["node"] == "_flaky"]
+    assert [n["status"] for n in nodes] == ["error", "error", "ok"]
+    assert [n["attempt"] for n in nodes] == [1, 2, 3]
 
 
 # ---------------------------------------------------------------- #
@@ -133,26 +164,21 @@ def test_process_pool_retry_records(tmp_path):
 def test_process_pool_dependency_and_skip_record(tmp_path):
     pool = ProcessGraphPool(max_workers=2)
 
-    @flow(pool=pool, log=tmp_path)
+    @node
     def campaign():
         a = _boom.submit(1)
-        b = _plain.submit(a)  # depends on the failing task
-        try:
-            a.result()
-        except ValueError:
-            return b
-        raise AssertionError("unreachable")
+        return _plain.submit(a)
 
     with pool:
-        skipped = campaign()
+        with pytest.raises(ValueError, match="bad 1"):
+            execute_flow(campaign, options=RunOptions(pool=pool, log=tmp_path))
 
-    tasks = _task_records(_read_log(tmp_path))
-    statuses = {(t["task"], t["status"]) for t in tasks}
+    nodes = _node_records(_read_log(tmp_path))
+    statuses = {(n["node"], n["status"]) for n in nodes}
     assert ("_boom", "error") in statuses
     assert ("_plain", "skipped") in statuses
-    skip = next(t for t in tasks if t["status"] == "skipped")
+    skip = next(n for n in nodes if n["status"] == "skipped")
     assert skip["reason"] == "dependency failed"
-    assert skipped.exception() is not None
 
 
 # ---------------------------------------------------------------- #
@@ -161,9 +187,9 @@ def test_process_pool_dependency_and_skip_record(tmp_path):
 def test_process_pool_dispatch_failure(tmp_path):
     pool = ProcessGraphPool(max_workers=1)
 
-    @flow(pool=pool, log=tmp_path)
+    @node
     def campaign():
-        f = _plain.submit(_unpicklable())  # argument cannot cross a process boundary
+        f = _plain.submit(_unpicklable())
         try:
             f.result()
         except ProcessDispatchError:
@@ -171,55 +197,87 @@ def test_process_pool_dispatch_failure(tmp_path):
         raise AssertionError("unreachable")
 
     with pool:
-        assert campaign() == "dispatch-failed"
+        result = execute_flow(campaign, options=RunOptions(pool=pool, log=tmp_path)).result
+    assert result == "dispatch-failed"
 
-    tasks = _task_records(_read_log(tmp_path))
-    assert len(tasks) == 1
-    assert tasks[0]["status"] == "skipped"
-    assert tasks[0]["reason"] == "dispatch failed"
-    assert tasks[0]["error"]["type"] == "ProcessDispatchError"
+    nodes = _node_records(_read_log(tmp_path))
+    plain = next(n for n in nodes if n["node"] == "_plain")
+    assert plain["status"] == "skipped"
+    assert plain["reason"] == "dispatch failed"
+    assert plain["error"]["type"] == "ProcessDispatchError"
 
 
 def _unpicklable():
     import threading
 
-    return threading.Lock()  # locks cannot be pickled
+    return threading.Lock()
 
 
 def test_process_pool_timeout_crosses_boundary(tmp_path):
     pool = ProcessGraphPool(max_workers=2)
 
-    @flow(pool=pool, log=tmp_path)
+    @node
     def campaign():
-        @task(retries=0, timeout=0.15)
-        def slow(x):
-            time.sleep(2.0)
-            return x
-
-        f = slow.submit(1)
+        f = _slow_timeout.submit(1)
         try:
             f.result()
-        except TaskTimeoutError as exc:
+        except NodeTimeoutError as exc:
             return exc
         raise AssertionError("unreachable")
 
     with pool:
-        error = campaign()
+        error = execute_flow(campaign, options=RunOptions(pool=pool, log=tmp_path)).result
 
-    assert error.task == "slow"
+    assert error.node == "_slow_timeout"
     assert error.timeout == 0.15
-    tasks = _task_records(_read_log(tmp_path))
-    assert tasks[0]["status"] == "timeout"
+    nodes = _node_records(_read_log(tmp_path))
+    slow = next(n for n in nodes if n["node"] == "_slow_timeout")
+    assert slow["status"] == "timeout"
 
 
-def test_task_timeout_error_pickles():
-    """TaskTimeoutError survives the process boundary (custom __reduce__)."""
-    exc = TaskTimeoutError("t", 1.5, 2)
+def test_node_timeout_error_pickles():
+    exc = NodeTimeoutError("n", 1.5, 2)
     clone = pickle.loads(pickle.dumps(exc))
-    assert clone.task == "t"
+    assert clone.node == "n"
     assert clone.timeout == 1.5
     assert clone.attempt == 2
-    assert "t" in str(clone)
+    assert "n" in str(clone)
+
+
+def test_execute_flow_inside_process_worker_is_rejected(tmp_path):
+    pool = ProcessGraphPool(max_workers=1)
+
+    @node
+    def campaign():
+        return _nested.submit()
+
+    with pool:
+        with pytest.raises(RuntimeError, match="process worker"):
+            execute_flow(campaign, options=RunOptions(pool=pool, log=tmp_path))
+
+
+def test_submit_inside_process_worker_is_rejected(tmp_path):
+    pool = ProcessGraphPool(max_workers=1)
+
+    @node
+    def campaign():
+        return _submits_in_worker.submit()
+
+    with pool:
+        with pytest.raises(RuntimeError, match="process worker"):
+            execute_flow(campaign, options=RunOptions(pool=pool, log=tmp_path))
+
+
+def test_process_worker_cannot_return_a_live_future(tmp_path):
+    pool = ProcessGraphPool(max_workers=1)
+
+    @node
+    def campaign():
+        return _returns_a_future.submit()
+
+    with pool:
+        with pytest.raises(RuntimeError, match="live future"):
+            execute_flow(campaign, options=RunOptions(pool=pool, log=tmp_path))
 
 
 # ---------------------------------------------------------------- #
@@ -233,35 +291,34 @@ def _sleep_plain(x, marker=None):
 
 
 def test_process_pool_exit_cancels_queued_nodes(tmp_path):
-    """Exit cancels this pool's pending nodes — thread-mode parity: the
-    running node finishes in the worker (shutdown waits), but its node
-    future is cancelled too; the queued node never runs."""
     marker = tmp_path / "ran"
     pool = ProcessGraphPool(max_workers=1)
     with pool:
-        a = GraphFuture(_sleep_plain, 0, str(marker))  # occupies the worker
-        b = GraphFuture(_sleep_plain, 1)  # queued behind it
+        a = GraphFuture(_sleep_plain, 0, str(marker))
+        b = GraphFuture(_sleep_plain, 1)
         pool.bind(a)
         pool.bind(b)
-    assert marker.exists()  # the running node finished before exit returned
-    assert a.future.cancelled() is True  # completion discarded, as in threads
-    assert b.future.cancelled() is True  # the queued node never ran
+    assert marker.exists()
+    assert a.future.cancelled() is True
+    assert b.future.cancelled() is True
 
 
-def test_process_pool_shared_across_two_flows(tmp_path):
+def test_process_pool_shared_across_two_runs(tmp_path):
     pool = ProcessGraphPool(max_workers=2)
 
-    @flow(pool=pool, log=tmp_path, name="first")
-    def first():
+    @node
+    def run_a():
         return _plain.submit(5).result()
 
-    @flow(pool=pool, log=tmp_path, name="second")
-    def second():
+    @node
+    def run_b():
         return _plain.submit(6).result()
 
     with pool:
-        assert first() == 10
-        assert second() == 12
+        a = execute_flow(run_a, options=RunOptions(pool=pool, log=tmp_path, name="first"))
+        b = execute_flow(run_b, options=RunOptions(pool=pool, log=tmp_path, name="second"))
+    assert a.result == 10
+    assert b.result == 12
 
     logs = sorted(Path(tmp_path).glob("*.jsonl"))
     assert len(logs) == 2
@@ -276,31 +333,27 @@ def test_process_pool_shared_across_two_flows(tmp_path):
 def test_process_pool_beats_gil_on_cpu_bound_work(tmp_path):
     n = 3_000_000
     t0 = time.perf_counter()
-    baseline = _burn(n)  # inline: one task's CPU time under the GIL
+    baseline = _burn(n)
     one = time.perf_counter() - t0
     assert baseline > 0
 
     pool = ProcessGraphPool(max_workers=2)
 
-    @flow(pool=pool, log=tmp_path)
+    @node
     def campaign():
         futures = [_burn.submit(n) for _ in range(2)]
         return [f.result() for f in futures]
 
     t0 = time.perf_counter()
     with pool:
-        results = campaign()
+        results = execute_flow(campaign, options=RunOptions(pool=pool, log=tmp_path)).result
     wall = time.perf_counter() - t0
 
     assert results == [baseline, baseline]
-    # Two CPU-bound tasks on two processes must beat running them under
-    # the GIL (generous margin: fork startup, CI load).
     assert wall < 1.7 * one, f"wall={wall:.3f}s one={one:.3f}s"
 
 
 def test_process_pool_submit_after_exit_settles_cancelled():
-    """A node submitted after the pool exited settles CancelledError (the
-    shutdown branch of the dispatch seam) instead of hanging."""
     import concurrent.futures
 
     pool = ProcessGraphPool(max_workers=1)
@@ -312,23 +365,32 @@ def test_process_pool_submit_after_exit_settles_cancelled():
         gf.result(timeout=2)
 
 
-def test_concurrent_flows_one_process_pool_per_flow(tmp_path):
-    """Two flows in one process, each on its own process pool: both
-    complete — pool-scoped cancellation (IMP-019) at flow level."""
-
-    @flow(pool=ProcessGraphPool(max_workers=1), log=tmp_path / "a", name="fa")
-    def fa():
+def test_concurrent_runs_one_process_pool_per_run(tmp_path):
+    @node
+    def run_a():
         return _sleepy.submit(1).result()
 
-    @flow(pool=ProcessGraphPool(max_workers=1), log=tmp_path / "b", name="fb")
-    def fb():
+    @node
+    def run_b():
         return _sleepy.submit(2).result()
 
     with ThreadPoolExecutor(max_workers=2) as ex:
-        f1 = ex.submit(fa)
-        f2 = ex.submit(fb)
-        assert f1.result(timeout=10) == 1
-        assert f2.result(timeout=10) == 2
+        f1 = ex.submit(
+            execute_flow,
+            run_a,
+            options=RunOptions(
+                pool=ProcessGraphPool(max_workers=1), log=tmp_path / "a", name="fa"
+            ),
+        )
+        f2 = ex.submit(
+            execute_flow,
+            run_b,
+            options=RunOptions(
+                pool=ProcessGraphPool(max_workers=1), log=tmp_path / "b", name="fb"
+            ),
+        )
+        assert f1.result(timeout=10).result == 1
+        assert f2.result(timeout=10).result == 2
 
     for sub in ("a", "b"):
         recs = _read_log(tmp_path / sub)

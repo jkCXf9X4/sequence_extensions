@@ -34,8 +34,7 @@ from pathlib import Path
 import pytest
 
 from e2e.flows import campaign, failing_campaign
-from sequence_extensions.config import Config, FlowConfig, use_config
-from sequence_extensions.flow import DIFF_EXCLUDE, RunLog
+from sequence_extensions.flow import DIFF_EXCLUDE, RunLog, RunOptions, execute_flow
 
 E2E = Path(__file__).resolve().parent
 REPO_ROOT = E2E.parent.parent
@@ -46,11 +45,6 @@ CASES = Path("tests/e2e/cases")
 #: The package-version field is metadata, not behavior — excluded on top
 #: of ``DIFF_EXCLUDE`` so the gate fires only on real drift.
 _E2E_EXCLUDE = DIFF_EXCLUDE | {"version"}
-
-#: Reference-mode configuration for every run: pinned run id and
-#: byte-stable logs (see the module docstring).
-_REFERENCE_MODE = Config(flow=FlowConfig(fixed_clock=True))
-
 
 def _fixed_run_id(flow_name: str) -> str:
     """The id ``fixed_clock`` mode pins: same flow, same id, every run."""
@@ -110,8 +104,7 @@ def _compare_with_reference(flow_name: str, out: Path) -> None:
 def _run_and_check(flow_name: str, out: Path, run_flow) -> None:
     """Clean one flow's scratch, run it in reference mode, then save and/or compare."""
     _clean(out)
-    with use_config(_REFERENCE_MODE):
-        run_flow()
+    run_flow()
     if os.environ.get("UPDATE_REF"):
         _save_reference(flow_name, out)
     _compare_with_reference(flow_name, out)
@@ -124,7 +117,14 @@ def test_campaign_end_to_end_matches_the_reference():
     out = Path("tests/e2e/out/campaign")
 
     def run():
-        verdict = campaign(CASES, 100.0, out)
+        run = execute_flow(
+            campaign,
+            CASES,
+            100.0,
+            out,
+            options=RunOptions(log=OUT / "logs", fixed_clock=True),
+        )
+        verdict = run.result
         assert json.loads(verdict.read_text(encoding="utf-8")) == {
             "cases": 4,
             "passed": 4,
@@ -139,6 +139,11 @@ def test_failing_campaign_end_to_end_matches_the_reference():
 
     def run():
         with pytest.raises(ValueError, match="bad.csv"):
-            failing_campaign(CASES, out)
+            execute_flow(
+                failing_campaign,
+                CASES,
+                out,
+                options=RunOptions(log=OUT / "logs", fixed_clock=True),
+            )
 
     _run_and_check("failing_campaign", out, run)

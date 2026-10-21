@@ -11,20 +11,20 @@ status: current
 
 ## Scenario
 
-- A run finished — or died — and the question is what actually happened: which tasks ran how many times, which failed, which never started, and how the run ended.
+- A run finished — or died — and the question is what actually happened: which nodes ran how many times, which failed, which never started, and how the run ended.
 - Reading the raw record of every attempt answers it, but slowly, and by hand, every time.
 
 ## Acceptance
 
-- One compact account of a completed run: per task — attempts, statuses in order, time spent — and the run's verdict.
-- A task that never executed shows as skipped, not as an attempt.
+- One compact account of a completed run: per node path — attempts, statuses in order, time spent — and the run's verdict.
+- A node that never executed shows as skipped, not as an attempt.
 - A run that died before its verdict still yields the account of what did happen.
-- The records of interest — one task, every failure, a given attempt — can be selected without reading every line.
+- The records of interest — one node, one path, every failure, a given attempt — can be selected without reading every line.
 - The account and the selection are plain data: printable, storable, passable to other tools.
 
 ## Evidence
 
-- `tests/flow/test_runlog_tools.py` — selection by kind, task, status, attempt; per-task account; skipped and interrupted runs; plain-data output; the same over logs the engine wrote.
+- `tests/flow/test_runlog_tools.py` — selection by kind, node, path, status, attempt; per-path account; skipped and interrupted runs; plain-data output; the same over logs the engine wrote.
 
 ## Owns
 

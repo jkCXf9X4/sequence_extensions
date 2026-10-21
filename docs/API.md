@@ -1,8 +1,8 @@
 # sequence_extensions API Reference
 
-Hand-written API reference for the `sequence_extensions` package — higher-order function extensions for sequences (lists, dicts, generators) plus a small dependency-graph future and a V&V workflow layer.
+Hand-written API reference for the `sequence_extensions` package — higher-order function extensions for sequences (lists, dicts, generators) plus a small dependency-graph future and a parallel, deterministic, audited flow engine.
 
-> **Version:** this document describes **version 0.2.0** (Python >= 3.9).
+> **Version:** this document describes **version 3.0.0** (Python >= 3.11).
 
 ## Package layout
 
@@ -12,13 +12,15 @@ sequence_extensions/
 ├── graph/      # the execution substrate
 │   └── graph_future.py # GraphFuture / GraphPool
 └── flow/       # the mini flow engine
-    ├── task.py       # @task (retries, backoff, timeout), TaskTimeoutError
-    ├── flow.py       # @flow (run identity, pool, run log wiring)
+    ├── node.py       # @node (retries, backoff, timeout), NodeTimeoutError
+    ├── run.py        # execute_flow, Run, RunOptions wiring
+    ├── _options.py   # NodePolicy, RunOptions, UNSET, validation
     ├── runlog.py     # RunLog JSON-lines writer, reading toolkit, jsonable
-    └── _context.py   # RunContext + current-run ContextVar plumbing
+    ├── process_pool.py # ProcessGraphPool, ProcessDispatchError
+    └── _context.py   # RunContext + path/attempt/worker ContextVars
 ```
 
-`ext` and `graph` names are re-exported from the package root; `flow` is imported as its own package (`from sequence_extensions.flow import task, flow`).
+`ext` and `graph` names are re-exported from the package root; `flow` is imported as its own package (`from sequence_extensions.flow import node, execute_flow`).
 
 ## Package exports
 
@@ -34,20 +36,31 @@ from sequence_extensions import (
 )
 
 from sequence_extensions.flow import (
-    task,
-    flow,
+    node,
+    execute_flow,
+    gather,
+    Run,
+    RunOptions,
+    NodePolicy,
+    NodeFunction,
+    FlowFuture,
+    FlowOutcome,
+    NodeTimeoutError,
     RunLog,
     DIFF_EXCLUDE,
+    SCHEMA_VERSION,
     RunContext,
-    TaskFunction,
-    TaskTimeoutError,
     ProcessGraphPool,
     ProcessDispatchError,
+    DEFAULT_LOG_DIR,
+    DEFAULT_MAX_WORKERS,
+    UNSET,
     jsonable,
+    validate_node_policy,
     current_run,
 )
 
-__version__ = "1.2.0"
+__version__ = "3.0.0"
 ```
 
 | Export | Description |
@@ -59,14 +72,24 @@ __version__ = "1.2.0"
 | `GraphFuture` | Dependency-graph future node |
 | `GraphPool` | Thread pool that evaluates a `GraphFuture` graph |
 | `KeyValueTuple` | `NamedTuple` with `.key` and `.value` attributes |
-| `task` | Decorator: retry, backoff, and timeout policy around a function |
-| `flow` | Decorator: run identity, pool, and audit log around a function |
+| `node` | Decorator: retry, backoff, and timeout policy around a function; `.submit()` |
+| `gather` | One future resolving to the results of several futures, in order |
+| `execute_flow` | Open a top-level run around a root node and return a `Run` |
+| `Run` | One run's account: result, identity, status, log, duration, error |
+| `RunOptions` | Per-run options (pool, log, summary, fixed clock, retries, node defaults) |
+| `NodePolicy` | Default retry/backoff/timeout for nodes that left a value unset |
+| `NodeFunction` | The object `@node` returns: callable inline, plus `.submit()` |
+| `FlowFuture` | A submitted node's future (`.result()` is rejected on an incomplete future in a worker) |
+| `FlowOutcome` | A deferred direct-call outcome; a worker-side call returns one when it cannot wait |
+| `UNSET` | Sentinel for an unspecified `RunOptions` / `NodePolicy` field |
+| `DEFAULT_MAX_WORKERS` / `DEFAULT_LOG_DIR` | Built-in run defaults (`16`, `"runs"`) |
+| `validate_node_policy` | Validate explicit retry/backoff/timeout values |
 | `RunLog` | JSON-lines run-log writer and reader (`records`, `filter`, `summarize`, `diff`) |
 | `DIFF_EXCLUDE` | Fields `RunLog.diff` drops by default: order, run identity, wall-clock, worker |
-| `TaskTimeoutError` | `TimeoutError` carrying `task`, `timeout`, `attempt` |
+| `NodeTimeoutError` | `TimeoutError` carrying `node`, `timeout`, `attempt` |
 | `ProcessGraphPool` | `GraphPool` subclass with worker processes (CPU-bound tasks) |
 | `ProcessDispatchError` | A payload could not be dispatched to a worker process |
-| `__version__` | `"1.2.0"` |
+| `__version__` | `"3.0.0"` |
 
 ---
 
@@ -708,7 +731,7 @@ def recursive_gen(item: T, iter_f: Callable[[T], T], stop_f: Optional[Callable[[
 
 ## `GraphFuture`
 
-`class GraphFuture` — a small dependency-graph future. Build a graph by passing other `GraphFuture` objects as arguments; dependency arguments are replaced with their results by the time the function executes. Scheduling is event-driven (callback based) with a bounded `ThreadPoolExecutor` — no polling or scheduler loop.
+`class GraphFuture` — a small dependency-graph future. Build a graph by passing other `GraphFuture` objects (or plain `concurrent.futures.Future` values) as arguments; dependency arguments are replaced with their results by the time the function executes. Scheduling is event-driven (callback based) with a bounded `ThreadPoolExecutor` — no polling or scheduler loop.
 
 ### `__init__`
 
@@ -716,7 +739,7 @@ def recursive_gen(item: T, iter_f: Callable[[T], T], stop_f: Optional[Callable[[
 def __init__(self, function, *args, **kwargs)
 ```
 
-- **Parameters:** `function` (`Callable`) — the node's function; the keyword form `GraphFuture(function=fn, ...)` also works. `*args` / `**kwargs` — arguments for `function`; any `GraphFuture` values among them become **dependencies** (their results are substituted in before execution).
+- **Parameters:** `function` (`Callable`) — the node's function; the keyword form `GraphFuture(function=fn, ...)` also works. `*args` / `**kwargs` — arguments for `function`; any `GraphFuture` or `concurrent.futures.Future` values among them become **dependencies** (their results are substituted in before execution).
 - **Returns:** nothing (constructor).
 - **Raises:** nothing.
 - **Description:** Create a node; `GraphFuture` values among `args`/`kwargs` become dependencies.
@@ -729,7 +752,7 @@ def result(self, timeout=None)
 
 - **Parameters:** `timeout` (optional) — seconds to wait before giving up.
 - **Returns:** the node's result (or the forwarded result of a chained inner graph).
-- **Raises:** `TimeoutError` on timeout; on an **unbound node (no pool)** raises `TimeoutError`; the node function's exception propagates.
+- **Raises:** `TimeoutError` on `timeout` expiry; an **unbound node (no pool)** blocks forever unless a `timeout` is given; the node function's exception propagates.
 - **Description:** Block until the node's result is available and return it.
 
 ### `has_result`
@@ -822,7 +845,7 @@ def __repr__(self) -> str
 
 ### Chaining
 
-A node's `function` may return another `GraphFuture`; that inner future is chained onto the node and its result is **forwarded** as the node's result.
+A node's `function` may return another `GraphFuture` or a plain `concurrent.futures.Future`; that inner future is chained onto the node and its result is **forwarded** as the node's result, without holding the worker.
 
 ---
 
@@ -861,7 +884,7 @@ def bind(self, gf: GraphFuture) -> None
 - **Parameters:** `gf` (`GraphFuture`) — the graph node to bind.
 - **Returns:** nothing.
 - **Raises:** `ValueError("dependency cycle detected")` on cyclic graphs.
-- **Description:** Bind the graph reachable from `gf` without touching any result: submit every ready leaf, wire the rest for event-driven scheduling. A **pure bind** — unlike `result(gf, timeout=0)`, it never raises a settled node's own exception. This is the call `task.submit()` uses.
+- **Description:** Bind the graph reachable from `gf` without touching any result: submit every ready leaf, wire the rest for event-driven scheduling. A **pure bind** — unlike `result(gf, timeout=0)`, it never raises a settled node's own exception. This is the call `node.submit()` uses.
 
 ### `__enter__`
 
@@ -897,286 +920,249 @@ def __exit__(self, exc_type, exc_val, exc_tb) -> None
 
 ## `ProcessGraphPool`
 
-`class ProcessGraphPool(GraphPool)` — evaluate a `GraphFuture` graph with a bounded **process** pool: same `bind` / `result` / context-manager surface as `GraphPool`, workers are processes. The fix for CPU-bound task bodies, which the GIL serializes under a thread pool.
+`class ProcessGraphPool(GraphPool)` — evaluate a `GraphFuture` graph with a bounded **process** pool: same `bind` / `result` / context-manager surface as `GraphPool`, workers are processes. The fix for CPU-bound node bodies, which the GIL serializes under a thread pool.
 
 ```python
-from sequence_extensions.flow import ProcessGraphPool, flow
+from sequence_extensions.flow import ProcessGraphPool, RunOptions, execute_flow, gather, node
+
+items = range(8)
 
 
-@flow(pool=ProcessGraphPool(max_workers=4), log="runs")
+@node
+def cpu_heavy(i):
+    return sum(n * n for n in range(i))
+
+
+@node
 def campaign(items):
-    futures = [cpu_heavy.submit(i) for i in items]  # runs in worker processes
-    return [f.result() for f in futures]
+    futures = [cpu_heavy.submit(i) for i in items]  # dispatched to worker processes
+    return gather(futures)                          # no .result() wait
+
+
+with ProcessGraphPool(max_workers=4) as pool:
+    run = execute_flow(campaign, items, options=RunOptions(pool=pool, log="runs"))
 ```
 
-- **`__init__(max_workers=UNSET)`** — worker process count; `UNSET` (the default) resolves to the active configuration's `[pool] process_max_workers` — `None` without a config, the executor's own default (the CPU count). Construct after `configure()` or pass `max_workers` explicitly (resolution is at construction time).
-- **Picklable payloads:** tasks and arguments must survive `pickle` — module-level functions and plain data. `@task`-decorated module-level functions pickle (the raw function is aliased under a private module name at decoration). A lambda, a closure, or an unpicklable argument fails at dispatch: the node settles with `ProcessDispatchError` and the run log records `skipped` / `dispatch failed`.
-- **Run-log records replay in the parent:** a worker cannot write the flow's open log file, so the worker buffers its attempt records and the flow writes them before `run_end` — the log is still complete the moment the flow returns.
+The root node body runs on the driver (the parent process); that is where
+process-mode fan-out is built. A body already running inside a process
+worker cannot submit or return a live future.
+
+- **`__init__(max_workers=None)`** — worker process count; `None` keeps the executor's own default (the CPU count).
+- **Picklable payloads:** nodes and arguments must survive `pickle` — module-level functions and plain data. `@node`-decorated module-level functions pickle (the raw function is aliased under a private module name at decoration). A lambda, a closure, or an unpicklable argument fails at dispatch: the node settles with `ProcessDispatchError` and the run log records `skipped` / `dispatch failed`.
+- **Run-log records replay in the parent:** a worker cannot write the run's open log file, so the worker buffers its attempt records and the run writes them before `run_end` — the log is still complete the moment the run returns.
 - **Dependencies resolve in the parent:** a failed dependency skips the dependent without a process round-trip (same `skipped` record as thread mode).
-- **Limits:** a task returning a `GraphFuture` (graph chaining) works in thread mode only; `task.submit()` inside a process worker is unsupported (the worker has no pool); a timed-out attempt is abandoned as a daemon thread *in the worker process*; errors must be picklable to cross the boundary.
-- Under the default *fork* start method (Linux), function closures defined at call time also pickle; under *spawn* (Windows, macOS default), module-level tasks only.
+- **Limits:** a node body running in a *process worker* cannot submit or return a live future (the worker has no pool); the root body runs on the driver, so a future it returns is bound in the parent and process-mode fan-out is built there. `execute_flow` inside a process worker is rejected in 3.0; a timed-out attempt is abandoned as a daemon thread *in the worker process*; errors must be picklable to cross the boundary.
+- Under the default *fork* start method (Linux), function closures defined at call time also pickle; under *spawn* (Windows, macOS default), module-level nodes only.
 
 ---
 
 ## `flow`
 
-The mini flow engine — parallel, deterministic, audited — built on the `graph` substrate. A task is a function; a flow is a function; a future passed as an argument is a dependency edge. Every run writes one JSON-lines audit log — the executed truth of the run.
-
-### `@task` — policy around a function
+The engine has one composable primitive and one explicit run boundary.
 
 ```python
-from sequence_extensions.flow import task
+from pathlib import Path
 
+from sequence_extensions.flow import NodePolicy, RunOptions, execute_flow, gather, node
 
-@task(retries=2, retry_delay_seconds=0.1, timeout=30.0, name="simulate")
+@node(retries=2, retry_delay_seconds=0.1, timeout=60.0)
+def simulate(case): ...
+
+@node
+def evaluate(sim, tolerance): ...
+
+@node
+def merge(evaluations):
+    return {"count": len(evaluations)}
+
+@node
+def campaign(cases_dir):
+    cases = sorted(cases_dir.glob("*.csv"))
+    sims = [simulate.submit(c) for c in cases]
+    return merge.submit(gather([evaluate.submit(s, 0.5) for s in sims]))
+
+run = execute_flow(campaign, Path("cases"), options=RunOptions(max_workers=8, log="runs"))
+run.result, run.run_id, run.status, run.log, run.duration_ms
+```
+
+### `@node` — policy around a function
+
+```python
+@node(retries=2, retry_delay_seconds=0.5, timeout=30.0, name="simulate")
 def simulate(case): ...
 ```
 
 | Keyword | Default | Meaning |
 | --- | --- | --- |
-| `retries` | `0` | extra attempts after a failed one (`retries=2` means up to 3 attempts) |
-| `retry_delay_seconds` | `0.0` | backoff sleep between attempts; the task holds its pool worker through it |
-| `timeout` | `None` | wall budget for ONE attempt, in seconds |
-| `name` | function name | task name in the run log |
+| `retries` | `0` | additional attempts after a failed one (`2` means up to 3). |
+| `retry_delay_seconds` | `0.0` | backoff delay between attempts (a timer; no worker is held). |
+| `timeout` | `None` | wall budget for ONE attempt; the body runs in its own thread and a returned future gets the remaining budget as a timer; raises `NodeTimeoutError`. |
+| `name` | function name | node name used in the run id, records, and discovery. |
 
-- **Defaults are configurable**: an omitted keyword resolves per call — explicit keyword > active config (`[task]` in a `Config`, see [Configuration](#configuration)) > built-in default. Resolution happens at call time, so `configure()` in `main()` reaches module-level tasks.
+- `@node` returns a `NodeFunction`: still callable, and additionally `.submit(...)` schedules on the current run's pool and returns a `FlowFuture`.
+- A direct call runs inline in the caller's thread. On the driver it returns the body's value (waiting for a returned future if needed); inside a pool worker an unsettled call returns a `FlowOutcome` that the caller must return rather than block on.
+- Futures passed as arguments become dependency edges; plain `concurrent.futures.Future` values are dependencies too. Cycles raise at submit time.
+- `.submit()` is legal in the driver and in a pool worker. A worker does not block: it returns a future and frees the worker.
+- A node may return a value or a future. A returned future (`submit()` or `gather(...)`) is awaited by that node's attempt; the worker is freed. `.result()` on an incomplete future inside a pool worker raises `RuntimeError` with guidance instead of deadlocking.
+- `gather(futures)` returns one future resolving to the results in order. It accepts an iterable, a single future, or empty input (`[]`). Return it from a node or pass it as a dependency (`merge.submit(gather(evals))`). A node should not return a list/dict containing futures; wrap it with `gather`.
+- A node body that calls/submits other nodes is a composite; there is no separate decorator and no separate run. Nested nodes share the run's pool and log; `path` and `parent_attempt` record the tree, and the composite's `retries`/`timeout` apply to the returned future as a whole — a retry re-runs the body (hence its subtree) with a new `parent_attempt`.
+- A `BaseException` (`SystemExit`, `KeyboardInterrupt`) from a node body is recorded and re-raised wrapped in `RuntimeError`.
+- Unset keywords resolve from the active run's `RunOptions.node_defaults`, then the built-in default; an explicit keyword always wins.
 
-- **Plain call** — runs inline in the caller's thread (sequential): `simulate(case)`.
-- **`.submit(...)`** — schedules on the current run's pool, returns a `GraphFuture`; requires an active `@flow` (raises `RuntimeError` otherwise).
-- Futures may be passed as submit arguments (positional or keyword); they resolve to their results before the body runs. Any DAG shape, diamonds included; a cycle raises `ValueError("dependency cycle detected")` at submit time.
-- Exhausted retries raise the last attempt's exception. A timeout raises `TaskTimeoutError` (a `TimeoutError` subclass) carrying `.task`, `.timeout`, `.attempt`.
-- Timeout mechanics: the attempt runs in its own thread joined with the budget. Python threads cannot be preempted — a timed-out attempt thread is abandoned as a daemon and its eventual result discarded. Prefer a task-level `timeout` plus your own subprocess timeout (see the recipe below).
-- A `BaseException` from a task body (e.g. `SystemExit`) is wrapped to `RuntimeError` — the node must settle.
-- Every attempt — success, failure, or timeout — is one record in the run log.
-
-### `@flow` — run identity, pool, audit log
+### `execute_flow` — the run boundary
 
 ```python
-from sequence_extensions.flow import flow
-
-
-@flow(name="campaign", max_workers=16, log="runs", summary=False, fixed_clock=False, pool=None)
-def campaign(cases_dir): ...
+run = execute_flow(node, *args, options=RunOptions(...), **kwargs)
 ```
 
-| Keyword | Default | Meaning |
+| `RunOptions` field | Default | Meaning |
 | --- | --- | --- |
-| `name` | function name | flow name; prefixes the `run_id` |
-| `max_workers` | `16` | thread pool size for the run's `submit()` calls |
-| `log` | `"runs"` | directory for `<run_id>.jsonl`; `None` disables the file |
-| `summary` | `False` | log item counts for long containers instead of items |
-| `fixed_clock` | `False` | reference mode: byte-identical logs for identical runs (see below) |
-| `pool` | `None` | a caller-owned pool — a `GraphPool` (threads) or a `ProcessGraphPool` (processes); never settled by the flow |
+| `name` | root node name | run name; prefixes the run id and `run_start.node`. |
+| `max_workers` | `16` | thread pool size for the run's `submit()` calls. |
+| `log` | `"runs"` | directory for `<run_id>.jsonl`; `None` disables the file. |
+| `summary` | `False` | log item counts for long containers instead of items. |
+| `fixed_clock` | `False` | reference mode: byte-identical logs for identical runs. |
+| `pool` | `None` | a caller-owned pool (`GraphPool` / `ProcessGraphPool`); never settled by the run. |
+| `retries` | `0` | run-level retries; one run file per attempt, each with its own id. |
+| `retry_delay_seconds` | `0.0` | backoff between run attempts. |
+| `timeout` | `None` | wall budget for the whole attempt; on expiry the pool is cancelled and `run_end` records `timeout`. |
+| `node_defaults` | `None` | `NodePolicy` for nodes whose decorator left a value unset. |
 
-- **Defaults are configurable**: `max_workers`, `log`, `summary`, and `fixed_clock` left unset resolve per call — explicit keyword > active config (`[flow]`, see [Configuration](#configuration)) > built-in default.
-- The wrapper carries `__flow__` (the flow name — how `flow-runner` discovers it) and `last_run` (a dict with `run_id`, `status`, `log`, `duration_ms` of the most recent call; concurrent calls race, last writer wins).
+- Returns a `Run`: `result`, `run_id`, `node`, `status` (`ok` / `error` / `timeout`), `log`, `duration_ms`, `attempt`, `started`, `ended`, `error`.
+- On failure `execute_flow` raises the node's exception with `.run` attached (the last attempt's account).
+- `options` is a reserved keyword; pass a node parameter with that name positionally.
+- `execute_flow` is a top-level entry point. Calling it inside an active run raises `RuntimeError`; a node composes nodes directly or by returning their futures. Its first argument must be a `@node` (`NodeFunction`).
+- `execute_flow` inside a process worker is rejected in 3.0.
+- `node.submit()` outside an active run raises `RuntimeError`.
 
+### Lifecycle
 
-- The body is ordinary Python: plain calls are sequential, `.submit()` calls are concurrent.
-- **Drain-on-return** — the flow returns only after every submitted task has settled, so the log is complete on return.
-- **Failure** — a failed flow cancels its own pool's pending tasks (each recorded `skipped`), waits for running ones, records `run_end` with `status: "error"`, and re-raises.
+- **Drain-on-return** — the run returns only after every submitted node has settled, so the log is complete on return.
+- **Failure** — a failed run cancels its own pool's pending nodes (each recorded `skipped`), waits for the running ones, records `run_end` with `status: "error"` (or `"timeout"`), and re-raises.
 - A caller-owned pool is never settled: success and failure both drain; the owner owns the lifecycle.
-- `run_id` format: `<flow>-<UTC timestamp>-<short uuid>`; in reference mode `<flow>-fixed`.
-- **Concurrent flows are safe in one process**: pool exit cancels only that pool's own nodes, so two flows — each on its own pool — can run side by side.
-- Nested flows work: an inner `@flow` gets its own run, pool, and log.
-- On a `ProcessGraphPool`, settle-time records (replayed worker records, skip records) are written by the flow before `run_end`; an unpicklable payload settles its node with `ProcessDispatchError` and records `skipped` / `dispatch failed`.
+- `run_id` format: `<name>-<UTC timestamp>-<short uuid>`; reference mode `<name>-fixed`.
+- Concurrent runs are safe in one process: pool exit cancels only that pool's own nodes.
+- A timed-out attempt thread cannot be preempted; its late records are dropped (`RunLog.abandon`), so the log never changes after `run_end`.
 
 ### Configuration
 
-Every engine parameter can live outside the code, in a TOML file loaded into a `Config` and installed with `configure`. Resolution is per call and keyword-first: **explicit decorator keyword > active config > built-in default**.
+There is no global configuration. Run-level knobs travel with `execute_flow` (`RunOptions`); node-level defaults come from `RunOptions.node_defaults` (`NodePolicy`) or the decorator. Precedence: **explicit decorator keyword > `node_defaults` > built-in default**. `RunOptions` fields left unset take the built-in default; nothing is inherited from an enclosing run (there is none).
 
 ```python
-from sequence_extensions.flow import Config, configure, flow, task
-
-configure(Config.from_toml("config.toml"))
-
-
-@task  # retries / retry_delay_seconds / timeout from [task]
-@flow  # max_workers / log / summary from [flow]
-def campaign(cases_dir): ...
+RunOptions(
+    max_workers=8,
+    log="output/runs",
+    summary=True,
+    fixed_clock=False,
+    node_defaults=NodePolicy(retries=2, retry_delay_seconds=0.5, timeout=30.0),
+)
 ```
 
-```toml
-# config.toml — every section and key is optional
-[flow]
-max_workers = 8            # default 16
-log = "output/runs"        # default "runs"; "" disables run logging
-summary = true             # default false
-fixed_clock = false        # default false; reference mode — see below
-
-[task]
-retries = 2                # default 0
-retry_delay_seconds = 0.5  # default 0.0
-timeout = 30.0             # default: omit (no timeout)
-
-[pool]
-process_max_workers = 4    # ProcessGraphPool() default; omit → CPU count
-
-[run]                      # flow-runner selection (unused by configure)
-module = "mypackage.flows"
-flow = "campaign"
-
-[inputs]                   # keyword arguments for the flow
-items = [1, 2, 3]
-```
-
-**`Config.from_toml(path)`** — parse and validate a TOML file. **`Config.from_dict(data, where=...)`** — build from a mapping (code, tests); `where` prefixes error messages. Both are strict: unknown sections and keys are errors (typo-proof), values are type-checked, ranges follow the same rules as the decorators. Every `Config` constructor validates — build one directly and bad values fail at construction. `log = ""` is the TOML spelling of "disabled" (TOML has no `null`) and normalizes to `None`; an omitted key keeps the built-in default.
-
-**`configure(config)`** — install `config` as the active configuration for the calling context; returns a reset token. **`reset_config(token)`** — restore. **`active_config()`** — read. **`use_config(config)`** — context manager: run a block under a configuration.
-
-**Embedding in an application**: install once at startup with `configure`, call flows as functions, and read the wrapper's `last_run` for the verdict (`run_id`, `status`, `log`, `duration_ms`) — no log parsing needed. Worker threads inherit the active configuration. With no config installed, everything runs on the built-in defaults.
-
-Resolution mechanics worth knowing:
-
-- **Call time, not import time**: `configure()` in `main()` reaches module-level decorators regardless of import order.
-- **Threads**: the flow layer restores the active configuration in pool workers and timeout attempt threads around task bodies, so nested direct calls and `active_config()` reads see the submitting context.
-- **Processes**: `submit()` resolves the task policy in the submitting thread and ships concrete values across the boundary — worker processes never need the config.
-- **Pools constructed directly**: a bare `ProcessGraphPool()` resolves at construction time — construct it after `configure()`, or pass `max_workers` explicitly. The thread substrate stays config-free: `GraphPool` keeps its fixed default (16) and `@flow` sizes its own pool from `[flow] max_workers`.
-- **Determinism**: config values never enter run-log records; a run without `configure()` behaves exactly as before. The one config key that shapes the log itself is `fixed_clock` — reference mode, documented with the [run log](#the-run-log--the-executed-truth).
-
-### `flow-runner` — run a flow from the command line
+### `flow-runner` — run a node from the command line
 
 ```text
-flow-runner config.toml                # run the configured flow
+flow-runner config.toml                # run the configured node
 flow-runner config.toml --flow report  # override the selection
-flow-runner config.toml --list         # flows in the module, with docstrings
+flow-runner config.toml --list         # nodes in the module, with docstrings
 python -m sequence_extensions.flow_runner config.toml   # same thing
 ```
 
-The runner loads and validates the whole config first, installs it as the active configuration, imports `[run] module`, scans it for the `__flow__` marker (no registry, no registration call), validates `[inputs]` against the flow's signature, and calls the flow with them as keyword arguments. It then prints the status, duration, log path, and result:
+```toml
+[run]
+module = "mypackage.flows"
+flow = "campaign"
+max_workers = 8
+log = "runs"
+summary = false
+fixed_clock = false
+retries = 0
+timeout = 60.0
 
-```text
-$ flow-runner campaign.toml
-flow campaign: ok (1843 ms)
-log: runs/campaign-20261016T110258-b0e4a12e.jsonl
-result: {"count": 6, "mean_score": 0.71, "passed": 6, "all_passed": true}
+[node]                 # -> RunOptions.node_defaults
+retries = 2
+retry_delay_seconds = 0.5
+timeout = 30.0
+
+[inputs]               # keyword arguments for the root node
+cases_dir = "cases"
+tolerance = 0.25
 ```
 
-- **Exit codes**: `0` run succeeded, `1` the flow raised, `2` usage or config error (missing file, invalid TOML, unknown key, no flow selected, inputs that do not match the signature).
-- **Inputs** are TOML values passed as keyword arguments — recorded in `run_start` by the existing serialization policy. Flows needing non-TOML inputs (open connections, custom objects) belong in a small `main.py` that calls them directly.
-- A config file names a module to import: treat it as trusted code.
-- **In a pipeline** (make, CI, cron, batch): the caller branches on the exit code; one TOML per environment, the pipeline picks the file; `[flow] log` places the run log where the pipeline collects its artifacts; `--list` shows what can run before running it.
+The runner loads and validates the whole file first (unknown keys and sections fail with the file, section, and key named; `[flow]`/`[task]` are rejected with a 3.0 migration message), imports `[run] module`, scans it for the `__node__` marker, validates `[inputs]` against the node's signature, calls `execute_flow`, and reports status, duration, log path, and result. Exit codes: `0` ok, `1` the run raised, `2` usage/config error. Process pools are constructed in code; the runner drives thread-mode runs.
 
 ### The run log — the executed truth
 
-One JSON-lines file per run (default `runs/<run_id>.jsonl`), written while things happen. Every record gets `seq` (per-run monotonic) and `schema`.
+One JSON-lines file per run (schema 2). Record kinds:
 
-Record kinds:
+- `run_start` — `run_id`, `node`, `attempt`, `started`, `version`, args/kwargs.
+- `node` — one record per attempt: `node`, `path` (the node-name chain), `attempt`, `parent_attempt`, `status` (`ok` / `error` / `timeout` / `skipped`), inputs, timing, `worker`, result/error. A `skipped` record also carries `reason` (`cancelled (run failed)`, `dispatch failed`, or `dependency failed`).
+- `run_end` — `status` (`ok` / `error` / `timeout`), result/error.
 
-| Record | Fields |
-| --- | --- |
-| `run_start` | `run_id`, `flow`, `started`, `version`, `args`, `kwargs` |
-| `task` | `run_id`, `task`, `attempt`, `status`, `args`, `kwargs`, `start`, `end`, `duration_ms`, `worker`, plus `result` (ok) or `error` |
-| `run_end` | `run_id`, `status`, `ended`, `duration_ms`, plus `result` (ok) or `error` |
-
-- Task `status`: `ok` (attempt succeeded), `error`, `timeout`, or `skipped` (`attempt: 0` — the node never executed: a dependency failed, the payload could not be dispatched to a process (`reason: "dispatch failed"`), or the flow failed and cancelled it).
-- Serialization policy (`jsonable`): paths log as `{"path": ..., "sha256": ...}` (hashed when the file exists); `bytes` as length plus sha256; datetimes as ISO 8601; sets as sorted lists; unknown values as `str(value)`. Bulky payloads return a `Path` by convention — never inlined.
-- `summary=True` replaces containers longer than 8 items with `{"type": ..., "len": ...}`.
-
-**Reference mode** (`RunLog(path, fixed_clock=True)`, reached through `@flow(fixed_clock=True)` or `[flow] fixed_clock = true`): for storing logs as reference files — golden files in git — an identical run produces a byte-identical file. Records are buffered and written at `close` in canonical order (`run_start`, task records by task / attempt / inputs, `run_end`), with `seq` assigned in that order; every engine-written timestamp becomes `FIXED_CLOCK` (`"1970-01-01T00:00:00+00:00"`), `duration_ms` becomes `0`, and `worker` becomes `FIXED_WORKER` (`"fixed"`). Execution facts — what ran, on which inputs, with which outcome — are untouched. The trade: a reference-mode file holds nothing until the flow returns and the log closes.
-
-Reading a log back:
-
-```python
-from sequence_extensions.flow import RunLog
-
-for record in RunLog.records("runs/campaign-20261013T101500-1a2b3c4d.jsonl"):
-    print(record["seq"], record.get("task"), record["status"])
+```json
+{"seq": 2, "schema": 2, "record": "node", "run_id": "campaign-…", "node": "simulate", "path": ["campaign", "simulate"], "attempt": 1, "parent_attempt": 1, "status": "error", "error": {"type": "RuntimeError", "message": "flaky"}, "worker": "graph-worker_1"}
+{"seq": 3, "schema": 2, "record": "node", "run_id": "campaign-…", "node": "simulate", "path": ["campaign", "simulate"], "attempt": 2, "parent_attempt": 1, "status": "ok", "result": {"score": 0.3}, "worker": "graph-worker_1"}
 ```
 
-#### Reading toolkit — filter, summarize, diff
+Reading:
 
-All three accept a log path or a record list; `records` itself is unchanged.
+- `RunLog.records(path)` — the whole log, in file order.
+- `RunLog.filter(records, record=..., node=..., status=..., attempt=..., path=...)` — selection.
+- `RunLog.summarize(path)` — per-path account (`attempts`, `statuses`, `status`, `duration_ms`) plus the run verdict.
+- `RunLog.diff(a, b, exclude=DIFF_EXCLUDE)` — semantic comparison; identity is `(path, parent_attempt, attempt, inputs)` for nodes and the kind for run records. `DIFF_EXCLUDE` drops order, run identity, wall-clock, and worker; pass a replacement set to compare more or less.
 
-```python
-from sequence_extensions.flow import RunLog
-
-path = "runs/campaign-20261013T101500-1a2b3c4d.jsonl"
-
-RunLog.filter(path, task="simulate", status="error")  # selection
-RunLog.summarize(path)  # compact account
-RunLog.diff(path, "runs/campaign-20261013T111500-2b3c4d5e.jsonl")  # determinism
-```
-
-**`filter(records, *, record=None, task=None, status=None, attempt=None)`** — records matching every given field (`None` = no constraint). `record` selects the kind (`"run_start"` / `"task"` / `"run_end"`); a record without a constrained field never matches. Input order preserved.
-
-**`summarize(records)`** — the compact account, one jsonable dict: run level `flow`, `run_id`, and `status` (the verdict; absent when the log has no `run_end` — an interrupted run), plus one entry per task in first-appearance order — `attempts` (executions; a skip is not an attempt), `statuses` in record order, the last recorded `status`, and `duration_ms` summed over executions.
-
-**`diff(left, right, *, exclude=DIFF_EXCLUDE)`** — the semantic comparison of two runs, the determinism check. Records are identified by *what ran* — task, inputs, attempt number (run records by kind) — never by record position, so a fan-out compares case by case. Fields dropped before comparing, by default (`DIFF_EXCLUDE`):
-
-| Dropped | Why |
-| --- | --- |
-| `seq` | completion order is wall-clock, not execution |
-| `run_id` | the run's own identity |
-| `start`, `end`, `started`, `ended`, `duration_ms` | wall time is not a determinism claim |
-| `worker` | which thread or process happened to run it |
-
-A future argument's `done` snapshot (`{"node": ..., "done": ...}`) is ignored for the same reason. Duplicate identities: the last record wins. The report is jsonable and stably ordered:
-
-```python
-{"equal": False,
- "only_left":  [{"record": "task", "task": "simulate", "attempt": 2,
-                 "args": ["cases/a.csv"], "kwargs": {}}],
- "only_right": [],
- "changed":   [{"record": "task", "task": "simulate", "attempt": 1,
-                 "args": ["cases/a.csv"], "kwargs": {},
-                 "fields": {"status": {"left": "error", "right": "ok"}, ...}}]}
-```
-
-Pass `exclude=` a replacement set to compare more or less — e.g. `DIFF_EXCLUDE - {"duration_ms"}` to make durations count.
+Reference mode (`fixed_clock=True`) buffers records and writes them at close, in canonical order, with timing pinned to `1970-01-01T00:00:00+00:00`, `duration_ms` to `0`, and `worker` to `fixed`. Identical runs produce byte-identical files — for storing logs as reference artifacts. A fixed run rejects run-level retries.
 
 ### Example campaign
 
 ```python
 from pathlib import Path
 
-from sequence_extensions.flow import flow, task
+from sequence_extensions.flow import RunOptions, execute_flow, gather, node
 
 
-@task(retries=2, retry_delay_seconds=0.1, timeout=60.0)
-def simulate(case: Path) -> dict: ...
+@node(retries=2, retry_delay_seconds=0.05)
+def simulate(case: Path) -> dict:
+    ...
 
 
-@task
-def evaluate(sim: dict, tolerance: float) -> dict: ...
+@node
+def evaluate(sim: dict, tolerance: float) -> dict:
+    ...
 
 
-def aggregate(evaluations: list) -> dict:
-    return {
-        "count": len(evaluations),
-        "mean_score": sum(e["score"] for e in evaluations) / len(evaluations),
-        "passed": sum(1 for e in evaluations if e["passed"]),
-        "all_passed": all(e["passed"] for e in evaluations),
-    }
+@node
+def campaign(cases_dir: Path, tolerance: float = 0.5) -> list:
+    cases = sorted(cases_dir.glob("*.csv"))
+    sims = [simulate.submit(c) for c in cases]
+    evals = [evaluate.submit(s, tolerance) for s in sims]
+    return gather(evals)
 
 
-@flow
-def campaign(cases_dir: Path, tolerance: float = 0.5) -> dict:
-    cases = sorted(cases_dir.glob("*.csv"))  # plain call: sequential
-    sims = [simulate.submit(c) for c in cases]  # concurrent map
-    evals = [evaluate.submit(s, tolerance) for s in sims]  # futures = edges
-    return aggregate([e.result() for e in evals])  # gather
+run = execute_flow(
+    campaign,
+    Path("cases"),
+    options=RunOptions(max_workers=8, log="runs"),
+)
+print(run.result, run.status, run.log)
 ```
-
----
 
 ## Wrapping an external simulator (recipe)
 
 The engine is deliberately stdlib-only: no subprocess helpers, no FMI bindings, no HPC client. A real `simulate` (an FMI co-simulation, a Modelica tool, a command-line solver) is yours to write. This is the canonical pattern — a **recipe, not a dependency**.
 
-1. **Run the tool with `subprocess.run` and a `timeout`.** The tool is a black box; its contract is the command line, the exit code, and the files it writes. `subprocess.run(..., timeout=...)` kills a hung tool at the process level — the layer a task `timeout=` cannot reach.
-2. **Map a non-zero exit to an exception.** Raise `RuntimeError`; the task fails, the run log records it, and `retries=` / the flow's failure handling take over.
-3. **Return a `Path`, not the payload.** The run log serializes it as path plus sha256; downstream tasks receive the path by value.
+1. **Run the tool with `subprocess.run` and a `timeout`.** The tool is a black box; its contract is the command line, the exit code, and the files it writes. `subprocess.run(..., timeout=...)` kills a hung tool at the process level — the layer a node `timeout=` cannot reach.
+2. **Map a non-zero exit to an exception.** Raise `RuntimeError`; the node fails, the run log records it, and `retries=` / the run's failure handling take over.
+3. **Return a `Path`, not the payload.** The run log serializes it as path plus sha256; downstream nodes receive the path by value.
 4. **Stay deterministic.** Same inputs, same command line, same output bytes — the log then proves it.
 
 ```python
 import subprocess
 from pathlib import Path
 
-from sequence_extensions.flow import flow, task
+from sequence_extensions.flow import RunOptions, execute_flow, gather, node
 
 
-@task(retries=2, retry_delay_seconds=5.0, timeout=330.0)
+@node(retries=2, retry_delay_seconds=5.0, timeout=330.0)
 def simulate(model: str, stop_time: float, out_dir: Path) -> Path:
     """Run the external solver; returns the result file path."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1190,23 +1176,26 @@ def simulate(model: str, stop_time: float, out_dir: Path) -> Path:
     return out_dir / "result.csv"
 
 
-@flow(log="runs")
+@node
 def campaign(model: str, stop_times: list, workdir: Path) -> list:
     futures = [
         simulate.submit(model, stop_time, workdir / f"case_{i}")
         for i, stop_time in enumerate(stop_times)
     ]
-    return [f.result() for f in futures]
+    return gather(futures)
+
+
+run = execute_flow(campaign, model, stop_times, workdir, options=RunOptions(log="runs"))
 ```
 
-Use both timeouts: the subprocess timeout kills the tool; the task `timeout=` is the campaign-level backstop (it abandons the attempt and retries — see the mechanics above).
+Use both timeouts: the subprocess timeout kills the tool; the node `timeout=` is the campaign-level backstop (it abandons the attempt and retries — see the mechanics above).
 
 ### HPC (SLURM) variant
 
 The batch scheduler is the orchestrator; the engine's job is to speak it. The same recipe with `sbatch` in place of a direct run:
 
 ```python
-@task(retries=2, timeout=7200.0)
+@node(retries=2, timeout=7200.0)
 def submit_job(script: Path) -> str:
     proc = subprocess.run(
         ["sbatch", "--parsable", str(script)], capture_output=True, text=True, timeout=60
@@ -1216,7 +1205,7 @@ def submit_job(script: Path) -> str:
     return proc.stdout.strip()  # job id
 
 
-@task(retries=1000, retry_delay_seconds=60.0)
+@node(retries=1000, retry_delay_seconds=60.0)
 def wait_for_job(job_id: str) -> str:
     proc = subprocess.run(
         ["sacct", "-j", job_id, "--format=State", "--noheader"],
@@ -1232,4 +1221,4 @@ def wait_for_job(job_id: str) -> str:
     raise RuntimeError(f"job {job_id} still {state}")  # retried until done
 ```
 
-A polling task with `retries` large and `retry_delay_seconds` matching the poll interval is one line of policy — no scheduler adapter in the engine.
+A polling node with `retries` large and `retry_delay_seconds` matching the poll interval is one line of policy — no scheduler adapter in the engine.

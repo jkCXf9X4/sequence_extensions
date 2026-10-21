@@ -130,6 +130,16 @@ def test_runlog_write_adds_seq_and_schema(tmp_path):
     assert all(r["schema"] == SCHEMA_VERSION for r in recs)
 
 
+def test_runlog_abandon_drops_later_records(tmp_path):
+    log = RunLog(tmp_path / "run.jsonl")
+    log.open()
+    log.write({"record": "run_start"})
+    log.abandon()
+    log.write({"record": "node", "node": "late"})
+    log.close()
+    assert [r["record"] for r in RunLog.records(tmp_path / "run.jsonl")] == ["run_start"]
+
+
 def test_runlog_write_closed_raises(tmp_path):
     log = RunLog(tmp_path / "run.jsonl")
     log.open()
@@ -158,10 +168,12 @@ def test_reference_mode_pins_timing_and_orders_canonically(tmp_path):
     # Deliberately out of canonical order, with real-looking timing.
     log.write(
         {
-            "record": "task",
+            "record": "node",
             "run_id": "f-fixed",
-            "task": "beta",
+            "node": "beta",
+            "path": ["f", "beta"],
             "attempt": 1,
+            "parent_attempt": 1,
             "status": "ok",
             "args": [2],
             "kwargs": {},
@@ -186,42 +198,56 @@ def test_reference_mode_pins_timing_and_orders_canonically(tmp_path):
     log.close()
 
     recs = RunLog.records(path)
-    assert [r["record"] for r in recs] == ["run_start", "task", "run_end"]
+    assert [r["record"] for r in recs] == ["run_start", "node", "run_end"]
     assert [r["seq"] for r in recs] == [1, 2, 3]  # renumbered in canonical order
-    run_start, task, run_end = recs
+    run_start, node_rec, run_end = recs
     assert run_start["started"] == FIXED_CLOCK
     assert run_end["ended"] == FIXED_CLOCK
     assert run_end["duration_ms"] == 0
-    assert task["start"] == FIXED_CLOCK
-    assert task["end"] == FIXED_CLOCK
-    assert task["duration_ms"] == 0
-    assert task["worker"] == FIXED_WORKER
-    assert task["result"] == 4  # execution facts untouched
+    assert node_rec["start"] == FIXED_CLOCK
+    assert node_rec["end"] == FIXED_CLOCK
+    assert node_rec["duration_ms"] == 0
+    assert node_rec["worker"] == FIXED_WORKER
+    assert node_rec["result"] == 4  # execution facts untouched
 
 
-def test_reference_mode_orders_tasks_by_identity_not_arrival(tmp_path):
+def test_reference_mode_orders_nodes_by_path_and_attempt(tmp_path):
     path = tmp_path / "ref.jsonl"
     log = RunLog(path, fixed_clock=True)
     log.open()
-    for name, attempt in [("b", 1), ("a", 2), ("a", 1), ("b", 2)]:
-        log.write({"record": "task", "task": name, "attempt": attempt, "status": "ok"})
+    for node_name, path_names, attempt in [
+        ("b", ["a", "b"], 1),
+        ("a", ["a"], 2),
+        ("a", ["a"], 1),
+        ("b", ["a", "b"], 2),
+    ]:
+        log.write(
+            {
+                "record": "node",
+                "node": node_name,
+                "path": path_names,
+                "attempt": attempt,
+                "parent_attempt": None,
+                "status": "ok",
+            }
+        )
     log.close()
     recs = RunLog.records(path)
-    assert [(r["task"], r["attempt"]) for r in recs] == [
-        ("a", 1),
-        ("a", 2),
-        ("b", 1),
-        ("b", 2),
+    assert [(r["path"], r["attempt"]) for r in recs] == [
+        (["a"], 1),
+        (["a"], 2),
+        (["a", "b"], 1),
+        (["a", "b"], 2),
     ]
 
 
 def test_runlog_records_roundtrip(tmp_path):
     log = RunLog(tmp_path / "run.jsonl")
     log.open()
-    log.write({"record": "task", "nested": {"a": [1, 2]}})
+    log.write({"record": "node", "nested": {"a": [1, 2]}})
     log.close()
     assert RunLog.records(tmp_path / "run.jsonl") == [
-        {"seq": 1, "schema": SCHEMA_VERSION, "record": "task", "nested": {"a": [1, 2]}}
+        {"seq": 1, "schema": SCHEMA_VERSION, "record": "node", "nested": {"a": [1, 2]}}
     ]
 
 
@@ -240,7 +266,7 @@ def test_runlog_concurrent_writes_are_unique_and_valid(tmp_path):
 
     def _pound():
         for _ in range(n_writes):
-            log.write({"record": "task", "task": threading.current_thread().name})
+            log.write({"record": "node", "node": threading.current_thread().name})
 
     threads = [threading.Thread(target=_pound) for _ in range(n_threads)]
     for t in threads:

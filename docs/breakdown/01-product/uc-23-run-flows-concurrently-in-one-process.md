@@ -21,8 +21,8 @@ status: current
 
 ## Evidence
 
-- `tests/flow/test_flow.py::test_concurrent_flows_in_one_process`
-- `tests/flow/test_process_pool.py::test_concurrent_flows_one_process_pool_per_flow`
+- `tests/flow/test_run.py::test_concurrent_runs_in_one_process`
+- `tests/flow/test_process_pool.py::test_concurrent_runs_one_process_pool_per_run`
 - `tests/graph/test_graph_future.py::test_pool_exit_spares_other_pools_nodes`
 
 ## Owns

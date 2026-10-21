@@ -18,10 +18,10 @@ status: current
 
 ## Acceptance
 
-- `flow-runner config.toml` starts the selected flow; `[inputs]` pass as keyword arguments.
-- Exit codes carry the verdict: 0 success, 1 flow failure, 2 usage or config error.
-- `--list` enumerates the flows in the module; `--flow NAME` overrides the selection.
-- A bad config fails at load with file, section, and key named; no task has run.
+- `flow-runner config.toml` starts the selected root node; `[inputs]` pass as keyword arguments.
+- Exit codes carry the verdict: 0 success, 1 run failure, 2 usage or config error.
+- `--list` enumerates the nodes in the module; `--flow NAME` overrides the selection.
+- A bad config fails at load with file, section, and key named; no node has run.
 - The account line names status and log path; the run log is complete when the process exits.
 
 ## Evidence

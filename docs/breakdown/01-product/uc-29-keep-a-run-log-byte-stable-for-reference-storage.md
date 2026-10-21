@@ -12,22 +12,23 @@ status: current
 ## Scenario
 
 - A pipeline or test suite stores run logs as reference files — golden files committed to git.
-- Every run rewrites the same flow; wall-clock timestamps, durations, worker names, and completion order must not dirty the tree.
+- Every run rewrites the same node; wall-clock timestamps, durations, worker names, and completion order must not dirty the tree.
 - An operator still needs real timestamps in normal runs; the mode is opt-in.
 
 ## Acceptance
 
-- `fixed_clock` is off by default; `@flow(fixed_clock=True)` and `[flow] fixed_clock = true` both enable it (keyword wins).
-- The run id pins to `<flow>-fixed`: the log file overwrites itself, no accumulation.
+- `fixed_clock` is off by default; `RunOptions(fixed_clock=True)` enables it for the top-level run.
+- The run id pins to `<node>-fixed`: the log file overwrites itself, no accumulation.
 - Engine-written timing pins to `1970-01-01T00:00:00+00:00`, `duration_ms` to `0`, `worker` to a constant.
-- Records are written at close in canonical order — `run_start`, tasks by task / attempt / inputs, `run_end` — with `seq` assigned in that order.
+- Records are written at close in canonical order — `run_start`, nodes by path / parent attempt / attempt / inputs, `run_end` — with `seq` assigned in that order.
 - Two identical runs produce byte-identical log files, thread and process mode alike.
-- Execution facts stay real: what ran, on which inputs, with which outcome.
+- Execution facts stay real: what ran, where in the node tree, on which inputs, with which outcome.
+- A fixed run rejects run-level retries; nested node fan-out is ordered by `path`, `parent_attempt`, attempt, and inputs, so the single log stays byte-identical.
 
 ## Evidence
 
 - `tests/flow/test_runlog.py`
-- `tests/flow/test_config.py`
+- `tests/flow/test_run.py`
 - `tests/e2e/test_flows.py`
 
 ## Owns

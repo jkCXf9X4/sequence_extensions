@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from sequence_extensions.flow import flow, task
+from sequence_extensions.flow import node
 
 
 def _load_case(case_path: Path) -> dict:
@@ -41,7 +41,7 @@ def _write_json(path: Path, payload: dict) -> Path:
 # ---------------------------------------------------------------- #
 # campaign — the happy path
 # ---------------------------------------------------------------- #
-@task(retries=1, retry_delay_seconds=0.0)
+@node(retries=1, retry_delay_seconds=0.0)
 def simulate(case_path: Path, out_dir: Path) -> Path:
     """Mock solver: doubles the case value; the first attempt of every
     case fails once per run (marker file), exercising the retry policy."""
@@ -57,7 +57,7 @@ def simulate(case_path: Path, out_dir: Path) -> Path:
     )
 
 
-@task
+@node
 def evaluate(sim_path: Path, tolerance: float, out_dir: Path) -> Path:
     """Mock evaluation: reads the sim artifact, writes one pass/fail."""
     sim = json.loads(sim_path.read_text(encoding="utf-8"))
@@ -85,7 +85,7 @@ def _verdict(eval_paths: list[Path], out_dir: Path) -> Path:
     )
 
 
-@flow(name="campaign", log="tests/e2e/out/logs")
+@node
 def campaign(cases_dir: Path, tolerance: float, out_dir: Path) -> Path:
     """Fan-out over the cases, dependency edges into evaluate, one verdict."""
     cases = sorted(cases_dir.glob("*.csv"))
@@ -97,7 +97,7 @@ def campaign(cases_dir: Path, tolerance: float, out_dir: Path) -> Path:
 # ---------------------------------------------------------------- #
 # failing_campaign — the failure path
 # ---------------------------------------------------------------- #
-@task(retries=1, retry_delay_seconds=0.0)
+@node(retries=1, retry_delay_seconds=0.0)
 def validate(case_path: Path) -> dict:
     """Mock gate: a negative value fails validation (``bad.csv``)."""
     case = _load_case(case_path)
@@ -106,7 +106,7 @@ def validate(case_path: Path) -> dict:
     return case
 
 
-@task
+@node
 def transform(validated: dict, out_dir: Path) -> Path:
     """Mock consumer of validation; never runs for a failed case."""
     return _write_json(
@@ -123,11 +123,11 @@ def _summary(transformed_paths: list[Path], out_dir: Path) -> Path:
     )
 
 
-@flow(name="failing_campaign", log="tests/e2e/out/logs")
+@node
 def failing_campaign(cases_dir: Path, out_dir: Path) -> Path:
     """Always fails: ``bad.csv`` fails validation, its dependent transform
     is recorded skipped, and the flow raises the first failure — but only
-    after every submitted task has settled, so the run's record and
+    after every submitted node has settled, so the run's record and
     artifacts are complete and deterministic (no timing-dependent
     cancellations)."""
     cases = sorted(cases_dir.glob("*.csv"))

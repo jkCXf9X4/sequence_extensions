@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sequence-extensions"
+name = "sequence-extensions-flow"
 dynamic = ["version"]
 authors = [
   { name="jkCXf9X4"},

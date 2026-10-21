@@ -2,7 +2,7 @@
 id: CP-017
 type: capability
 title: UC-17 Run independent tasks concurrently
-summary: independent tasks inside one campaign run at the same time; the campaign returns only once every task has finished
+summary: independent nodes inside one run execute at the same time; the run returns only once every node has finished
 date: 2026-10-14
 status: current
 ---
@@ -13,20 +13,20 @@ status: current
 
 - Six simulations, each 0.15 s of work. The campaign must run them at once, not in series.
 - Each simulation is independent: none needs another's result.
-- The campaign must not return while any of its work is still running.
+- The run must not return while any of its work is still running.
 
 ## Acceptance
 
-- Wall time for six parallel 0.15 s tasks stays under 0.6 s; sequential needs at least 0.9 s.
-- A concurrency limit of one serializes: two 0.1 s tasks take at least 0.2 s.
+- Wall time for six parallel 0.15 s nodes stays under 0.6 s; sequential needs at least 0.9 s.
+- A concurrency limit of one serializes: two 0.1 s nodes take at least 0.2 s.
 - Each attempt's record names the worker that ran it.
-- The campaign returns only after every task it launched has finished.
+- The run returns only after every node it launched has finished.
 
 ## Evidence
 
-- `tests/flow/test_task.py::test_submit_runs_concurrently`
-- `tests/flow/test_flow.py::test_flow_max_workers_bounds_concurrency`
-- `tests/flow/test_flow.py::test_flow_drains_pending_tasks_before_returning`
+- `tests/flow/test_node.py::test_submit_runs_concurrently`
+- `tests/flow/test_run.py::test_max_workers_bounds_concurrency`
+- `tests/flow/test_run.py::test_run_drains_pending_nodes_before_returning`
 - `tests/flow/test_acceptance.py` — parallelism assertion on the campaign.
 
 ## Owns

@@ -2,7 +2,7 @@
 id: CP-025
 type: capability
 title: UC-25 Verify two runs executed identically
-summary: same code and same inputs must execute the same — every task, every attempt, same outcomes — with completion order, clock readings, and worker identity never counting as differences
+summary: same code and same inputs must execute the same — every node, every attempt, same outcomes — with completion order, clock readings, and worker identity never counting as differences
 date: 2026-10-14
 status: current
 ---
@@ -17,14 +17,14 @@ status: current
 ## Acceptance
 
 - Two runs of the same campaign on the same code and inputs compare equal.
-- A different outcome is pinpointed: which task, on which inputs, which attempt, and exactly which facts differ.
-- Work in one run but not the other — a task attempted here, skipped there — is listed.
+- A different outcome is pinpointed: which node path, on which inputs, which attempt, and exactly which facts differ.
+- Work in one run but not the other — a node attempted here, skipped there — is listed.
 - Completion order, clock readings, durations, and worker names never count as differences; neither does the run's own identity.
 - The comparison result is plain data: printable, storable, passable to other tools.
 
 ## Evidence
 
-- `tests/flow/test_runlog_tools.py` — two real two-stage campaigns compare equal; a flaky difference pinpointed to task, inputs, attempt, and fields; extra work listed; timing-only differences ignored; what counts as equal stated as policy.
+- `tests/flow/test_runlog_tools.py` — two real two-stage runs compare equal; a flaky difference pinpointed to node path, inputs, attempt, and fields; extra work listed; timing-only differences ignored; what counts as equal stated as policy.
 
 ## Owns
 

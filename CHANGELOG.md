@@ -5,29 +5,65 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.0.0] - 2026-10-21
+
+The composition release: one `@node` primitive and an explicit
+`execute_flow` run boundary.  A run is a call, not a decorator.
+
+### Breaking
+
+- **`@task` and `@flow` are gone.**  Use `@node` for both: it carries
+  retry/backoff/timeout policy and `.submit()`.  The run boundary is
+  `execute_flow(node, *args, options=RunOptions(...), **kwargs)`.
+- **`execute_flow` returns a `Run`** (`result`, `run_id`, `node`,
+  `status`, `log`, `duration_ms`, `attempt`, `started`, `ended`, `error`).
+  A failure raises the node's exception with `.run` attached.
+  `last_run` is gone, and `execute_flow` is a top-level entry point: a
+  node composes nodes instead of opening a nested run.
+- **No global configuration.**  `Config`, `configure`, `use_config`,
+  `reset_config`, `active_config`, and `src/sequence_extensions/config.py`
+  are removed.  Run options travel with the call; per-run node defaults
+  are `RunOptions.node_defaults` (`NodePolicy`).
+- **Futures replace waiting.**  A node may return a value or a future.
+  A submitted composite returns the terminal future and frees its worker;
+  `submit()` is legal in a worker.  `.result()` on an incomplete future
+  inside a worker raises instead of deadlocking.  `gather(...)` combines
+  futures without a `.result()` wait.
+- **Process worker restrictions.**  `node.submit()` and `execute_flow`
+  inside a process worker are rejected; process-mode fan-out is built in
+  the parent.  A process worker cannot return a live future.
+- **Run log schema 2.**  Record kind `task` is now `node`; records carry
+  `path` (node-name chain) and `parent_attempt`.  `run_start` carries
+  `node` instead of `flow`.  There are no `children` or `parent_run_id`
+  fields.  `RunLog.filter` takes `node`/`path`; `summarize` returns
+  `nodes`; `diff` identifies node records by path, parent attempt,
+  attempt, and inputs.  Reference logs must be regenerated.
+- **`TaskTimeoutError` is now `NodeTimeoutError`** (attributes `.node`,
+  `.timeout`, `.attempt`; `.task` remains as a compatibility attribute).
+- **`flow-runner` config**: `[flow]` -> `[run]`, `[task]` -> `[node]`;
+  `[pool]` is gone (construct process pools in code).  The runner scans
+  `__node__` and reports from the returned `Run`.
 
 ### Added
-- **`fixed_clock` — reference mode** (`@flow(fixed_clock=True)` / `[flow] fixed_clock`):
-  a run executes as if on a frozen clock, so an identical run produces a
-  byte-identical log — for storing run logs as reference files (golden
-  files in git) without churn.  The run id pins to `<flow>-fixed` (the
-  log file overwrites itself), engine-written timestamps pin to
-  `1970-01-01T00:00:00+00:00`, `duration_ms` to `0`, the `worker` field
-  to a constant, and records are written at close in canonical order
-  (`run_start`, tasks by task / attempt / inputs, `run_end`) instead of
-  completion order.  Default off; timing fields are the only thing
-  pinned — execution facts are untouched.  The e2e harness now uses the
-  option instead of monkeypatching the id builder, so
-  `tests/e2e/out/logs/` no longer churns between runs (decision
-  `DR-016` in the product breakdown).
-- **Larger-workflow documentation** — README and `docs/API.md` now
-  document both incorporation paths: driving runs from a shell or
-  pipeline (`flow-runner` in make, CI, cron, batch scripts — exit-code
-  branching, one TOML per environment, the run log as the pipeline
-  artifact) and embedding the engine in a host Python application
-  (`configure()` at startup, flows called as functions, the verdict
-  read from `flow.last_run`, `use_config` scoping).
+
+- **Future-first composition** — a node body can fan out with
+  `.submit()` and return the terminal future; the attempt record, retry,
+  and timeout settle when it completes.  A graph may depend on plain
+  `concurrent.futures.Future` values too.
+- **`gather(futures)`** — one future resolving to results in order,
+  without a `.result()` wait; accepts an iterable, a single future, or
+  empty input.
+- **`FlowFuture` / `FlowOutcome`** — the submitted-node future and the
+  deferred outcome a worker-side direct call returns; both are exported
+  from `sequence_extensions.flow`.
+- **`RunOptions.node_defaults`** — per-run defaults for nodes whose
+  decorator left `retries` / `retry_delay_seconds` / `timeout` unset;
+  explicit decorator keywords still win.
+- **`RunLog.abandon()`** — a timed-out attempt's late records (and those
+  of its subtree) are dropped, so the log never changes after `run_end`.
+- **`fixed_clock` reference mode** — byte-identical logs for identical
+  runs, including concurrent and nested node fan-out.  Root-level retries
+  are rejected in this mode.
 
 ## [2.0.0] - 2026-10-16
 
