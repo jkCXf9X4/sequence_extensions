@@ -47,6 +47,8 @@ def test_run_options_validate_explicit_values():
         RunOptions(pool="not-a-pool")
     with pytest.raises(ValueError, match="retries"):
         RunOptions(retries=-1)
+    with pytest.raises(ValueError, match="retries must be an integer"):
+        RunOptions(retries=2.0)
     with pytest.raises(ValueError, match="timeout"):
         RunOptions(timeout=0)
     with pytest.raises(ValueError, match="node_defaults"):

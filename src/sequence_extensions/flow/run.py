@@ -41,7 +41,9 @@ inside an active run is rejected.
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import re
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -53,21 +55,8 @@ from sequence_extensions.flow._context import (
     AttemptToken,
     RunContext,
     current_run,
+    execution_scope,
     in_process_worker,
-    reset_attempt_token,
-    reset_current_run,
-    reset_in_process_worker,
-    reset_in_worker,
-    reset_node_attempt,
-    reset_node_path,
-    reset_run_attempt_token,
-    set_attempt_token,
-    set_current_run,
-    set_in_process_worker,
-    set_in_worker,
-    set_node_attempt,
-    set_node_path,
-    set_run_attempt_token,
 )
 from sequence_extensions.flow._options import RunOptions
 from sequence_extensions.flow.node import NodeFunction, NodeTimeoutError
@@ -168,34 +157,23 @@ def execute_flow(node: NodeFunction, *args, options: RunOptions | None = None, *
 # ---------------------------------------------------------------- #
 def _install_run(ctx: RunContext):
     """Install the run context and reset the execution position/worker markers."""
-    return (
-        set_current_run(ctx),
-        set_node_path(()),
-        set_node_attempt(None),
-        set_attempt_token(None),
-        set_run_attempt_token(None),
-        set_in_worker(False),
-        set_in_process_worker(False),
+    stack = contextlib.ExitStack()
+    stack.enter_context(
+        execution_scope(
+            ctx=ctx,
+            path=(),
+            attempt=None,
+            token=None,
+            run_token=None,
+            worker=False,
+            process_worker=False,
+        )
     )
+    return stack
 
 
-def _restore_run(tokens) -> None:
-    (
-        run_token,
-        path_token,
-        attempt_token,
-        token_token,
-        run_attempt_token,
-        worker_token,
-        process_token,
-    ) = tokens
-    reset_in_process_worker(process_token)
-    reset_in_worker(worker_token)
-    reset_run_attempt_token(run_attempt_token)
-    reset_attempt_token(token_token)
-    reset_node_attempt(attempt_token)
-    reset_node_path(path_token)
-    reset_current_run(run_token)
+def _restore_run(stack) -> None:
+    stack.close()
 
 
 def _run_once(node, args, kwargs, options, attempt) -> Run:
@@ -323,17 +301,19 @@ def _call_root(node, args, kwargs, timeout, ctx, attempt):
     outer = AttemptToken()
 
     def _target():
-        tokens = _install_run(ctx)
-        outer_token = set_run_attempt_token(outer)
-        try:
-            box["result"] = node(*args, **kwargs)
-        except BaseException as exc:
-            box["error"] = exc
-        finally:
-            reset_run_attempt_token(outer_token)
-            _restore_run(tokens)
-
-    import threading
+        with execution_scope(
+            ctx=ctx,
+            path=(),
+            attempt=None,
+            token=None,
+            run_token=outer,
+            worker=False,
+            process_worker=False,
+        ):
+            try:
+                box["result"] = node(*args, **kwargs)
+            except BaseException as exc:
+                box["error"] = exc
 
     thread = threading.Thread(target=_target, name=f"{node.name}-run-attempt", daemon=True)
     thread.start()
@@ -382,13 +362,13 @@ def _drain(ctx: RunContext) -> None:
             seen_nodes.add(node)
             try:
                 node.result()
-            except (Exception, concurrent.futures.CancelledError):
+            except Exception:
                 pass
         for outcome in pending_outcomes:
             seen_outcomes.add(outcome)
             try:
                 outcome.result()
-            except (Exception, concurrent.futures.CancelledError):
+            except Exception:
                 pass
 
 
@@ -397,9 +377,9 @@ def _settle_record(ctx: RunContext, node, *, reason: str, error=None) -> dict:
         "record": "node",
         "run_id": ctx.run_id,
         "node": node.name,
-        "path": list(getattr(node, "_seqext_path", (node.name,))),
+        "path": list(node.path),
         "attempt": 0,
-        "parent_attempt": getattr(node, "_seqext_parent_attempt", None),
+        "parent_attempt": node.parent_attempt,
         "status": "skipped",
         "reason": reason,
     }
@@ -421,10 +401,10 @@ def _write_settle_records(ctx: RunContext, *, run_failed: bool) -> None:
     if ctx.runlog is None:
         return
     for node in ctx.nodes:
-        for record in getattr(node, "_process_records", None) or ():
+        for record in node.process_records or ():
             ctx.runlog.write(record)
     for node in ctx.nodes:
-        if getattr(node, "_flow_attempted", False) or getattr(node, "_process_attempted", False):
+        if node.flow_attempted or node.process_attempted:
             continue
         if node.cancelled():
             if run_failed:

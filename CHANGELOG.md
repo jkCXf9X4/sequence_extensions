@@ -39,7 +39,11 @@ The composition release: one `@node` primitive and an explicit
   `nodes`; `diff` identifies node records by path, parent attempt,
   attempt, and inputs.  Reference logs must be regenerated.
 - **`TaskTimeoutError` is now `NodeTimeoutError`** (attributes `.node`,
-  `.timeout`, `.attempt`; `.task` remains as a compatibility attribute).
+  `.timeout`, `.attempt`).
+- **Policy values are type-checked.**  `retries` must be an integer;
+  `retry_delay_seconds` and `timeout` must be numbers.  Previously
+  `@node(retries=2.0)` / `RunOptions(retries=2.0)` were silently
+  truncated, and a string delay raised `TypeError`.
 - **`flow-runner` config**: `[flow]` -> `[run]`, `[task]` -> `[node]`;
   `[pool]` is gone (construct process pools in code).  The runner scans
   `__node__` and reports from the returned `Run`.

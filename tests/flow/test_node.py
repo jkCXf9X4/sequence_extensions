@@ -80,6 +80,18 @@ def test_node_rejects_nonpositive_timeout():
         node(lambda: 1, timeout=0)
 
 
+def test_node_rejects_non_integer_retries_and_non_numeric_delay():
+    with pytest.raises(ValueError, match="retries must be an integer"):
+        node(lambda: 1, retries=2.0)
+    with pytest.raises(ValueError, match="retry_delay_seconds must be a number"):
+        node(lambda: 1, retry_delay_seconds="soon")
+
+
+def test_node_timeout_error_has_no_task_alias():
+    exc = NodeTimeoutError("n", 1.5, 2)
+    assert not hasattr(exc, "task")
+
+
 def test_node_repr_mentions_policy():
     n = node(lambda: 1, retries=2, timeout=5.0)
     assert "retries=2" in repr(n)
@@ -261,6 +273,8 @@ def test_submit_returns_named_graph_future():
         future = f.submit()
         assert isinstance(future, FlowFuture)
         assert future.name == "unit"
+        assert future.path == ("campaign", "unit")
+        assert future.parent_attempt == 1
         return future
 
     run = execute_flow(campaign, options=RunOptions(log=None))

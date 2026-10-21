@@ -60,14 +60,16 @@ UNSET = _Unset()
 # ---------------------------------------------------------------- #
 # Shared constraint checks
 # ---------------------------------------------------------------- #
-def validate_node_policy(retries, retry_delay_seconds, timeout) -> None:
-    """Node policy constraints, shared by ``@node``, ``NodePolicy`` and ``RunOptions``."""
-    if retries < 0:
-        raise ValueError(f"retries must be >= 0, got {retries}")
-    if retry_delay_seconds < 0:
-        raise ValueError(f"retry_delay_seconds must be >= 0, got {retry_delay_seconds}")
-    if timeout is not None and timeout <= 0:
-        raise ValueError(f"timeout must be > 0, got {timeout}")
+def validate_node_policy(retries=UNSET, retry_delay_seconds=UNSET, timeout=UNSET) -> None:
+    """Node policy constraints; fields left ``UNSET`` are skipped."""
+    if retries is not UNSET:
+        _check_int(retries, "retries", minimum=0)
+    if retry_delay_seconds is not UNSET:
+        _check_number(retry_delay_seconds, "retry_delay_seconds", minimum=0)
+    if timeout is not UNSET and timeout is not None:
+        _check_number(timeout, "timeout")
+        if timeout <= 0:
+            raise ValueError(f"timeout must be > 0, got {timeout}")
 
 
 def _check_int(value, name: str, *, minimum: int | None = None) -> None:
@@ -110,12 +112,7 @@ class NodePolicy:
     timeout: float | None = None
 
     def __post_init__(self) -> None:
-        _check_int(self.retries, "retries", minimum=0)
-        _check_number(self.retry_delay_seconds, "retry_delay_seconds", minimum=0)
-        if self.timeout is not None:
-            _check_number(self.timeout, "timeout")
-            if self.timeout <= 0:
-                raise ValueError(f"timeout must be > 0, got {self.timeout}")
+        validate_node_policy(self.retries, self.retry_delay_seconds, self.timeout)
 
 
 # ---------------------------------------------------------------- #
@@ -160,12 +157,7 @@ class RunOptions:
 
             if not isinstance(self.pool, GraphPool):
                 raise ValueError(f"pool must be a GraphPool or None, got {self.pool!r}")
-        if self.retries is not UNSET:
-            validate_node_policy(self.retries, 0.0, None)
-        if self.retry_delay_seconds is not UNSET:
-            validate_node_policy(0, self.retry_delay_seconds, None)
-        if self.timeout is not UNSET:
-            validate_node_policy(0, 0.0, self.timeout)
+        validate_node_policy(self.retries, self.retry_delay_seconds, self.timeout)
         if self.node_defaults is not UNSET:
             if self.node_defaults is not None and not isinstance(self.node_defaults, NodePolicy):
                 raise ValueError(

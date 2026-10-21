@@ -44,7 +44,8 @@ class GraphFuture:
     """
     A small dependency-graph future.
 
-    Build a graph by passing other GraphFuture objects as arguments::
+    Build a graph by passing other GraphFuture objects (or plain
+    ``concurrent.futures.Future`` values) as arguments::
 
         a = GraphFuture(fn_1, 5, 4)
         b = GraphFuture(fn_2, a, 4)
@@ -52,8 +53,8 @@ class GraphFuture:
     Dependency arguments are replaced with their results by the time the
     function executes.  Scheduling is driven by callbacks from a bounded
     ``ThreadPoolExecutor`` (no polling/scheduler loop).  A function may
-    return another GraphFuture; that future is chained onto this node so
-    its result becomes this node's result.
+    return a GraphFuture or a plain Future; that future is chained onto
+    this node so its result becomes this node's result.
     """
 
     def __init__(self, function, *args, **kwargs):
@@ -231,7 +232,7 @@ class GraphFuture:
                     pass
 
     def _forward_result(self, inner_future) -> None:
-        """Copy a chained inner GraphFuture's result into this node's future."""
+        """Copy a chained future's result into this node's future."""
         try:
             try:
                 self.future.set_result(inner_future.result())
@@ -247,7 +248,7 @@ class GraphFuture:
     def _resolve_arguments(self):
         """
         Split ``self.arguments`` back into (args, kwargs), replacing any
-        GraphFuture dependencies with their results.
+        Futures with their results.
         """
         pos = {k: v for k, v in self.arguments.items() if isinstance(k, int)}
         kw = {k: v for k, v in self.arguments.items() if not isinstance(k, int)}
@@ -289,6 +290,7 @@ class GraphPool:
         self._shutdown = False
         self._entered = False
         self._nodes = []  # every bound node, so __exit__ can cancel stragglers
+        self._node_ids = set()
         # Pool-level DFS state so re-entrant ``_bind_graph`` calls (a node
         # whose function returns a GraphFuture that chains back into the
         # graph being bound) detect the in-progress visit as a cycle.
@@ -399,7 +401,8 @@ class GraphPool:
                     if isinstance(dep, GraphFuture):
                         visit(dep)
                 node._wire(self)
-                if not any(n is node for n in self._nodes):
+                if nid not in self._node_ids:
+                    self._node_ids.add(nid)
                     self._nodes.append(node)
             finally:
                 self._visiting.discard(nid)

@@ -279,7 +279,7 @@ def _diff_side(records, exclude) -> dict:
 class RunLog:
     """Thread-safe JSON-lines writer; one file per run.
 
-    ``write`` is safe from any thread (tasks log their attempts from pool
+    ``write`` is safe from any thread (nodes log their attempts from pool
     workers).  ``seq`` (per-run monotonic record number) and ``schema`` are
     added to every record on write.  Writing to a closed (or never opened)
     log raises — the flow layer closes the log only after every record is
@@ -287,7 +287,7 @@ class RunLog:
 
     ``fixed_clock=True`` opts the log into reference mode: records are
     buffered and written at :meth:`close`, in canonical order (``run_start``,
-    task records by task / attempt / inputs, ``run_end``) with ``seq``
+    node records by path / parent attempt / attempt / inputs, ``run_end``) with ``seq``
     assigned in that order; engine-written timing fields are pinned to
     :data:`FIXED_CLOCK`, ``duration_ms`` to ``0``, and ``worker`` to
     :data:`FIXED_WORKER`.  The log of an identical run comes out

@@ -142,25 +142,13 @@ class RunnerConfig:
             )
 
         run = _table(data, "run", where)
-        unknown_run = sorted(set(run) - _RUN_KEYS)
-        if unknown_run:
-            listed = ", ".join(repr(key) for key in unknown_run)
-            known = ", ".join(sorted(_RUN_KEYS))
-            raise RunnerConfigError(
-                f"{where}: unknown key(s) in [run]: {listed} (known: {known})"
-            )
+        _reject_unknown(run, _RUN_KEYS, where, "[run]")
 
         module = _optional_str(run.get("module"), "module", where, "[run]")
         flow = _optional_str(run.get("flow"), "flow", where, "[run]")
 
         node = _table(data, "node", where)
-        unknown_node = sorted(set(node) - _NODE_KEYS)
-        if unknown_node:
-            listed = ", ".join(repr(key) for key in unknown_node)
-            known = ", ".join(sorted(_NODE_KEYS))
-            raise RunnerConfigError(
-                f"{where}: unknown key(s) in [node]: {listed} (known: {known})"
-            )
+        _reject_unknown(node, _NODE_KEYS, where, "[node]")
 
         option_values = {key: run[key] for key in _RUN_OPTION_KEYS if key in run}
         node_defaults = None
@@ -191,6 +179,17 @@ def _table(data: Mapping, title: str, where: str) -> Mapping:
             f"{where}: [{title}] must be a table, got {type(section).__name__}"
         )
     return section
+
+
+def _reject_unknown(table: Mapping, allowed, where: str, section: str) -> None:
+    unknown = sorted(set(table) - set(allowed))
+    if not unknown:
+        return
+    listed = ", ".join(repr(key) for key in unknown)
+    known = ", ".join(sorted(allowed))
+    raise RunnerConfigError(
+        f"{where}: unknown key(s) in {section}: {listed} (known: {known})"
+    )
 
 
 def _optional_str(value, name: str, where: str, section: str):

@@ -9,7 +9,7 @@ status: current
 
 # Test strategy
 
-The suite is pytest (>= 8, < 9) with pytest-cov. `pytest` runs it as-is: `pyproject.toml` sets `pythonpath = ["src"]` and `testpaths = ["tests"]`. `xfail_strict = true` makes a passing xfail a failure. The coverage floor is 90% (`fail_under = 90`); the suite holds about 92%.
+The suite is pytest (>= 8, < 9) with pytest-cov. `pytest` runs it as-is: `pyproject.toml` sets `pythonpath = ["src"]` and `testpaths = ["tests"]`. `xfail_strict = true` makes a passing xfail a failure. The coverage floor is 90% (`fail_under = 90`); the suite holds about 93%.
 
 ## Run
 
@@ -20,12 +20,12 @@ The suite is pytest (>= 8, < 9) with pytest-cov. `pytest` runs it as-is: `pyproj
 
 ## Areas
 
-The suite collects 329 tests.
+The suite collects 331 tests.
 
 - `tests/test_package.py` — package-level smoke tests: root re-exports, ext methods, `GraphFuture`/`GraphPool` basics (30)
 - `tests/ext/` — `list_ext` (51), `dict_ext` (44), `gen_ext` (6)
 - `tests/graph/test_graph_future.py` — DAG execution, pool lifecycle, bind, pool-scoped exit, timeouts, cycle detection (27)
-- `tests/flow/test_node.py` — decoration, inline execution, retry, backoff, timeout, submit semantics, worker fan-out and blocking guard, plain-future return/dependency, exports, node defaults (36)
+- `tests/flow/test_node.py` — decoration, inline execution, retry, backoff, timeout, submit semantics, worker fan-out and blocking guard, plain-future return/dependency, exports, policy type validation, node defaults (38)
 - `tests/flow/test_run.py` — run identity, drain, failure handling, skipped records, caller-owned pool, concurrent runs, run-level retries, run timeout, fixed ids (27)
 - `tests/flow/test_nested.py` — three-level node nesting, future-first fan-out at one worker, inline fan-out, gather forms + dependency, composite retry/timeout/failure, drain of a pending subtree, fixed-clock determinism (14)
 - `tests/flow/test_options.py` — `RunOptions`/`NodePolicy` validation and resolution (7)

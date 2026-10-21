@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import contextvars
 import threading
+from contextlib import contextmanager
 
 
 class AttemptToken:
@@ -193,3 +194,42 @@ def set_in_process_worker(value: bool):
 
 def reset_in_process_worker(token) -> None:
     _in_process_worker.reset(token)
+
+
+_MISSING = object()
+
+
+@contextmanager
+def execution_scope(
+    *,
+    ctx=_MISSING,
+    path=_MISSING,
+    attempt=_MISSING,
+    token=_MISSING,
+    run_token=_MISSING,
+    worker=_MISSING,
+    process_worker=_MISSING,
+):
+    """Install an execution position and restore it on exit.
+
+    Omitted keyword arguments leave their ``ContextVar`` untouched.  This is
+    the single place that pairs every ``set_*`` with its reset token.
+    """
+    tokens = []
+    values = (
+        (ctx, set_current_run, reset_current_run),
+        (path, set_node_path, reset_node_path),
+        (attempt, set_node_attempt, reset_node_attempt),
+        (token, set_attempt_token, reset_attempt_token),
+        (run_token, set_run_attempt_token, reset_run_attempt_token),
+        (worker, set_in_worker, reset_in_worker),
+        (process_worker, set_in_process_worker, reset_in_process_worker),
+    )
+    try:
+        for value, setter, resetter in values:
+            if value is not _MISSING:
+                tokens.append((resetter, setter(value)))
+        yield
+    finally:
+        for resetter, reset_token in reversed(tokens):
+            resetter(reset_token)

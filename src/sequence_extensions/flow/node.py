@@ -61,22 +61,9 @@ from sequence_extensions.flow._context import (
     current_node_path,
     current_run,
     current_run_attempt_token,
+    execution_scope,
     in_process_worker,
     in_worker,
-    reset_attempt_token,
-    reset_current_run,
-    reset_in_process_worker,
-    reset_in_worker,
-    reset_node_attempt,
-    reset_node_path,
-    reset_run_attempt_token,
-    set_attempt_token,
-    set_current_run,
-    set_in_process_worker,
-    set_in_worker,
-    set_node_attempt,
-    set_node_path,
-    set_run_attempt_token,
 )
 from sequence_extensions.flow._options import UNSET, validate_node_policy
 from sequence_extensions.flow.process_pool import ProcessGraphPool, _process_node_runner
@@ -120,7 +107,6 @@ class NodeTimeoutError(TimeoutError):
 
     def __init__(self, node, timeout, attempt):
         self.node = node
-        self.task = node  # backwards-compatible attribute name for callers
         self.timeout = timeout
         self.attempt = attempt
         super().__init__(f"node '{node}' exceeded its timeout of {timeout}s (attempt {attempt})")
@@ -141,6 +127,14 @@ class FlowOutcome(concurrent.futures.Future):
 
 class FlowFuture(GraphFuture):
     """A submitted node's graph future; blocking inside a worker is rejected."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.path: tuple = ()
+        self.parent_attempt = None
+        self.flow_attempted = False
+        self.process_records = None
+        self.process_attempted = False
 
     def result(self, timeout=None):
         if in_worker() and not self.future.done():
@@ -176,12 +170,7 @@ class NodeFunction:
     """
 
     def __init__(self, fn, *, retries=UNSET, retry_delay_seconds=UNSET, timeout=UNSET, name=None):
-        if retries is not UNSET:
-            validate_node_policy(retries, 0.0, None)
-        if retry_delay_seconds is not UNSET:
-            validate_node_policy(0, retry_delay_seconds, None)
-        if timeout is not UNSET:
-            validate_node_policy(0, 0.0, timeout)
+        validate_node_policy(retries, retry_delay_seconds, timeout)
         self.fn = fn
         self.retries = retries
         self.retry_delay_seconds = retry_delay_seconds
@@ -304,7 +293,6 @@ class NodeFunction:
                 "run_id": ctx.run_id,
                 "node_name": ctx.node_name,
                 "summary": bool(ctx.runlog is not None and ctx.runlog.summary),
-                "node_defaults": getattr(ctx.options, "node_defaults", None),
                 "parent_path": list(current_node_path()),
                 "parent_attempt": current_node_attempt(),
             }
@@ -316,13 +304,14 @@ class NodeFunction:
             parent_attempt = current_node_attempt()
 
             def _runner(*resolved_args, **resolved_kwargs):
-                gf._flow_attempted = True
-                run_token = set_current_run(ctx)
-                path_token = set_node_path(parent_path)
-                attempt_token = set_node_attempt(parent_attempt)
-                worker_token = set_in_worker(True)
-                process_token = set_in_process_worker(False)
-                try:
+                gf.flow_attempted = True
+                with execution_scope(
+                    ctx=ctx,
+                    path=parent_path,
+                    attempt=parent_attempt,
+                    worker=True,
+                    process_worker=False,
+                ):
                     return self._execute_deferred(
                         resolved_args,
                         resolved_kwargs,
@@ -330,17 +319,11 @@ class NodeFunction:
                         parent_token=parent_token,
                         run_attempt_token=run_attempt_token,
                     )
-                finally:
-                    reset_in_process_worker(process_token)
-                    reset_in_worker(worker_token)
-                    reset_node_attempt(attempt_token)
-                    reset_node_path(path_token)
-                    reset_current_run(run_token)
 
             gf = FlowFuture(_runner, *args, **kwargs)
         gf.set_name(self.name)
-        gf._seqext_path = current_node_path() + (self.name,)
-        gf._seqext_parent_attempt = current_node_attempt()
+        gf.path = current_node_path() + (self.name,)
+        gf.parent_attempt = current_node_attempt()
         ctx.nodes.append(gf)
 
         # Bind the reachable graph — submitting every ready leaf — without
@@ -536,29 +519,24 @@ class NodeFunction:
                 finish(attempt, "ok", value, token, started_at, started_clock)
 
         def run_body(attempt, token):
-            run_token = set_current_run(ctx)
-            path_token = set_node_path(path)
-            attempt_token = set_node_attempt(attempt)
-            token_token = set_attempt_token(token)
-            outer_token = set_run_attempt_token(run_attempt_token)
-            worker_token = set_in_worker(base_worker)
-            process_token = set_in_process_worker(base_process)
-            try:
+            with execution_scope(
+                ctx=ctx,
+                path=path,
+                attempt=attempt,
+                token=token,
+                run_token=run_attempt_token,
+                worker=base_worker,
+                process_worker=base_process,
+            ):
                 if ctx is not None and ctx.cancelled.is_set():
                     raise RuntimeError(
                         f"run cancelled before node '{self.name}' attempt {attempt}"
                     )
                 if parent_token is not None and parent_token.abandoned_in_chain():
-                    raise RuntimeError(f"attempt {attempt} of node '{self.name}' is abandoned")
+                    raise RuntimeError(
+                        f"attempt {attempt} of node '{self.name}' is abandoned"
+                    )
                 return self.fn(*args, **kwargs)
-            finally:
-                reset_in_process_worker(process_token)
-                reset_in_worker(worker_token)
-                reset_run_attempt_token(outer_token)
-                reset_attempt_token(token_token)
-                reset_node_attempt(attempt_token)
-                reset_node_path(path_token)
-                reset_current_run(run_token)
 
         def start(attempt):
             with lock:
