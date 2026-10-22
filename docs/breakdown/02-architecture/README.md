@@ -17,6 +17,8 @@ What is delivered and how it is organized: the public surface, component decompo
 - Not specific files or scripts: `03-implementation/`.
 - Not the proof strategy: `04-verification/`.
 - The flow engine's execution model: INFO-011.
+- Library borders carry standard artifacts first; public API types are the only
+  fallback, and internal objects never cross.
 
 ## Contents
 

@@ -39,6 +39,14 @@ A zero-dependency, embeddable mini flow engine:
 - The run log is complete the moment a flow returns.
 - Zero runtime dependencies; Python >= 3.11.
 
+## Library Boundary Commitment
+
+- A library border carries a standard artifact first when one exists.
+- If no standard covers the need, only a documented public API type may cross;
+  internal modules, private objects, and adapter-only structures never do.
+- A node payload is data the caller already owns. The engine does not reach
+  into another project's internals to build or interpret it.
+
 ## Out of scope
 
 - Plan-before-execution (dry run): structurally impossible with imperative submission.
