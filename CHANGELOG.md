@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Runnable examples** (`examples/`) — one standalone program per aspect:
+  sequence helpers, graph futures, a simulation campaign, policy/failure
+  semantics, run-log reading, process pools, and a `flow-runner` TOML setup.
+  `examples/README.md` is the usage walkthrough; `tests/usage_examples/`
+  executes every example, so the documentation cannot drift from the code.
+
 ## [3.0.0] - 2026-10-21
 
 The composition release: one `@node` primitive and an explicit

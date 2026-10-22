@@ -1,0 +1,22 @@
+# Run from this directory:
+#
+#   flow-runner campaign.toml
+#   python -m sequence_extensions.flow_runner campaign.toml --list
+#
+# Paths are relative to the working directory, like any command-line tool.
+
+[run]
+module = "flows"
+flow = "campaign"
+log = "_out/runs"
+max_workers = 4
+
+[node]
+retries = 1
+retry_delay_seconds = 0.01
+timeout = 5.0
+
+[inputs]
+cases_dir = "cases"
+out_dir = "_out"
+tolerance = 1.5

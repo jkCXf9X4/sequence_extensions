@@ -443,6 +443,34 @@ archive(run.log)  # keep the JSONL beside app data
 - **Failures carry the account**: `execute_flow` raises with `.run` attached, so a host can log the status, duration, and log path while still propagating the exception.
 - Nodes needing open connections or custom objects are called directly like this; the runner is the convenience for TOML-shaped inputs.
 
+## Runnable examples
+
+[`examples/`](examples/) is a hands-on tour of the library: one small,
+self-contained program per aspect, plus a TOML-driven `flow-runner` setup.
+They are part of the test suite (`tests/usage_examples/`), so they cannot
+drift from the code.
+
+| Example | What it shows |
+| --- | --- |
+| [`examples/sequences.py`](examples/sequences.py) | `list_ext`, `dict_ext`, `KeyValueTuple`, `gen_ext` |
+| [`examples/graph_futures.py`](examples/graph_futures.py) | `GraphFuture` / `GraphPool`: DAGs, chaining, errors, timeouts |
+| [`examples/campaign.py`](examples/campaign.py) | `@node`, `.submit()`, dependency edges, `gather`, retries, run log |
+| [`examples/policies.py`](examples/policies.py) | retries/backoff, `node_defaults`, node/run timeouts, skipped dependencies |
+| [`examples/run_log.py`](examples/run_log.py) | `RunLog.records` / `filter` / `summarize` / `diff`, reference mode |
+| [`examples/process_pool.py`](examples/process_pool.py) | `ProcessGraphPool` for CPU-bound fan-out |
+| [`examples/flow_runner/`](examples/flow_runner) | the TOML-driven `flow-runner` command |
+
+```bash
+python examples/campaign.py --out /tmp/campaign
+python examples/policies.py --out /tmp/policies
+cd examples/flow_runner && flow-runner campaign.toml
+```
+
+The file-writing scripts take `--out` (default `examples/_out/<name>`,
+gitignored) and print the result they check. See
+[examples/README.md](examples/README.md) for the walkthrough and the expected
+output of each example.
+
 ## Development
 
 For development install:

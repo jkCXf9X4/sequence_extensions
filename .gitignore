@@ -171,3 +171,6 @@ set_env*
 
 # Flow run logs (default @flow log directory)
 runs/
+
+# Scratch output written by the runnable examples
+examples/**/_out/

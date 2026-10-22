@@ -3,6 +3,10 @@
 Hand-written API reference for the `sequence_extensions` package — higher-order function extensions for sequences (lists, dicts, generators) plus a small dependency-graph future and a parallel, deterministic, audited flow engine.
 
 > **Version:** this document describes **version 3.0.0** (Python >= 3.11).
+>
+> **Examples:** [`examples/README.md`](../examples/README.md) is a runnable
+> usage tour, one small program per aspect. Every example is executed by the
+> test suite, so the documented behaviour stays current.
 
 ## Package layout
 
