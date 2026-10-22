@@ -46,13 +46,11 @@ a live future; process-mode fan-out is built in the parent process.
 from __future__ import annotations
 
 import functools
-import itertools
 import pickle
-import re
 import sys
 import threading
 
-from sequence_extensions.flow._attempt import _AttemptRunner, _utcnow
+from sequence_extensions.flow._attempt import _AttemptRunner
 from sequence_extensions.flow._context import (
     AttemptToken,
     RunContext,
@@ -69,8 +67,8 @@ from sequence_extensions.flow._context import (
 from sequence_extensions.flow._futures import FlowFuture, FlowOutcome, NodeTimeoutError
 from sequence_extensions.flow._gather import gather
 from sequence_extensions.flow._options import UNSET, validate_node_policy
+from sequence_extensions.flow._pickle import register_alias
 from sequence_extensions.flow.process_pool import _process_node_runner
-from sequence_extensions.flow.runlog import jsonable
 
 __all__ = [
     "FlowFuture",
@@ -85,12 +83,6 @@ __all__ = [
 #: parallel workers must not interleave (``GraphPool._visiting`` is
 #: pool-level DFS state).
 _BIND_LOCK = threading.Lock()
-
-#: Process-pool pickle aliases must be unique per NodeFunction.  A qualname
-#: alone collides for lambdas and factory/closure nodes, which then silently
-#: execute the wrong raw function in a worker.
-_ALIAS_LOCK = threading.Lock()
-_ALIAS_COUNTER = itertools.count()
 
 
 class NodeFunction:
@@ -126,22 +118,12 @@ class NodeFunction:
         functools.update_wrapper(self, fn, updated=())
         # Process-pool support: the decorator replaces the module-level
         # name with this NodeFunction, so pickling the raw function by
-        # reference would fail pickle's identity check.  Rebind the raw
-        # function under a unique private alias in its own module; __reduce__
-        # ships (alias, policy) instead of the function object.  The counter
-        # keeps lambdas and factory closures distinct: a qualname alone
-        # collides and would execute the wrong function in a worker.
-        if _alias is not None:
-            self._pickle_alias = _alias
-        else:
-            module = sys.modules.get(getattr(fn, "__module__", None))
-            if module is not None:
-                with _ALIAS_LOCK:
-                    tag = next(_ALIAS_COUNTER)
-                stem = re.sub(r"\W+", "_", getattr(fn, "__qualname__", "") or self.name)
-                alias = f"__seqext_node_fn_{stem}_{tag}"
-                setattr(module, alias, fn)
-                self._pickle_alias = (fn.__module__, alias)
+        # reference would fail pickle's identity check.  register_alias
+        # rebinds the raw function under a unique private alias in its own
+        # module; __reduce__ ships (alias, policy) instead.
+        alias = _alias if _alias is not None else register_alias(fn, self.name)
+        if alias is not None:
+            self._pickle_alias = alias
         self.__node__ = self.name
 
     # ------------------------------------------------------------ #
@@ -324,53 +306,6 @@ class NodeFunction:
             delay=delay,
             timeout=timeout,
         ).run()
-
-    def _log_attempt(
-        self,
-        ctx,
-        path,
-        parent_attempt,
-        attempt,
-        status,
-        args,
-        kwargs,
-        value,
-        error,
-        token,
-        run_attempt_token,
-        started_at,
-        duration_ms,
-        *,
-        allow_abandoned: bool = False,
-        worker: str,
-    ) -> None:
-        if token.parent is not None and token.parent.abandoned_in_chain():
-            return
-        if token.abandoned.is_set() and not allow_abandoned:
-            return
-        if run_attempt_token is not None and run_attempt_token.abandoned.is_set():
-            return
-        summary = ctx.runlog.summary
-        record = {
-            "record": "node",
-            "run_id": ctx.run_id,
-            "node": self.name,
-            "path": list(path),
-            "attempt": attempt,
-            "parent_attempt": parent_attempt,
-            "status": status,
-            "args": [jsonable(a, summary=summary) for a in args],
-            "kwargs": {k: jsonable(v, summary=summary) for k, v in kwargs.items()},
-            "start": started_at,
-            "end": _utcnow(),
-            "duration_ms": duration_ms,
-            "worker": worker,
-        }
-        if status == "ok":
-            record["result"] = jsonable(value, summary=summary)
-        else:
-            record["error"] = {"type": type(error).__qualname__, "message": str(error)}
-        ctx.runlog.write(record)
 
 
 def _rebuild_node_function(alias, retries, retry_delay_seconds, timeout, name):

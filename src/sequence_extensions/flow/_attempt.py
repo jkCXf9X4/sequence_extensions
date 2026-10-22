@@ -12,7 +12,6 @@ import concurrent.futures
 import threading
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
 from sequence_extensions.flow._context import (
     AttemptToken,
@@ -25,11 +24,9 @@ from sequence_extensions.flow._context import (
 )
 from sequence_extensions.flow._futures import FlowOutcome, NodeTimeoutError, _is_future
 from sequence_extensions.flow._gather import _contains_future
+from sequence_extensions.flow._identity import utcnow
+from sequence_extensions.flow._records import node_record
 from sequence_extensions.graph.graph_future import GraphFuture
-
-
-def _utcnow() -> str:
-    return datetime.now(UTC).isoformat()
 
 
 @dataclass
@@ -86,6 +83,40 @@ class _AttemptRunner:
         self._start(1)
         return self.outcome
 
+    def _log_attempt(self, attempt, status, value, error, token, started_at, duration_ms) -> None:
+        """Write one attempt record unless its attempt subtree is abandoned.
+
+        Abandoned attempts (timeout, run-level timeout, cancelled run) still
+        describe work that ran; their records are dropped so ``run_end``
+        stays the last line.  A timed-out attempt is recorded for the audit
+        trail, then abandoned.
+        """
+        if token.parent is not None and token.parent.abandoned_in_chain():
+            return
+        if token.abandoned.is_set() and status != "timeout":
+            return
+        if self.run_attempt_token is not None and self.run_attempt_token.abandoned.is_set():
+            return
+        self.ctx.runlog.write(
+            node_record(
+                run_id=self.ctx.run_id,
+                node=self.node.name,
+                path=self.path,
+                attempt=attempt,
+                parent_attempt=self.parent_attempt,
+                status=status,
+                args=self.args,
+                kwargs=self.kwargs,
+                started=started_at,
+                ended=utcnow(),
+                duration_ms=duration_ms,
+                worker=self.worker_name,
+                value=value,
+                error=error,
+                summary=self.ctx.runlog.summary,
+            )
+        )
+
     def _settle_unexpected(self, exc) -> None:
         """Settle with an engine-side exception instead of leaving a drain hang."""
         if not isinstance(exc, Exception):
@@ -128,11 +159,7 @@ class _AttemptRunner:
         drain.
         """
         with self.lock:
-            if (
-                self.state.done
-                or self.state.attempt != attempt
-                or self.state.finished == attempt
-            ):
+            if self.state.done or self.state.attempt != attempt or self.state.finished == attempt:
                 return False
             self.state.finished = attempt
             timer = self.state.timer
@@ -140,8 +167,10 @@ class _AttemptRunner:
         if timer is not None:
             timer.cancel()
         duration_ms = int((time.perf_counter() - started_clock) * 1000)
-        if status == "error" and isinstance(value, BaseException) and not isinstance(
-            value, Exception
+        if (
+            status == "error"
+            and isinstance(value, BaseException)
+            and not isinstance(value, Exception)
         ):
             value = RuntimeError(f"{type(value).__qualname__}: {value}")
         error = None if status == "ok" else value
@@ -161,23 +190,7 @@ class _AttemptRunner:
         log_error = None
         if self.ctx is not None and self.ctx.runlog is not None:
             try:
-                self.node._log_attempt(
-                    self.ctx,
-                    self.path,
-                    self.parent_attempt,
-                    attempt,
-                    status,
-                    self.args,
-                    self.kwargs,
-                    value,
-                    error,
-                    token,
-                    self.run_attempt_token,
-                    started_at,
-                    duration_ms,
-                    allow_abandoned=(status == "timeout"),
-                    worker=self.worker_name,
-                )
+                self._log_attempt(attempt, status, value, error, token, started_at, duration_ms)
             except Exception as exc:  # audit write failed: fail the attempt
                 log_error = exc
         if log_error is not None:
@@ -346,9 +359,7 @@ class _AttemptRunner:
                     f"run cancelled before node '{self.node.name}' attempt {attempt}"
                 )
             if self.parent_token is not None and self.parent_token.abandoned_in_chain():
-                raise RuntimeError(
-                    f"attempt {attempt} of node '{self.node.name}' is abandoned"
-                )
+                raise RuntimeError(f"attempt {attempt} of node '{self.node.name}' is abandoned")
             return self.node.fn(*self.args, **self.kwargs)
 
     def _start(self, attempt):
@@ -378,7 +389,7 @@ class _AttemptRunner:
             # so abandoning it drops every descendant record.
             token = AttemptToken(self.parent_token or self.run_attempt_token)
         started_clock = time.perf_counter()
-        started_at = _utcnow()
+        started_at = utcnow()
         if self.timeout is None:
             try:
                 value = self._run_body(attempt, token)
@@ -410,9 +421,7 @@ class _AttemptRunner:
             except BaseException as exc:
                 box["error"] = exc
 
-        thread = threading.Thread(
-            target=_target, name=f"{self.node.name}-attempt", daemon=True
-        )
+        thread = threading.Thread(target=_target, name=f"{self.node.name}-attempt", daemon=True)
         thread.start()
         thread.join(self.timeout)
         elapsed = time.perf_counter() - started_clock

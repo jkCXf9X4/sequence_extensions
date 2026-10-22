@@ -66,6 +66,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (container planning), and `flow._attempt` (the attempt loop); split
   `flow.runlog` into `flow._serialize` and `flow._diff`.  The public `flow`
   surface and behavior are unchanged.
+- Extracted the remaining cross-cutting concerns: `flow._identity` (clock,
+  safe names, run ids), `flow._records` (log-record shapes), `flow._settle`
+  (drain/pool settle/skip records), and `flow._pickle` (process function
+  alias).  Attempt logging now lives with the attempt loop; `run.py`,
+  `node.py`, and `_attempt.py` each own one phase.
+- Split `flow_runner` into `_config` (strict TOML) and `_discovery` (node
+  scan and input binding); `main()` keeps the exit-code contract.
 
 ### Documentation
 

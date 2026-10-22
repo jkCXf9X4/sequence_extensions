@@ -15,18 +15,26 @@ sequence_extensions/
 ├── ext/        # list_ext / dict_ext / gen_ext (functional sequence helpers)
 ├── graph/      # the execution substrate
 │   └── graph_future.py # GraphFuture / GraphPool
-└── flow/       # the mini flow engine
-    ├── node.py       # @node, NodeFunction (policy, submit, process alias)
-    ├── _futures.py   # FlowOutcome, FlowFuture, NodeTimeoutError
-    ├── _gather.py    # gather template planning/filling
-    ├── _attempt.py   # _AttemptRunner: retry/backoff/timeout loop
-    ├── run.py        # execute_flow, Run, RunOptions wiring
-    ├── _options.py   # NodePolicy, RunOptions, UNSET, validation
-    ├── runlog.py     # RunLog writer/reader, reference mode
-    ├── _serialize.py # jsonable, strict JSON bytes, deterministic keys
-    ├── _diff.py      # diff identity and occurrence multiset
-    ├── process_pool.py # ProcessGraphPool, ProcessDispatchError
-    └── _context.py   # RunContext + path/attempt/worker ContextVars
+├── flow/       # the mini flow engine
+│   ├── node.py       # @node, NodeFunction (policy, submit)
+│   ├── _futures.py   # FlowOutcome, FlowFuture, NodeTimeoutError
+│   ├── _gather.py    # gather template planning/filling
+│   ├── _attempt.py   # _AttemptRunner: retry/backoff/timeout loop + attempt log
+│   ├── _identity.py  # UTC clock, safe names, run-id shape
+│   ├── _records.py   # run-log record construction (schema 2)
+│   ├── _settle.py    # drain, pool settle, worker replay, skip records
+│   ├── _pickle.py    # process-pool function alias
+│   ├── run.py        # execute_flow, Run, pool ownership
+│   ├── _options.py   # NodePolicy, RunOptions, UNSET, validation
+│   ├── runlog.py     # RunLog writer/reader, reference mode
+│   ├── _serialize.py # jsonable, strict JSON bytes, deterministic keys
+│   ├── _diff.py      # diff identity and occurrence multiset
+│   ├── process_pool.py # ProcessGraphPool, ProcessDispatchError
+│   └── _context.py   # RunContext + path/attempt/worker ContextVars
+└── flow_runner/    # the TOML-driven CLI
+    ├── __init__.py     # main(): parse, import, execute, exit codes
+    ├── _config.py      # RunnerConfig / RunnerConfigError (strict TOML)
+    └── _discovery.py   # find_nodes, list_nodes, input binding
 ```
 
 `ext` and `graph` names are re-exported from the package root; `flow` is imported as its own package (`from sequence_extensions.flow import node, execute_flow`).

@@ -27,11 +27,15 @@ The package decomposes into three subpackages plus one standalone CLI with a str
 
 ## `flow` — the audit-first engine
 
-- **`node`** — `@node` decorator and `NodeFunction`: policy resolution, `submit()`, `__node__` marker, process alias.
+- **`node`** — `@node` decorator and `NodeFunction`: policy resolution, `submit()`, `__node__` marker.
 - **`_futures`** — `FlowOutcome`, `FlowFuture`, `NodeTimeoutError`: deferred results, the blocking guard, and pickle transport.
 - **`_gather`** — `gather`: template planning and filling; cycle/depth guards; mapping and tuple-subclass shapes.
-- **`_attempt`** — `_AttemptRunner`: one iterative attempt loop (retry, backoff, per-attempt timeout), settlement, logging, and future fan-out.
-- **`run`** — `execute_flow(node, ..., options=RunOptions(...))`: top-level run identity, owned or caller-supplied pool, drain, failure/retry/timeout handling, `Run`.
+- **`_attempt`** — `_AttemptRunner`: one iterative attempt loop (retry, backoff, per-attempt timeout), settlement, attempt logging, and future fan-out.
+- **`_identity`** — the clock, safe node names, and run-id shape shared by the run boundary and the attempt loop.
+- **`_records`** — run-log record construction: node/run/skip shapes, the error field, and jsonable argument conversion (one place for schema 2).
+- **`_settle`** — the run's settle phase: drain submitted nodes and outcomes, settle an owned pool, replay worker records, and write skip records.
+- **`run`** — `execute_flow(node, ..., options=RunOptions(...))`: top-level run identity, owned or caller-supplied pool, settle delegation, failure/retry/timeout handling, `Run`.
+- **`_pickle`** — process-pool pickle transport: alias a node's raw function in its module so `__reduce__` can ship it.
 - **`_options`** — `RunOptions` (per-call run knobs), `NodePolicy` (per-run node defaults), `UNSET`, validation and resolution.
 - **`runlog`** — `RunLog` JSON-lines writer (thread-safe, schema 2), reading toolkit (`filter`, `summarize`, `diff`), reference mode.
 - **`_serialize`** — `jsonable` policy, strict JSON bytes, deterministic sets/nested keys, fixed clock constants.
@@ -41,7 +45,9 @@ The package decomposes into three subpackages plus one standalone CLI with a str
 
 ## `flow_runner` — the CLI
 
-- `flow-runner` console script and `python -m` entry: load and validate a TOML file, import `[run] module`, scan for the `__node__` marker, validate `[inputs]` against the node signature, call `execute_flow` (`CP-026`).
+- `_config` — the strict TOML contract: `RunnerConfig`, `RunnerConfigError`, section/key validation, legacy-section migration messages.
+- `_discovery` — node discovery via the `__node__` marker, listing, and `[inputs]` binding against the node signature.
+- `__init__` — the `flow-runner` console script and `python -m` entry: argument parsing, module import, `execute_flow` call, and exit-code mapping (`CP-026`).
 - `[run]` carries selection and run options; `[node]` becomes `RunOptions.node_defaults`; `[inputs]` are the root node's keyword arguments.
 - Exit codes: 0 ok, 1 run failure, 2 usage or config error.
 

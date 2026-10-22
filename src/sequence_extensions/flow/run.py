@@ -40,13 +40,9 @@ inside an active run is rejected.
 
 from __future__ import annotations
 
-import concurrent.futures
-import re
 import threading
 import time
-import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -58,10 +54,17 @@ from sequence_extensions.flow._context import (
     in_process_worker,
 )
 from sequence_extensions.flow._futures import NodeTimeoutError
+from sequence_extensions.flow._identity import new_run_id, utcnow
 from sequence_extensions.flow._options import RunOptions
+from sequence_extensions.flow._records import run_end_record, run_start_record
+from sequence_extensions.flow._settle import (
+    drain,
+    failed_node_paths,
+    settle,
+    write_settle_records,
+)
 from sequence_extensions.flow.node import NodeFunction
-from sequence_extensions.flow.process_pool import ProcessDispatchError
-from sequence_extensions.flow.runlog import RunLog, jsonable
+from sequence_extensions.flow.runlog import RunLog
 from sequence_extensions.graph.graph_future import GraphPool
 
 try:  # package version stamped into run_start; import is cycle-free
@@ -95,25 +98,6 @@ class Run:
     ended: str
     error: BaseException | None = None
     failed_nodes: tuple[tuple[str, ...], ...] = ()
-
-
-# ---------------------------------------------------------------- #
-# Identity
-# ---------------------------------------------------------------- #
-def _utcnow() -> str:
-    return datetime.now(UTC).isoformat()
-
-
-def _safe_name(name: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip("-") or "node"
-
-
-def _new_run_id(name: str, *, fixed: bool) -> str:
-    safe = _safe_name(name)
-    if fixed:
-        return f"{safe}-fixed"
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
-    return f"{safe}-{stamp}-{uuid.uuid4().hex[:8]}"
 
 
 # ---------------------------------------------------------------- #
@@ -173,7 +157,7 @@ class _RunAttempt:
         self.kwargs = kwargs
         self.options = options
         self.attempt = attempt
-        self.run_id = _new_run_id(options.name, fixed=bool(options.fixed_clock))
+        self.run_id = new_run_id(options.name, fixed=bool(options.fixed_clock))
         self.runlog = (
             RunLog(
                 Path(options.log) / f"{self.run_id}.jsonl",
@@ -196,7 +180,7 @@ class _RunAttempt:
             options=options,
         )
         self.started_clock = time.perf_counter()
-        self.started = _utcnow()
+        self.started = utcnow()
         self.status: RunStatus = "ok"
         self.result = None
         self.error: BaseException | None = None
@@ -232,21 +216,16 @@ class _RunAttempt:
             return
         self.runlog.open()
         self.runlog.write(
-            {
-                "record": "run_start",
-                "run_id": self.run_id,
-                "node": self.options.name,
-                "attempt": self.attempt,
-                "started": self.started,
-                "version": _PACKAGE_VERSION,
-                "args": [
-                    jsonable(a, summary=bool(self.options.summary)) for a in self.args
-                ],
-                "kwargs": {
-                    k: jsonable(v, summary=bool(self.options.summary))
-                    for k, v in self.kwargs.items()
-                },
-            }
+            run_start_record(
+                run_id=self.run_id,
+                node=self.options.name,
+                attempt=self.attempt,
+                started=self.started,
+                version=_PACKAGE_VERSION,
+                args=self.args,
+                kwargs=self.kwargs,
+                summary=bool(self.options.summary),
+            )
         )
 
     def _execute_root(self) -> None:
@@ -270,43 +249,36 @@ class _RunAttempt:
 
     def _finish_records(self) -> None:
         if self.status == "ok":
-            _drain(self.ctx)
+            drain(self.ctx)
             self._settle_pool()
-            _write_settle_records(self.ctx, run_failed=False)
+            write_settle_records(self.ctx, run_failed=False)
         else:
             self._settle_pool()
             if self.status != "timeout":
-                _drain(self.ctx)
-            _write_settle_records(self.ctx, run_failed=True)
+                drain(self.ctx)
+            write_settle_records(self.ctx, run_failed=True)
 
-        self.failed_nodes = _failed_node_paths(self.ctx)
+        self.failed_nodes = failed_node_paths(self.ctx)
         self.duration_ms = int((time.perf_counter() - self.started_clock) * 1000)
-        self.ended = _utcnow()
+        self.ended = utcnow()
         if self.runlog is None:
             return
-        end_record: dict = {
-            "record": "run_end",
-            "run_id": self.run_id,
-            "status": self.status,
-            "ended": self.ended,
-            "duration_ms": self.duration_ms,
-        }
-        if self.failed_nodes:
-            end_record["failed_nodes"] = [list(path) for path in self.failed_nodes]
-        if self.status == "ok":
-            end_record["result"] = jsonable(
-                self.result, summary=bool(self.options.summary)
+        self.runlog.write(
+            run_end_record(
+                run_id=self.run_id,
+                status=self.status,
+                ended=self.ended,
+                duration_ms=self.duration_ms,
+                failed_nodes=self.failed_nodes,
+                result=self.result,
+                error=self.error,
+                summary=bool(self.options.summary),
             )
-        else:
-            end_record["error"] = {
-                "type": type(self.error).__qualname__,
-                "message": str(self.error),
-            }
-        self.runlog.write(end_record)
+        )
 
     def _settle_pool(self) -> None:
         if self.owned_pool is not None:
-            _settle(self.owned_pool)
+            settle(self.owned_pool)
             self.pool_settled = True
 
     def _close(self) -> None:
@@ -314,7 +286,7 @@ class _RunAttempt:
             if self.owned_pool is not None and not self.pool_settled:
                 # Unexpected failure before the normal settle branch: the
                 # run still owns the pool and must not leak its executor.
-                _settle(self.owned_pool)
+                settle(self.owned_pool)
         finally:
             if self.runlog is not None:
                 # Safety net: an abandoned attempt must never write again.
@@ -378,132 +350,6 @@ def _call_root(node, args, kwargs, timeout, ctx, attempt):
     if "error" in box:
         raise box["error"]
     return box.get("result")
-
-
-# ---------------------------------------------------------------- #
-# Drain / settle
-# ---------------------------------------------------------------- #
-def _settle(pool: GraphPool) -> None:
-    """Cancel pending nodes and shut the executor down, waiting for running."""
-    pool.__exit__(None, None, None)
-
-
-def _drain(ctx: RunContext) -> None:
-    """Wait for every submitted node and deferred outcome.
-
-    Outcomes are part of the drain because a returned future can settle
-    after its GraphFuture is cancelled; waiting for the outcome guarantees
-    the attempt record is in the log before ``run_end``.  Failures are
-    swallowed here on purpose: every attempt is already in the audit log,
-    and the exception surfaces through whichever future the caller
-    gathers.  A cancelled node must not crash the return path.
-    """
-    seen_nodes = set()
-    seen_outcomes = set()
-    while True:
-        pending_nodes = [node for node in ctx.nodes if node not in seen_nodes]
-        pending_outcomes = [
-            outcome for outcome in ctx.outcomes if outcome not in seen_outcomes
-        ]
-        if not pending_nodes and not pending_outcomes:
-            return
-        for node in pending_nodes:
-            seen_nodes.add(node)
-            try:
-                node.result()
-            except Exception:
-                pass
-        for outcome in pending_outcomes:
-            seen_outcomes.add(outcome)
-            try:
-                outcome.result()
-            except Exception:
-                pass
-
-
-def _failed_node_paths(ctx: RunContext) -> tuple[tuple[str, ...], ...]:
-    """Paths of submitted nodes whose settled future carries an exception.
-
-    This includes a fire-and-forget child the root never gathered: the log
-    already records its error, and ``Run.failed_nodes`` makes it visible
-    without changing the root verdict.
-    """
-    out = set()
-    for node in ctx.nodes:
-        if node.cancelled() or not node.done():
-            continue
-        try:
-            exc = node.exception()
-        except concurrent.futures.CancelledError:
-            continue
-        if exc is not None:
-            out.add(tuple(node.path))
-    return tuple(sorted(out))
-
-
-def _settle_record(ctx: RunContext, node, *, reason: str, error=None) -> dict:
-    record = {
-        "record": "node",
-        "run_id": ctx.run_id,
-        "node": node.name,
-        "path": list(node.path),
-        "attempt": 0,
-        "parent_attempt": node.parent_attempt,
-        "status": "skipped",
-        "reason": reason,
-    }
-    if error is not None:
-        record["error"] = {"type": type(error).__qualname__, "message": str(error)}
-    return record
-
-
-def _write_settle_records(ctx: RunContext, *, run_failed: bool) -> None:
-    """Every settle-time record, written by the run thread before run_end.
-
-    Replayed worker records first (process pools), then one skip record
-    per node that never executed: cancelled by the run's failure, or
-    failed because its dependency or process dispatch failed.  Never
-    called from a done-callback — ``set_result`` wakes drain waiters
-    before callbacks finish, so a callback-side write could race
-    ``run_end`` closing the log.
-    """
-    if ctx.runlog is None:
-        return
-    for node in ctx.nodes:
-        for record in node.process_records or ():
-            ctx.runlog.write(record)
-    for node in ctx.nodes:
-        if node.attempted:
-            continue
-        if node.cancelled():
-            if run_failed:
-                ctx.runlog.write(_settle_record(ctx, node, reason="cancelled (run failed)"))
-            continue
-        if not node.done():
-            # A run-level timeout deliberately skips the drain.  A
-            # caller-owned pool may still have pending nodes here; never
-            # block on their exception just to write a settle record.
-            if run_failed:
-                ctx.runlog.write(_settle_record(ctx, node, reason="pending at run end"))
-            continue
-        try:
-            exc = node.exception()
-        except concurrent.futures.CancelledError:
-            continue
-        if exc is None:
-            continue
-        ctx.runlog.write(
-            _settle_record(
-                ctx,
-                node,
-                reason=(
-                    "dispatch failed"
-                    if isinstance(exc, ProcessDispatchError)
-                    else "dependency failed"
-                ),
-                error=exc,
-            )
-        )
 
 
 def _attach_run(error: BaseException, run: Run) -> None:

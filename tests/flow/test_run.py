@@ -67,7 +67,7 @@ def test_owned_pool_is_settled_if_drain_raises(monkeypatch):
     monkeypatch.setattr(GraphPool, "__exit__", record_exit)
     monkeypatch.setattr(
         run_module,
-        "_drain",
+        "drain",
         lambda ctx: (_ for _ in ()).throw(RuntimeError("drain boom")),
     )
 
