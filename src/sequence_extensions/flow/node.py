@@ -2,10 +2,11 @@
 
 A decorated node is still the function:
 
-* **called directly** it runs inline in the caller's thread.  On the driver
-  it returns the body's value (waiting for a returned future if needed).
-  Inside a pool worker a body that fans out cannot wait: it returns a
-  future, and the caller should return that future.
+* **called directly** it runs inline in the caller's thread.  Outside a node
+  body it returns the body's value (waiting for a returned future if
+  needed).  Inside a node body — on the driver or in a pool worker — it
+  cannot wait: an unsettled call returns a future/outcome, and the caller
+  should return it.
 * **``.submit(...)``** schedules it on the run's pool (concurrent) and
   returns a :class:`FlowFuture`.
 
@@ -63,6 +64,7 @@ from sequence_extensions.flow._context import (
     current_run,
     current_run_attempt_token,
     execution_scope,
+    in_node_body,
     in_process_worker,
     in_worker,
 )
@@ -76,8 +78,8 @@ from sequence_extensions.graph.graph_future import GraphFuture
 #: pool-level DFS state).
 _BIND_LOCK = threading.Lock()
 
-_BLOCKED_IN_WORKER = (
-    "blocked on an incomplete future inside a pool worker; return the future "
+_BLOCKED_IN_BODY = (
+    "blocked on an incomplete future inside a node body; return the future "
     "instead (or submit a dependent node)"
 )
 
@@ -118,16 +120,16 @@ class NodeTimeoutError(TimeoutError):
 
 
 class FlowOutcome(concurrent.futures.Future):
-    """A deferred node outcome; blocking on it inside a worker is rejected."""
+    """A deferred node outcome; blocking on it inside a node body is rejected."""
 
     def result(self, timeout=None):
-        if in_worker() and not self.done():
-            raise RuntimeError(_BLOCKED_IN_WORKER)
+        if (in_node_body() or in_worker()) and not self.done():
+            raise RuntimeError(_BLOCKED_IN_BODY)
         return super().result(timeout=timeout)
 
 
 class FlowFuture(GraphFuture):
-    """A submitted node's graph future; blocking inside a worker is rejected."""
+    """A submitted node's graph future; blocking on it inside a node body is rejected."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -137,8 +139,8 @@ class FlowFuture(GraphFuture):
         self.process_records: list[dict] | None = None
 
     def result(self, timeout=None):
-        if in_worker() and not self.future.done():
-            raise RuntimeError(_BLOCKED_IN_WORKER)
+        if (in_node_body() or in_worker()) and not self.future.done():
+            raise RuntimeError(_BLOCKED_IN_BODY)
         return super().result(timeout=timeout)
 
 
@@ -370,6 +372,7 @@ class _AttemptRunner:
             run_token=self.run_attempt_token,
             worker=self.base_worker,
             process_worker=self.base_process,
+            in_body=True,
         ):
             if self.ctx is not None and self.ctx.cancelled.is_set():
                 raise RuntimeError(
@@ -507,10 +510,10 @@ class NodeFunction:
     def __call__(self, *args, **kwargs):
         """Run the node inline in the current thread.
 
-        On the driver this waits for a returned future and gives back the
-        value.  Inside a pool worker, a body that has not settled returns
-        its future instead; return it to let the graph continue without
-        blocking the worker.
+        Outside a node body this waits for a returned future and gives back
+        the value.  Inside a node body (driver or pool worker) a body that
+        has not settled returns its future instead; return it to let the
+        graph continue without blocking.
         """
         outcome = self._execute_deferred(
             args,
@@ -519,7 +522,7 @@ class NodeFunction:
             parent_token=current_attempt_token(),
             run_attempt_token=current_run_attempt_token(),
         )
-        if in_worker() and not outcome.done():
+        if (in_node_body() or in_worker()) and not outcome.done():
             return outcome
         return outcome.result()
 
@@ -531,8 +534,8 @@ class NodeFunction:
 
         Futures among ``args``/``kwargs`` become dependency edges.  A
         worker may submit: the call returns a future and does not wait, so
-        the pool cannot deadlock.  Blocking on an incomplete future from a
-        worker raises with guidance.
+        the pool cannot deadlock.  Blocking on an incomplete future inside a
+        node body raises with guidance.
         """
         ctx = current_run()
         if in_process_worker():

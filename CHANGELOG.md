@@ -27,8 +27,8 @@ The composition release: one `@node` primitive and an explicit
 - **Futures replace waiting.**  A node may return a value or a future.
   A submitted composite returns the terminal future and frees its worker;
   `submit()` is legal in a worker.  `.result()` on an incomplete future
-  inside a worker raises instead of deadlocking.  `gather(...)` combines
-  futures without a `.result()` wait.
+  inside a node body — root body or pool worker — raises instead of
+  deadlocking.  `gather(...)` combines futures without a `.result()` wait.
 - **Process worker restrictions.**  `node.submit()` and `execute_flow`
   inside a process worker are rejected; process-mode fan-out is built in
   the parent.  A process worker cannot return a live future.

@@ -96,6 +96,9 @@ def _process_node_runner(node_fn, run_info, *args, **kwargs):
         attempt=run_info.get("parent_attempt"),
         worker=False,
         process_worker=True,
+        # A fork inherits the parent's context: reset the body marker so this
+        # worker's own node body (inside _execute) is the only body in scope.
+        in_body=False,
     ):
         try:
             value = node_fn._execute(args, kwargs, ctx)

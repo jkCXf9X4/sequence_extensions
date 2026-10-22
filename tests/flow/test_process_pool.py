@@ -23,6 +23,7 @@ from sequence_extensions.flow import (
     RunLog,
     RunOptions,
     execute_flow,
+    gather,
     node,
 )
 from sequence_extensions.graph.graph_future import GraphFuture
@@ -147,7 +148,7 @@ def test_process_pool_results_and_records(tmp_path):
     @node
     def campaign():
         futures = [_plain.submit(i) for i in range(4)]
-        return [f.result() for f in futures]
+        return gather(futures)
 
     with pool:
         run = execute_flow(campaign, options=RunOptions(pool=pool, log=tmp_path))
@@ -166,7 +167,7 @@ def test_process_pool_error_records(tmp_path):
 
     @node
     def campaign():
-        return _boom.submit(1).result()
+        return _boom.submit(1)
 
     with pool:
         with pytest.raises(ValueError, match="bad 1"):
@@ -184,7 +185,7 @@ def test_process_pool_retry_records(tmp_path):
 
     @node
     def campaign():
-        return _flaky.submit(7).result()
+        return _flaky.submit(7)
 
     with pool:
         execute_flow(campaign, options=RunOptions(pool=pool, log=tmp_path))
@@ -225,16 +226,11 @@ def test_process_pool_dispatch_failure(tmp_path):
 
     @node
     def campaign():
-        f = _plain.submit(_unpicklable())
-        try:
-            f.result()
-        except ProcessDispatchError:
-            return "dispatch-failed"
-        raise AssertionError("unreachable")
+        return _plain.submit(_unpicklable())
 
     with pool:
-        result = execute_flow(campaign, options=RunOptions(pool=pool, log=tmp_path)).result
-    assert result == "dispatch-failed"
+        with pytest.raises(ProcessDispatchError):
+            execute_flow(campaign, options=RunOptions(pool=pool, log=tmp_path))
 
     nodes = _node_records(_read_log(tmp_path))
     plain = next(n for n in nodes if n["node"] == "_plain")
@@ -254,16 +250,13 @@ def test_process_pool_timeout_crosses_boundary(tmp_path):
 
     @node
     def campaign():
-        f = _slow_timeout.submit(1)
-        try:
-            f.result()
-        except NodeTimeoutError as exc:
-            return exc
-        raise AssertionError("unreachable")
+        return _slow_timeout.submit(1)
 
     with pool:
-        error = execute_flow(campaign, options=RunOptions(pool=pool, log=tmp_path)).result
+        with pytest.raises(NodeTimeoutError) as info:
+            execute_flow(campaign, options=RunOptions(pool=pool, log=tmp_path))
 
+    error = info.value
     assert error.node == "_slow_timeout"
     assert error.timeout == 0.15
     nodes = _node_records(_read_log(tmp_path))
@@ -344,11 +337,11 @@ def test_process_pool_shared_across_two_runs(tmp_path):
 
     @node
     def run_a():
-        return _plain.submit(5).result()
+        return _plain.submit(5)
 
     @node
     def run_b():
-        return _plain.submit(6).result()
+        return _plain.submit(6)
 
     with pool:
         a = execute_flow(run_a, options=RunOptions(pool=pool, log=tmp_path, name="first"))
@@ -378,7 +371,7 @@ def test_process_pool_beats_gil_on_cpu_bound_work(tmp_path):
     @node
     def campaign():
         futures = [_burn.submit(n) for _ in range(2)]
-        return [f.result() for f in futures]
+        return gather(futures)
 
     t0 = time.perf_counter()
     with pool:
@@ -405,11 +398,11 @@ def test_process_pool_submit_after_exit_settles_cancelled():
 def test_concurrent_runs_one_process_pool_per_run(tmp_path):
     @node
     def run_a():
-        return _sleepy.submit(1).result()
+        return _sleepy.submit(1)
 
     @node
     def run_b():
-        return _sleepy.submit(2).result()
+        return _sleepy.submit(2)
 
     with ThreadPoolExecutor(max_workers=2) as ex:
         f1 = ex.submit(

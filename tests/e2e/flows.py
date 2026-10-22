@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from sequence_extensions.flow import node
+from sequence_extensions.flow import gather, node
 
 
 def _load_case(case_path: Path) -> dict:
@@ -72,8 +72,9 @@ def evaluate(sim_path: Path, tolerance: float, out_dir: Path) -> Path:
     )
 
 
-def _verdict(eval_paths: list[Path], out_dir: Path) -> Path:
-    """Plain helper: one verdict artifact from the evaluations."""
+@node
+def verdict(eval_paths: list[Path], out_dir: Path) -> Path:
+    """Fan-in: one verdict artifact from the evaluations."""
     evaluations = [json.loads(p.read_text(encoding="utf-8")) for p in eval_paths]
     return _write_json(
         out_dir / "verdict.json",
@@ -91,7 +92,7 @@ def campaign(cases_dir: Path, tolerance: float, out_dir: Path) -> Path:
     cases = sorted(cases_dir.glob("*.csv"))
     sims = [simulate.submit(c, out_dir) for c in cases]
     evals = [evaluate.submit(s, tolerance, out_dir) for s in sims]
-    return _verdict([e.result() for e in evals], out_dir)
+    return verdict.submit(gather(evals), out_dir)
 
 
 # ---------------------------------------------------------------- #
@@ -115,30 +116,15 @@ def transform(validated: dict, out_dir: Path) -> Path:
     )
 
 
-def _summary(transformed_paths: list[Path], out_dir: Path) -> Path:
-    """Plain helper: the summary this run never produces (the gather raises)."""
-    return _write_json(
-        out_dir / "summary.json",
-        {"transformed": [p.name for p in transformed_paths]},
-    )
-
-
 @node
 def failing_campaign(cases_dir: Path, out_dir: Path) -> Path:
     """Always fails: ``bad.csv`` fails validation, its dependent transform
     is recorded skipped, and the flow raises the first failure — but only
     after every submitted node has settled, so the run's record and
     artifacts are complete and deterministic (no timing-dependent
-    cancellations)."""
+    cancellations).  Returning the gathered futures is what defers the
+    raise until the whole fan-out has settled."""
     cases = sorted(cases_dir.glob("*.csv"))
     validated = [validate.submit(c) for c in cases]
     transformed = [transform.submit(v, out_dir) for v in validated]
-    results, failure = [], None
-    for t in transformed:  # drain everything first: gate on the full picture
-        try:
-            results.append(t.result())
-        except Exception as error:  # collect every failure, raise the first
-            failure = failure or error
-    if failure is not None:
-        raise failure
-    return _summary(results, out_dir)
+    return gather(transformed)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pickle
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -370,8 +371,7 @@ def test_submit_future_argument_becomes_dependency():
     @node
     def campaign():
         a = double.submit(21)
-        b = double.submit(a)
-        return b.result()
+        return double.submit(a)
 
     assert execute_flow(campaign, options=RunOptions(log=None)).result == 84
 
@@ -388,7 +388,7 @@ def test_submit_future_as_keyword_argument():
     @node
     def campaign():
         a = one.submit()
-        return combine.submit(y=a, x=10).result()
+        return combine.submit(y=a, x=10)
 
     assert execute_flow(campaign, options=RunOptions(log=None)).result == 11
 
@@ -402,7 +402,7 @@ def test_submit_runs_concurrently():
     @node
     def campaign():
         futures = [sleepish.submit(i) for i in range(6)]
-        return [f.result() for f in futures]
+        return gather(futures)
 
     t0 = time.perf_counter()
     result = execute_flow(campaign, options=RunOptions(log=None, max_workers=8))
@@ -429,21 +429,54 @@ def test_submit_inside_a_worker_fans_out_without_deadlocking():
     assert time.perf_counter() - t0 < 2.0
 
 
-def test_blocking_on_a_future_inside_a_worker_raises():
+@pytest.mark.parametrize("position", ["root", "wrapped"])
+def test_blocking_on_a_future_inside_a_node_body_raises(tmp_path, position):
+    """The rule does not depend on where the body runs: the same body fails
+    the same way at the root and as a submitted child."""
+
+    @node
+    def inner(x):
+        time.sleep(0.1)
+        return x + 1
+
+    @node
+    def body():
+        return inner.submit(1).result()
+
+    @node
+    def outer():
+        return body.submit()
+
+    flow = outer if position == "wrapped" else body
+    with pytest.raises(RuntimeError, match="incomplete future inside a node body"):
+        execute_flow(flow, options=RunOptions(log=tmp_path, max_workers=1))
+
+    records = RunLog.records(next(Path(tmp_path).glob("*.jsonl")))
+    failed = [
+        r
+        for r in records
+        if r["record"] == "node" and r["node"] == "body" and r["status"] == "error"
+    ]
+    assert failed and failed[0]["error"]["type"] == "RuntimeError"
+
+
+@pytest.mark.parametrize("position", ["root", "wrapped"])
+def test_returning_a_future_works_from_any_position(tmp_path, position):
     @node
     def inner(x):
         return x + 1
 
     @node
-    def outer(x):
-        return inner.submit(x).result()
+    def body():
+        return gather([inner.submit(1), inner.submit(2)])
 
     @node
-    def campaign():
-        return outer.submit(1)
+    def outer():
+        return body.submit()
 
-    with pytest.raises(RuntimeError, match="incomplete future inside a pool worker"):
-        execute_flow(campaign, options=RunOptions(log=None, max_workers=1))
+    flow = outer if position == "wrapped" else body
+    run = execute_flow(flow, options=RunOptions(log=tmp_path))
+    assert run.result == [2, 3]
 
 
 def test_plain_call_inside_run_is_logged_sequentially(tmp_path):
@@ -481,7 +514,7 @@ def test_submit_node_records_logged_with_attempts(tmp_path):
 
     @node
     def campaign():
-        return flaky_once.submit().result()
+        return flaky_once.submit()
 
     run = execute_flow(campaign, options=RunOptions(log=tmp_path))
     assert run.result == "ok"
@@ -500,12 +533,11 @@ def test_submit_timeout_status_in_log(tmp_path):
 
     @node
     def campaign():
-        with pytest.raises(NodeTimeoutError):
-            return slow.submit().result()
+        return slow.submit()
 
-    run = execute_flow(campaign, options=RunOptions(log=tmp_path))
-    assert run.status == "ok"
-    records = RunLog.records(run.log)
+    with pytest.raises(NodeTimeoutError):
+        execute_flow(campaign, options=RunOptions(log=tmp_path))
+    records = RunLog.records(next(Path(tmp_path).glob("*.jsonl")))
     nodes = [r for r in records if r["record"] == "node" and r["node"] == "slow"]
     assert nodes[0]["status"] == "timeout"
     assert nodes[0]["error"]["type"] == "NodeTimeoutError"
@@ -526,7 +558,7 @@ def test_node_defaults_apply_to_unset_decorator_values(tmp_path):
 
     @node
     def campaign():
-        return flaky.submit().result()
+        return flaky.submit()
 
     run = execute_flow(
         campaign,

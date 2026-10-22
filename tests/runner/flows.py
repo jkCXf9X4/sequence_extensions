@@ -1,6 +1,6 @@
 """Nodes for ``flow-runner`` tests: one per shape the runner must handle."""
 
-from sequence_extensions.flow import node
+from sequence_extensions.flow import gather, node
 
 
 @node
@@ -19,7 +19,7 @@ def echo(value, factor=1):
 def double(values):
     """Add one to every value, concurrently."""
     futures = [bump.submit(v) for v in values]
-    return [f.result() for f in futures]
+    return gather(futures)
 
 
 @node

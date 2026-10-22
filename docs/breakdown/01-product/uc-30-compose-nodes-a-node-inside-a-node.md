@@ -20,7 +20,7 @@ status: current
 
 - A composite is an ordinary `@node` that calls or submits other nodes.  The whole tree is one run, one pool, and one log; no second run or log is opened.
 - Node records carry `path` (the node-name chain) and `parent_attempt`; the nesting is visible without separate run files.
-- A node may return a value or a future.  A returned `submit()`/`gather(...)` future is awaited by that node's attempt; the worker is freed and can run other work.  `.result()` on an incomplete future in a pool worker raises with guidance instead of deadlocking.
+- A node may return a value or a future.  A returned `submit()`/`gather(...)` future is awaited by that node's attempt; the worker is freed and can run other work.  `.result()` on an incomplete future inside a node body (root or worker) raises with guidance instead of deadlocking.
 - `gather(futures)` combines several futures in order without `.result()`; the result can be returned or passed to a dependent node.
 - A composite's `retries` and `timeout` apply to the returned future as a whole.  A failure is recorded once for the composite attempt and once for the failing child; a retry re-executes the subtree with a new `parent_attempt`.
 - A composite timeout drops late records from its abandoned subtree; only the composite attempt is recorded.

@@ -241,14 +241,10 @@ def test_failed_dependency_gets_skipped_record(tmp_path):
     @node
     def campaign():
         a = boom.submit()
-        b = downstream.submit(a)
-        try:
-            b.result()
-        except ValueError:
-            return "handled"
+        return downstream.submit(a)
 
-    run = execute_flow(campaign, options=RunOptions(log=tmp_path))
-    assert run.result == "handled"
+    with pytest.raises(ValueError, match="upstream failed"):
+        execute_flow(campaign, options=RunOptions(log=tmp_path))
     recs = _read_log(tmp_path)
     by_name = {}
     for rec in _node_records(recs):
@@ -295,7 +291,7 @@ def test_max_workers_bounds_concurrency(tmp_path):
 
     @node
     def campaign():
-        return [f.result() for f in [sleepish.submit(), sleepish.submit()]]
+        return gather([sleepish.submit(), sleepish.submit()])
 
     t0 = time.perf_counter()
     execute_flow(campaign, options=RunOptions(log=None, max_workers=1))
@@ -309,7 +305,7 @@ def test_node_records_carry_worker_names(tmp_path):
 
     @node
     def campaign():
-        return noop.submit().result()
+        return noop.submit()
 
     execute_flow(campaign, options=RunOptions(log=tmp_path))
     nodes = [r for r in _read_log(tmp_path) if r["record"] == "node" and r["node"] == "noop"]
@@ -381,7 +377,7 @@ def test_node_timeout_is_an_error_in_the_run_verdict(tmp_path):
 
     @node
     def campaign():
-        return slow.submit().result()
+        return slow.submit()
 
     with pytest.raises(NodeTimeoutError):
         execute_flow(campaign, options=RunOptions(log=tmp_path))
@@ -407,7 +403,7 @@ def test_caller_owned_pool_is_reused_and_not_settled():
             @node
             def campaign():
                 a = work.submit(21)
-                return work.submit(a).result()
+                return work.submit(a)
 
             assert (
                 execute_flow(campaign, options=RunOptions(log=None, pool=shared)).result == 84
@@ -456,11 +452,11 @@ def test_concurrent_runs_in_one_process(tmp_path):
 
     @node
     def run_a():
-        return slow.submit(1).result()
+        return slow.submit(1)
 
     @node
     def run_b():
-        return slow.submit(2).result()
+        return slow.submit(2)
 
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
@@ -491,7 +487,7 @@ def test_fixed_clock_pins_identity_timing_and_order(tmp_path):
     @node
     def campaign(values):
         futures = [leaf.submit(v) for v in values]
-        return [f.result() for f in futures]
+        return gather(futures)
 
     execute_flow(
         campaign,
@@ -544,7 +540,7 @@ def test_fixed_clock_nested_nodes_are_byte_stable(tmp_path):
 
 
 def test_run_level_retry_writes_one_file_per_attempt(tmp_path):
-    state = {"root": 0, "child": 0}
+    state = {"root": 0, "child": 0, "gate": 0}
 
     @node
     def child():
@@ -552,20 +548,26 @@ def test_run_level_retry_writes_one_file_per_attempt(tmp_path):
         return 1
 
     @node
+    def fail_first(value):
+        """Fail on the first invocation, so the root attempt fails after
+        the child has actually run."""
+        state["gate"] += 1
+        if state["gate"] == 1:
+            raise ValueError("first")
+        return value
+
+    @node
     def root():
         state["root"] += 1
-        child.submit().result()
-        if state["root"] == 1:
-            raise ValueError("first")
-        return "ok"
+        return fail_first.submit(child.submit())
 
     run = execute_flow(
         root,
         options=RunOptions(log=tmp_path, retries=1, retry_delay_seconds=0.0),
     )
-    assert run.result == "ok"
+    assert run.result == 1
     assert run.attempt == 2
-    assert state == {"root": 2, "child": 2}
+    assert state == {"root": 2, "child": 2, "gate": 2}
 
     logs = sorted(tmp_path.glob("*.jsonl"))
     assert len(logs) == 2

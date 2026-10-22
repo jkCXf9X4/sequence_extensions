@@ -34,7 +34,7 @@ from pathlib import Path
 import pytest
 
 from e2e.flows import campaign, failing_campaign
-from sequence_extensions.flow import DIFF_EXCLUDE, RunLog, RunOptions, execute_flow
+from sequence_extensions.flow import DIFF_EXCLUDE, RunLog, RunOptions, execute_flow, node
 
 E2E = Path(__file__).resolve().parent
 REPO_ROOT = E2E.parent.parent
@@ -147,3 +147,48 @@ def test_failing_campaign_end_to_end_matches_the_reference():
             )
 
     _run_and_check("failing_campaign", out, run)
+
+
+# ---------------------------------------------------------------- #
+# Position independence: the same flow, one level deeper
+# ---------------------------------------------------------------- #
+@node
+def _wrapped_campaign(cases_dir: Path, tolerance: float, out_dir: Path):
+    """``campaign`` as a child node — it must behave exactly as at the root."""
+    return campaign.submit(cases_dir, tolerance, out_dir)
+
+
+@node
+def _wrapped_failing_campaign(cases_dir: Path, out_dir: Path):
+    """``failing_campaign`` as a child node."""
+    return failing_campaign.submit(cases_dir, out_dir)
+
+
+def _outcome(flow, out_dir: Path, *extra):
+    """Execute ``flow`` into ``out_dir`` and describe what it did."""
+    try:
+        run = execute_flow(flow, CASES, *extra, out_dir, options=RunOptions(log=None))
+    except Exception as exc:  # the failure path raises on purpose
+        return "error", type(exc).__name__, str(exc)
+    return "ok", run.status, Path(run.result).name
+
+
+@pytest.mark.parametrize(
+    ("flow", "wrapped", "extra"),
+    [
+        (campaign, _wrapped_campaign, (100.0,)),
+        (failing_campaign, _wrapped_failing_campaign, ()),
+    ],
+    ids=["campaign", "failing_campaign"],
+)
+def test_flow_behaves_the_same_when_wrapped(tmp_path, flow, wrapped, extra):
+    """A flow must not depend on whether it runs at the root or as a child:
+    the fixtures cannot rely on a position the engine does not guarantee."""
+    root_out = tmp_path / "root"
+    wrapped_out = tmp_path / "wrapped"
+
+    root = _outcome(flow, root_out, *extra)
+    child = _outcome(wrapped, wrapped_out, *extra)
+
+    assert child == root
+    _assert_artifacts_match(root_out, wrapped_out)

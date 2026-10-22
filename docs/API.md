@@ -79,8 +79,8 @@ __version__ = "3.0.0"
 | `RunOptions` | Per-run options (pool, log, summary, fixed clock, retries, node defaults) |
 | `NodePolicy` | Default retry/backoff/timeout for nodes that left a value unset |
 | `NodeFunction` | The object `@node` returns: callable inline, plus `.submit()` |
-| `FlowFuture` | A submitted node's future (`.result()` is rejected on an incomplete future in a worker) |
-| `FlowOutcome` | A deferred direct-call outcome; a worker-side call returns one when it cannot wait |
+| `FlowFuture` | A submitted node's future (`.result()` is rejected on an incomplete future inside a node body) |
+| `FlowOutcome` | A deferred direct-call outcome; a call inside a node body returns one when it cannot wait |
 | `UNSET` | Sentinel for an unspecified `RunOptions` / `NodePolicy` field |
 | `DEFAULT_MAX_WORKERS` / `DEFAULT_LOG_DIR` | Built-in run defaults (`16`, `"runs"`) |
 | `validate_node_policy` | Validate explicit retry/backoff/timeout values |
@@ -944,8 +944,8 @@ with ProcessGraphPool(max_workers=4) as pool:
 ```
 
 The root node body runs on the driver (the parent process); that is where
-process-mode fan-out is built. A body already running inside a process
-worker cannot submit or return a live future.
+process-mode fan-out is built, and it cannot wait on a future either. A body
+already running inside a process worker cannot submit or return a live future.
 
 - **`__init__(max_workers=None)`** — worker process count; `None` keeps the executor's own default (the CPU count).
 - **Picklable payloads:** nodes and arguments must survive `pickle` — module-level functions and plain data. `@node`-decorated module-level functions pickle (the raw function is aliased under a private module name at decoration). A lambda, a closure, or an unpicklable argument fails at dispatch: the node settles with `ProcessDispatchError` and the run log records `skipped` / `dispatch failed`.
@@ -1001,10 +1001,10 @@ def simulate(case): ...
 | `name` | function name | node name used in the run id, records, and discovery. |
 
 - `@node` returns a `NodeFunction`: still callable, and additionally `.submit(...)` schedules on the current run's pool and returns a `FlowFuture`.
-- A direct call runs inline in the caller's thread. On the driver it returns the body's value (waiting for a returned future if needed); inside a pool worker an unsettled call returns a `FlowOutcome` that the caller must return rather than block on.
+- A direct call runs inline in the caller's thread. Outside a node body it returns the body's value (waiting for a returned future if needed); inside a node body (root or pool worker) an unsettled call returns a `FlowOutcome` that the caller must return rather than block on.
 - Futures passed as arguments become dependency edges; plain `concurrent.futures.Future` values are dependencies too. Cycles raise at submit time.
-- `.submit()` is legal in the driver and in a pool worker. A worker does not block: it returns a future and frees the worker.
-- A node may return a value or a future. A returned future (`submit()` or `gather(...)`) is awaited by that node's attempt; the worker is freed. `.result()` on an incomplete future inside a pool worker raises `RuntimeError` with guidance instead of deadlocking.
+- `.submit()` is legal in the driver and in a pool worker. It does not block: it returns a future and frees the worker.
+- A node may return a value or a future. A returned future (`submit()` or `gather(...)`) is awaited by that node's attempt; the worker is freed. `.result()` on an incomplete future inside a node body (root or worker) raises `RuntimeError` with guidance instead of deadlocking. The guard covers `FlowFuture`/`FlowOutcome`: `.future.result()`, `.exception()`, `wait`/`as_completed`, plain futures, and threads a body starts itself are not inspected — blocking is rejected where the engine's own waiting API is used.
 - `gather(futures)` returns one future resolving to the results in order. It accepts an iterable, a single future, or empty input (`[]`). Return it from a node or pass it as a dependency (`merge.submit(gather(evals))`). A node should not return a list/dict containing futures; wrap it with `gather`.
 - A node body that calls/submits other nodes is a composite; there is no separate decorator and no separate run. Nested nodes share the run's pool and log; `path` and `parent_attempt` record the tree, and the composite's `retries`/`timeout` apply to the returned future as a whole — a retry re-runs the body (hence its subtree) with a new `parent_attempt`.
 - A `BaseException` (`SystemExit`, `KeyboardInterrupt`) from a node body is recorded and re-raised wrapped in `RuntimeError`.

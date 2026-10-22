@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from sequence_extensions.flow import RunLog, RunOptions, execute_flow, node
+from sequence_extensions.flow import RunLog, RunOptions, execute_flow, gather, node
 
 #: case name -> csv value; score = value / 100
 CASE_VALUES = {
@@ -80,8 +80,10 @@ def discover(cases_dir: Path) -> list:
     return sorted(cases_dir.glob("*.csv"))
 
 
+@node
 def aggregate(evaluations: list) -> dict:
-    """Plain function: fan-in is an ordinary gather."""
+    """Fan-in: one verdict from the evaluations (a node, so the composite
+    hands on a future instead of waiting)."""
     return {
         "count": len(evaluations),
         "mean_score": sum(e["score"] for e in evaluations) / len(evaluations),
@@ -95,7 +97,7 @@ def campaign(cases_dir: Path, tolerance: float = TOLERANCE) -> dict:
     cases = discover(cases_dir)  # sequential
     sims = [simulate.submit(c) for c in cases]  # concurrent map
     evals = [evaluate.submit(s, tolerance=tolerance) for s in sims]  # edges
-    return aggregate([e.result() for e in evals])  # gather
+    return aggregate.submit(gather(evals))  # fan-in, no .result() wait
 
 
 # ---------------------------------------------------------------- #

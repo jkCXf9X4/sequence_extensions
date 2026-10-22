@@ -17,13 +17,16 @@ markers:
 * ``_attempt_token`` — the attempt's token; an abandoned attempt checks it
   (and its ancestors) before writing a record, so a timed-out composite
   drops late records from its subtree.
-* ``_in_worker`` / ``_in_process_worker`` — set in pool workers.  Blocking
-  on an incomplete future is rejected in a worker; returning the future is
-  the supported way to fan out.
+* ``_in_worker`` / ``_in_process_worker`` — set in pool workers.
+* ``_in_node_body`` — set while a node's function runs, wherever it runs
+  (root body or pool worker).  Blocking on an incomplete future is rejected
+  there; returning the future is the supported way to fan out.
 
 ``ContextVar`` values do not propagate to new threads, so every thread the
 layer starts (pool workers, deferred-attempt callback threads) restores the
-context explicitly around the code that may look it up.
+context explicitly around the code that may look it up.  A forked process
+worker inherits the forking thread's context instead, so
+``_process_node_runner`` resets the worker markers on entry.
 """
 
 from __future__ import annotations
@@ -103,6 +106,9 @@ _in_worker: contextvars.ContextVar = contextvars.ContextVar(
 )
 _in_process_worker: contextvars.ContextVar = contextvars.ContextVar(
     "sequence_extensions_in_process_worker", default=False
+)
+_in_node_body: contextvars.ContextVar = contextvars.ContextVar(
+    "sequence_extensions_in_node_body", default=False
 )
 
 
@@ -196,6 +202,19 @@ def reset_in_process_worker(token) -> None:
     _in_process_worker.reset(token)
 
 
+def in_node_body() -> bool:
+    """True while a node's function runs, on the driver or in a worker."""
+    return _in_node_body.get()
+
+
+def set_in_node_body(value: bool):
+    return _in_node_body.set(bool(value))
+
+
+def reset_in_node_body(token) -> None:
+    _in_node_body.reset(token)
+
+
 _MISSING = object()
 
 
@@ -209,6 +228,7 @@ def execution_scope(
     run_token=_MISSING,
     worker=_MISSING,
     process_worker=_MISSING,
+    in_body=_MISSING,
 ):
     """Install an execution position and restore it on exit.
 
@@ -224,6 +244,7 @@ def execution_scope(
         (run_token, set_run_attempt_token, reset_run_attempt_token),
         (worker, set_in_worker, reset_in_worker),
         (process_worker, set_in_process_worker, reset_in_process_worker),
+        (in_body, set_in_node_body, reset_in_node_body),
     )
     try:
         for value, setter, resetter in values:

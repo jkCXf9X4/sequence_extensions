@@ -2,7 +2,7 @@
 
 A node tree is one run and one log.  A submitted composite frees its worker
 by returning a future; ``gather`` combines several futures; a blocking
-``.result()`` inside a worker is rejected instead of deadlocking.  Composite
+``.result()`` inside a node body is rejected instead of deadlocking.  Composite
 retry/timeout policy applies to the returned future as a whole.
 """
 
@@ -178,7 +178,7 @@ def test_inline_fanout_result_is_rejected_on_a_worker(tmp_path):
     def root():
         return outer.submit()
 
-    with pytest.raises(RuntimeError, match="incomplete future inside a pool worker"):
+    with pytest.raises(RuntimeError, match="incomplete future inside a node body"):
         execute_flow(root, options=RunOptions(log=tmp_path, max_workers=1))
 
 

@@ -510,7 +510,7 @@ def test_diff_accepts_paths_and_record_lists(tmp_path):
 # Real runs: the toolkit over logs the engine actually wrote
 # ---------------------------------------------------------------- #
 def _run_campaign(runs_dir, *, fail_first=False):
-    from sequence_extensions.flow import RunOptions, execute_flow, node
+    from sequence_extensions.flow import RunOptions, execute_flow, gather, node
 
     seen = {}
 
@@ -529,7 +529,7 @@ def _run_campaign(runs_dir, *, fail_first=False):
     @node
     def mini(items):
         firsts = [stage.submit(x) for x in items]
-        return [combine.submit(f, 10).result() for f in firsts]
+        return gather([combine.submit(f, 10) for f in firsts])
 
     run = execute_flow(
         mini, [1, 2, 3], options=RunOptions(log=str(runs_dir), name="mini")

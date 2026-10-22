@@ -38,7 +38,7 @@ The flow layer (`sequence_extensions.flow`) is the audit-first engine, built on 
 - Run retries: one run file per attempt; the raised exception carries the last attempt's `Run`.
 - Run timeout: bounds the whole attempt; on expiry the run's pool is cancelled, the log is abandoned, `run_end` records `timeout`, and `NodeTimeoutError` is raised.
 - Edges: futures (graph or plain) passed as submit arguments resolve to results before the body runs.  General DAGs; cycles raise `ValueError` at submit.
-- Futures first: a node may return a value or a future; the attempt record, retry, and timeout settle on completion.  A worker may submit; it returns the future and does not wait.  `.result()` on an incomplete future in a worker raises with guidance.  `gather` combines futures in order.
+- Futures first: a node may return a value or a future; the attempt record, retry, and timeout settle on completion.  A node body may submit; it returns the future and does not wait.  `.result()` on an incomplete future inside a node body (root or worker) raises with guidance.  `gather` combines futures in order.
 - Serialization: paths log as path plus sha256; `summary=True` logs counts, not items.
 - A `BaseException` from a node body is wrapped to `RuntimeError` — `GraphFuture` carries `Exception`s only, and the node must settle.
 - Settle-time records (replayed process records, skip records) are written by the run thread before `run_end`, never from done-callbacks: `set_result` wakes drain waiters before callbacks finish, so a callback-side write could race the log closing.
