@@ -218,6 +218,22 @@ def test_process_pool_dependency_and_skip_record(tmp_path):
     assert skip["reason"] == "dependency failed"
 
 
+def test_process_pool_gather_template_crosses_the_boundary(tmp_path):
+    """The gather template is dispatched too, so it must pickle."""
+    pool = ProcessGraphPool(max_workers=2)
+
+    @node
+    def root():
+        return gather(
+            {"a": _plain.submit(1), "b": [_plain.submit(2), {"c": _plain.submit(3)}]}
+        )
+
+    with pool:
+        run = execute_flow(root, options=RunOptions(pool=pool, log=tmp_path))
+
+    assert run.result == {"a": 2, "b": [4, {"c": 6}]}
+
+
 # ---------------------------------------------------------------- #
 # Dispatch failure and timeout
 # ---------------------------------------------------------------- #

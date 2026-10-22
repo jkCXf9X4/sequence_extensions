@@ -54,9 +54,9 @@ The composition release: one `@node` primitive and an explicit
   `.submit()` and return the terminal future; the attempt record, retry,
   and timeout settle when it completes.  A graph may depend on plain
   `concurrent.futures.Future` values too.
-- **`gather(futures)`** — one future resolving to results in order,
-  without a `.result()` wait; accepts an iterable, a single future, or
-  empty input.
+- **`gather(value)`** — one future resolving every future inside `value`
+  without a `.result()` wait, shape preserved (dicts, nested lists,
+  tuples, sets); a bare future gives a one-element list.
 - **`FlowFuture` / `FlowOutcome`** — the submitted-node future and the
   deferred outcome a worker-side direct call returns; both are exported
   from `sequence_extensions.flow`.

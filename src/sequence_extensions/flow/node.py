@@ -144,22 +144,83 @@ class FlowFuture(GraphFuture):
         return super().result(timeout=timeout)
 
 
-def _collect_results(*results):
-    return list(results)
+class _Slot:
+    """Template marker: fill me from ``values[index]``."""
+
+    __slots__ = ("index",)
+
+    def __init__(self, index):
+        self.index = index
+
+    def __reduce__(self):
+        """Pickle transport for process pools (the template is dispatched)."""
+        return (_make_slot, (self.index,))
 
 
-def gather(futures):
-    """Return a future resolving to the results of ``futures`` in order.
+def _make_slot(index):
+    return _Slot(index)
 
-    ``futures`` may be an iterable of futures or a single future.  The
-    result is a :class:`FlowFuture`, so it can be returned from a node or
-    passed as a dependency to :meth:`NodeFunction.submit`.
+
+def _plan(value, items):
+    """Template for ``value``: futures become slots, containers keep shape.
+
+    Futures are collected into ``items`` in traversal order, which is the
+    order of the collect node's dependencies (and therefore of ``values``
+    in :func:`_fill`).
     """
-    if isinstance(futures, (GraphFuture, concurrent.futures.Future)):
-        items = (futures,)
+    if _is_future(value):
+        items.append(value)
+        return _Slot(len(items) - 1)
+    if isinstance(value, dict):
+        return {key: _plan(item, items) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_plan(item, items) for item in value]
+    if isinstance(value, tuple):
+        planned = [_plan(item, items) for item in value]
+        return type(value)(*planned) if hasattr(value, "_fields") else tuple(planned)
+    if isinstance(value, (set, frozenset)):
+        return type(value)(_plan(item, items) for item in value)
+    return value
+
+
+def _fill(template, values):
+    """Inverse of :func:`_plan`: rebuild the shape, slots become results."""
+    if isinstance(template, _Slot):
+        return values[template.index]
+    if isinstance(template, dict):
+        return {key: _fill(item, values) for key, item in template.items()}
+    if isinstance(template, list):
+        return [_fill(item, values) for item in template]
+    if isinstance(template, tuple):
+        filled = [_fill(item, values) for item in template]
+        return type(template)(*filled) if hasattr(template, "_fields") else tuple(filled)
+    if isinstance(template, (set, frozenset)):
+        return type(template)(_fill(item, values) for item in template)
+    return template
+
+
+def _collect_structural(template, *values):
+    return _fill(template, values)
+
+
+def gather(value):
+    """Return a future for ``value`` with its futures replaced by results.
+
+    Containers keep their shape, at any depth: ``{"a": submit(1)}``
+    resolves to ``{"a": 1}``, a nested list stays a list, and a tuple or
+    set stays a tuple or set.  Only values are resolved (dict keys are
+    kept as-is).  A bare future resolves to a one-element list, and any
+    other iterable is materialized into a list.  The result is a
+    :class:`FlowFuture`, so it can be returned from a node or passed as a
+    dependency to :meth:`NodeFunction.submit`.
+    """
+    if _is_future(value):
+        future = FlowFuture(_collect_structural, [_Slot(0)], value)
     else:
-        items = tuple(futures)
-    future = FlowFuture(_collect_results, *items)
+        if not isinstance(value, (list, tuple, dict, set, frozenset)):
+            value = list(value)
+        items = []
+        future = FlowFuture(_collect_structural, _plan(value, items), *items)
     future.set_name("gather")
     return future
 

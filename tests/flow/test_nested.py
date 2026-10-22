@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import namedtuple
 
 import pytest
 
@@ -136,6 +137,66 @@ def test_gather_empty_and_generator_forms(tmp_path):
 
     assert execute_flow(empty, options=RunOptions(log=None)).result == []
     assert execute_flow(generated, options=RunOptions(log=None)).result == [0, 1, 2]
+
+
+def test_gather_preserves_container_shape(tmp_path):
+    pair = namedtuple("pair", "left right")
+
+    @node
+    def leaf(x):
+        return x * 2
+
+    @node
+    def shaped():
+        one = leaf.submit(1)
+        return gather(
+            {
+                "list": [one, leaf.submit(2)],
+                "nested": {"dict": {"leaf": leaf.submit(3)}},
+                "tuple": (leaf.submit(4),),
+                "set": {leaf.submit(5)},
+                "frozenset": frozenset({leaf.submit(6)}),
+                "pair": pair(one, leaf.submit(7)),
+                "mixed": {"kept": "text", "leaf": leaf.submit(8)},
+            }
+        )
+
+    result = execute_flow(shaped, options=RunOptions(log=tmp_path)).result
+    assert result == {
+        "list": [2, 4],
+        "nested": {"dict": {"leaf": 6}},
+        "tuple": (8,),
+        "set": {10},
+        "frozenset": frozenset({12}),
+        "pair": pair(2, 14),
+        "mixed": {"kept": "text", "leaf": 16},
+    }
+    assert isinstance(result["tuple"], tuple)
+    assert isinstance(result["set"], set)
+    assert isinstance(result["frozenset"], frozenset)
+    assert type(result["pair"]) is pair
+
+
+def test_gather_structure_is_a_dependency_edge(tmp_path):
+    @node
+    def leaf(x):
+        return x + 1
+
+    @node
+    def merge(values):
+        return values["first"], values["rest"]
+
+    @node
+    def root():
+        return merge.submit(gather({"first": leaf.submit(1), "rest": [leaf.submit(2)]}))
+
+    run = execute_flow(root, options=RunOptions(log=tmp_path))
+    assert run.result == (2, [3])
+
+    records = _node_records(run.log)
+    merge_record = next(r for r in records if r["node"] == "merge")
+    assert merge_record["result"] == [2, [3]]
+    assert len([r for r in records if r["node"] == "leaf"]) == 2
 
 
 def test_merge_node_depends_on_gather(tmp_path):

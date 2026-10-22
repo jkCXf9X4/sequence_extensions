@@ -73,7 +73,7 @@ __version__ = "3.0.0"
 | `GraphPool` | Thread pool that evaluates a `GraphFuture` graph |
 | `KeyValueTuple` | `NamedTuple` with `.key` and `.value` attributes |
 | `node` | Decorator: retry, backoff, and timeout policy around a function; `.submit()` |
-| `gather` | One future resolving to the results of several futures, in order |
+| `gather` | One future for a value with every future replaced by its result; container shape preserved |
 | `execute_flow` | Open a top-level run around a root node and return a `Run` |
 | `Run` | One run's account: result, identity, status, log, duration, error |
 | `RunOptions` | Per-run options (pool, log, summary, fixed clock, retries, node defaults) |
@@ -1005,7 +1005,7 @@ def simulate(case): ...
 - Futures passed as arguments become dependency edges; plain `concurrent.futures.Future` values are dependencies too. Cycles raise at submit time.
 - `.submit()` is legal in the driver and in a pool worker. It does not block: it returns a future and frees the worker.
 - A node may return a value or a future. A returned future (`submit()` or `gather(...)`) is awaited by that node's attempt; the worker is freed. `.result()` on an incomplete future inside a node body (root or worker) raises `RuntimeError` with guidance instead of deadlocking. The guard covers `FlowFuture`/`FlowOutcome`: `.future.result()`, `.exception()`, `wait`/`as_completed`, plain futures, and threads a body starts itself are not inspected — blocking is rejected where the engine's own waiting API is used.
-- `gather(futures)` returns one future resolving to the results in order. It accepts an iterable, a single future, or empty input (`[]`). Return it from a node or pass it as a dependency (`merge.submit(gather(evals))`). A node should not return a list/dict containing futures; wrap it with `gather`.
+- `gather(value)` returns one future for `value` with its futures replaced by their results. Containers keep their shape at any depth — `{"a": submit(1)}` resolves to `{"a": 1}`; lists, tuples, dicts, sets and namedtuples included, and dict keys are kept as-is. A bare future resolves to a one-element list, any other iterable to a list, and `[]` is accepted. Return it from a node or pass it as a dependency (`merge.submit(gather(evals))`). A node should not return a list/dict containing futures; wrap it with `gather`.
 - A node body that calls/submits other nodes is a composite; there is no separate decorator and no separate run. Nested nodes share the run's pool and log; `path` and `parent_attempt` record the tree, and the composite's `retries`/`timeout` apply to the returned future as a whole — a retry re-runs the body (hence its subtree) with a new `parent_attempt`.
 - A `BaseException` (`SystemExit`, `KeyboardInterrupt`) from a node body is recorded and re-raised wrapped in `RuntimeError`.
 - Unset keywords resolve from the active run's `RunOptions.node_defaults`, then the built-in default; an explicit keyword always wins.

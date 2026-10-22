@@ -8,7 +8,8 @@ directly on :mod:`sequence_extensions.graph.graph_future` — futures passed
 as submit arguments become dependency edges, so runs express general DAGs.
 
 A node may return a value or a future.  Future-returning bodies fan out
-without blocking; ``gather`` combines several futures into one.
+without blocking; ``gather`` resolves the futures inside a value and keeps
+its shape.
 ``execute_flow`` is the top-level boundary: it waits once, on the driver,
 and materializes the result.
 
