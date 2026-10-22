@@ -57,8 +57,9 @@ from sequence_extensions.flow._context import (
     execution_scope,
     in_process_worker,
 )
+from sequence_extensions.flow._futures import NodeTimeoutError
 from sequence_extensions.flow._options import RunOptions
-from sequence_extensions.flow.node import NodeFunction, NodeTimeoutError
+from sequence_extensions.flow.node import NodeFunction
 from sequence_extensions.flow.process_pool import ProcessDispatchError
 from sequence_extensions.flow.runlog import RunLog, jsonable
 from sequence_extensions.graph.graph_future import GraphPool

@@ -21,6 +21,7 @@ The flow layer (`sequence_extensions.flow`) is the audit-first engine, built on 
 - `runlog` writes one record per event: `run_start`, one per node attempt, `run_end`.  Schema 2 carries `path` (the node-name chain) and `parent_attempt`.  `fixed_clock` reference mode (`CP-029`, `DR-016`) is root-only and rejects run-level retries; it buffers and flushes at close — pinned timing, constant worker, canonical record and nested-key order, strict JSON — for byte-identical reference files.  A fixed path is exclusive; POSIX adds a process-level lock.
 - `_context` carries the run, node path, parent attempt, attempt token (with its ancestor chain), and worker markers in `ContextVar`s; workers and deferred-attempt callbacks restore them — `ContextVar` values do not cross threads on their own.
 - `process_pool` — `ProcessGraphPool`, a `GraphPool` subclass on a `ProcessPoolExecutor` (`CP-022`): same bind/result/exit surface, worker processes instead of threads.
+- Internal seams: `_futures` (deferred result types), `_gather` (container planning), `_attempt` (the attempt loop), `_serialize` (JSON policy), `_diff` (semantic comparison).  The public `flow` surface is unchanged.
 
 ## Run options (`DR-015`, `CP-026`, 3.0 revision)
 

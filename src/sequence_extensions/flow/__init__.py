@@ -31,6 +31,8 @@ Typical shape::
 """
 
 from sequence_extensions.flow._context import RunContext, current_run
+from sequence_extensions.flow._futures import FlowFuture, FlowOutcome, NodeTimeoutError
+from sequence_extensions.flow._gather import gather
 from sequence_extensions.flow._options import (
     DEFAULT_LOG_DIR,
     DEFAULT_MAX_WORKERS,
@@ -39,14 +41,7 @@ from sequence_extensions.flow._options import (
     RunOptions,
     validate_node_policy,
 )
-from sequence_extensions.flow.node import (
-    FlowFuture,
-    FlowOutcome,
-    NodeFunction,
-    NodeTimeoutError,
-    gather,
-    node,
-)
+from sequence_extensions.flow.node import NodeFunction, node
 from sequence_extensions.flow.process_pool import ProcessDispatchError, ProcessGraphPool
 from sequence_extensions.flow.run import Run, execute_flow
 from sequence_extensions.flow.runlog import DIFF_EXCLUDE, SCHEMA_VERSION, RunLog, jsonable

@@ -35,17 +35,13 @@ pinned (:data:`FIXED_CLOCK`, ``duration_ms`` 0) and workers constant
 
 from __future__ import annotations
 
-import hashlib
 import json
-import math
 import os
-import stat
 import threading
-from datetime import datetime
 from pathlib import Path
-from typing import Any
 
-from sequence_extensions.graph.graph_future import GraphFuture
+from sequence_extensions.flow._diff import _diff_records, _path_of
+from sequence_extensions.flow._serialize import _canon, _json_bytes, _sort_nested, jsonable
 
 try:  # POSIX advisory locks for fixed-clock reference files
     import fcntl
@@ -55,12 +51,14 @@ except ImportError:  # pragma: no cover - Windows
 #: Bumped whenever the record format changes in a way readers must know about.
 SCHEMA_VERSION = 2
 
-#: Containers longer than this are replaced by a count in summary mode.
-_SUMMARY_CONTAINER_LIMIT = 8
-
-#: Recursion guard for ``jsonable`` and ``_contains_future``.  A deeper
-#: container is described by a marker instead of exhausting the stack.
-_MAX_JSON_DEPTH = 200
+__all__ = [
+    "DIFF_EXCLUDE",
+    "FIXED_CLOCK",
+    "FIXED_WORKER",
+    "SCHEMA_VERSION",
+    "RunLog",
+    "jsonable",
+]
 
 #: Fixed-clock runs own one path per node name.  The in-process registry makes
 #: a second concurrent writer fail loudly instead of truncating the first log;
@@ -158,169 +156,6 @@ def _canonical_order(item) -> tuple:
     )
 
 
-def _file_sha256(path: Path):
-    """Hex sha256 of a regular file's contents, or None if it cannot be read.
-
-    Only regular files are opened: a directory, FIFO, device, or socket logs
-    as a path with no hash instead of blocking or raising.
-    """
-    try:
-        mode = path.stat().st_mode
-    except OSError:
-        return None
-    if not stat.S_ISREG(mode):
-        return None
-    digest = hashlib.sha256()
-    try:
-        with open(path, "rb") as fh:
-            for chunk in iter(lambda: fh.read(65536), b""):
-                digest.update(chunk)
-    except OSError:
-        return None
-    return digest.hexdigest()
-
-
-def _stable_set_items(value, *, summary: bool) -> list:
-    """Deterministic order for a set's JSONable items.
-
-    Homogeneous, orderable sets keep their natural sorted order.  Mixed or
-    otherwise unorderable sets are ordered by type name and canonical JSON, so
-    the same set serializes the same way in every process (hash seed
-    independent).
-    """
-    try:
-        return [jsonable(item, summary=summary) for item in sorted(value)]
-    except TypeError:
-        items = [jsonable(item, summary=summary) for item in value]
-        items.sort(key=lambda item: (type(item).__name__, _canon(item)))
-        return items
-
-
-def _dict_key(key: Any, used: dict) -> str:
-    """A printable, collision-free dict key for the log.
-
-    String keys are kept as-is.  A later key whose string form is already used
-    gets a deterministic ``#<type>#<n>`` suffix, so no entry is silently lost.
-    """
-    try:
-        base = str(key)
-    except Exception:
-        base = f"<unprintable {type(key).__name__}>"
-    if base not in used:
-        return base
-    tag = type(key).__name__
-    candidate = f"{base}#{tag}"
-    n = 2
-    while candidate in used:
-        candidate = f"{base}#{tag}#{n}"
-        n += 1
-    return candidate
-
-
-def jsonable(value: Any, *, summary: bool = False, _seen=None, _depth: int = 0) -> Any:
-    """Convert a value to a JSON-serializable structure.
-
-    * primitives pass through unchanged; non-finite floats become
-      ``{"float": "nan" | "inf" | "-inf"}`` so the log stays strict JSON
-    * :class:`~pathlib.Path` -> ``{"path": ..., "sha256": ...}`` (hash only
-      for a readable regular file)
-    * ``datetime`` -> ISO 8601 string (as-is, no timezone guessing)
-    * ``bytes`` -> ``{"len": n, "sha256": ...}``
-    * ``set`` -> sorted list (items converted), deterministic for mixed types
-    * :class:`~sequence_extensions.graph.GraphFuture` -> ``{"node": name,
-      "done": bool}``
-    * a self-referential container -> ``{"type": ..., "cycle": true}``
-    * a container deeper than ``_MAX_JSON_DEPTH`` -> ``{"type": ...,
-      "depth_exceeded": true}``
-    * anything else JSON does not know -> ``str(value)`` (an unprintable
-      object is described, never allowed to break the log)
-
-    In ``summary`` mode, containers longer than
-    ``_SUMMARY_CONTAINER_LIMIT`` items are replaced by
-    ``{"type": ..., "len": ...}`` — item counts, not items.
-    """
-    if value is None or isinstance(value, (str, int, bool)):
-        return value
-    if isinstance(value, float):
-        if math.isnan(value):
-            return {"float": "nan"}
-        if math.isinf(value):
-            return {"float": "inf" if value > 0 else "-inf"}
-        return value
-    if isinstance(value, Path):
-        return {"path": str(value), "sha256": _file_sha256(value)}
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, (bytes, bytearray)):
-        return {"len": len(value), "sha256": hashlib.sha256(bytes(value)).hexdigest()}
-    if isinstance(value, (list, tuple, dict, set, frozenset)):
-        if _depth >= _MAX_JSON_DEPTH:
-            return {"type": type(value).__name__, "depth_exceeded": True}
-        if _seen is None:
-            _seen = set()
-        marker = id(value)
-        if marker in _seen:
-            return {"type": type(value).__name__, "cycle": True}
-        _seen.add(marker)
-        try:
-            if isinstance(value, (list, tuple)):
-                if summary and len(value) > _SUMMARY_CONTAINER_LIMIT:
-                    return {"type": type(value).__name__, "len": len(value)}
-                return [
-                    jsonable(item, summary=summary, _seen=_seen, _depth=_depth + 1)
-                    for item in value
-                ]
-            if isinstance(value, (set, frozenset)):
-                if summary and len(value) > _SUMMARY_CONTAINER_LIMIT:
-                    return {"type": type(value).__name__, "len": len(value)}
-                return _stable_set_items(value, summary=summary)
-            if summary and len(value) > _SUMMARY_CONTAINER_LIMIT:
-                return {"type": "dict", "len": len(value)}
-            out = {}
-            for key, item in value.items():
-                out[_dict_key(key, out)] = jsonable(
-                    item, summary=summary, _seen=_seen, _depth=_depth + 1
-                )
-            return out
-        finally:
-            _seen.discard(marker)
-    if isinstance(value, GraphFuture):
-        return {"node": value.name, "done": value.done()}
-    try:
-        return str(value)
-    except Exception:
-        return f"<unprintable {type(value).__name__}>"
-
-
-def _sort_nested(value):
-    """Recursively sort mapping keys; lists keep order.
-
-    Used by reference mode so a result dict built from a set (or any other
-    hash-order source) serializes with the same key order in every process.
-    """
-    if isinstance(value, dict):
-        return {
-            key: _sort_nested(item)
-            for key, item in sorted(
-                value.items(), key=lambda pair: (type(pair[0]).__name__, str(pair[0]))
-            )
-        }
-    if isinstance(value, (list, tuple)):
-        return [_sort_nested(item) for item in value]
-    return value
-
-
-def _json_bytes(line: dict) -> bytes:
-    """Strict-JSON line bytes, UTF-8 even for lone surrogates.
-
-    ``ensure_ascii=False`` keeps readable Unicode; ``backslashreplace`` turns
-    an unencodable surrogate into the JSON escape ``\\udXXX`` instead of
-    raising.  ``allow_nan=False`` enforces strict JSON.
-    """
-    text = json.dumps(line, default=str, ensure_ascii=False, allow_nan=False)
-    return (text + "\n").encode("utf-8", "backslashreplace")
-
-
 def _as_records(source) -> list:
     """A log path (``str`` / ``Path``) is read via ``RunLog.records``; a
     list or tuple of records passes through as a list."""
@@ -329,112 +164,6 @@ def _as_records(source) -> list:
     if isinstance(source, (list, tuple)):
         return list(source)
     raise TypeError(f"expected a log path or a record list, got {type(source).__name__}")
-
-
-def _drop_future_done(value):
-    """Recursively drop ``done`` from future-shaped dicts.
-
-    ``jsonable`` gives a :class:`~sequence_extensions.graph.GraphFuture`
-    the shape ``{"node": ..., "done": ...}``; the done-snapshot is a
-    serialization-time accident, not an execution fact, so diff must
-    not see it.
-    """
-    if isinstance(value, dict):
-        out = {k: _drop_future_done(v) for k, v in value.items()}
-        if "done" in out and "node" in out:
-            out.pop("done")
-        return out
-    if isinstance(value, list):
-        return [_drop_future_done(v) for v in value]
-    return value
-
-
-def _canon(value) -> str:
-    """Canonical string of a jsonable value (sort-keys JSON)."""
-    return json.dumps(value, sort_keys=True, default=str)
-
-
-def _path_of(rec) -> tuple:
-    """The node-name path of a record, as a hashable tuple."""
-    path = rec.get("path")
-    if isinstance(path, (list, tuple)) and path:
-        return tuple(str(item) for item in path)
-    node = rec.get("node")
-    return (str(node),) if node is not None else ()
-
-
-def _diff_identity(rec) -> tuple:
-    """The identity of a record for comparison.
-
-    Node records: (path, parent attempt, attempt, args, kwargs) — an
-    attempt is what ran, where in the node tree, on which inputs, for the
-    which time, so a fan-out (many attempts of one node) compares case by
-    case and a retried composite's re-executed descendants stay distinct.
-    Run records: their kind (one per run).  Never the record's position.
-    """
-    if rec.get("record") == "node":
-        parent_attempt = rec.get("parent_attempt")
-        parent_attempt = parent_attempt if isinstance(parent_attempt, int) else -1
-        attempt = rec.get("attempt")
-        attempt = attempt if isinstance(attempt, int) else -1
-        return (
-            "node",
-            _path_of(rec),
-            parent_attempt,
-            attempt,
-            _canon(rec.get("args")),
-            _canon(rec.get("kwargs")),
-        )
-    return (str(rec.get("record")),)
-
-
-def _identity_out(key) -> dict:
-    """The jsonable, printable form of a diff identity.
-
-    ``occurrence`` distinguishes repeated executions that share path, attempt,
-    and inputs.  It is omitted for the first occurrence, so reports for
-    ordinary (unique) records keep their historical shape.
-    """
-    if key[0] == "node":
-        path = list(key[1])
-        out = {
-            "record": "node",
-            "node": path[-1] if path else None,
-            "path": path,
-            "parent_attempt": key[2],
-            "attempt": key[3],
-            "args": json.loads(key[4]),
-            "kwargs": json.loads(key[5]),
-        }
-        occurrence = key[6] if len(key) > 6 else 0
-    else:
-        out = {"record": key[0]}
-        occurrence = key[1] if len(key) > 1 else 0
-    if occurrence:
-        out["occurrence"] = occurrence
-    return out
-
-
-def _diff_side(records, exclude) -> dict:
-    """One side of a comparison: ``{identity: normalized record}``.
-
-    Excluded fields are dropped and future ``done`` snapshots ignored
-    before the identity is taken, so both come from the same
-    normalization.  Repeated executions with the same identity are kept as a
-    multiset: each record gets an ``occurrence`` index, assigned after a
-    deterministic sort of the group.  A changed fan-out count therefore shows
-    up as extra/missing occurrences instead of being collapsed.
-    """
-    groups: dict[tuple, list] = {}
-    for rec in records:
-        normalized = _drop_future_done({f: v for f, v in rec.items() if f not in exclude})
-        groups.setdefault(_diff_identity(normalized), []).append(normalized)
-    side = {}
-    for base, group in groups.items():
-        group.sort(key=_canon)
-        for occurrence, record in enumerate(group):
-            side[base + (occurrence,)] = record
-    return side
 
 
 class RunLog:
@@ -682,29 +411,3 @@ class RunLog:
         left_recs = _as_records(left)
         right_recs = _as_records(right)
         return _diff_records(left_recs, right_recs, exclude)
-
-
-def _diff_records(left_records, right_records, exclude) -> dict:
-    """The flat comparison of two record lists."""
-    left_side = _diff_side(left_records, exclude)
-    right_side = _diff_side(right_records, exclude)
-    only_left = sorted(left_side.keys() - right_side.keys())
-    only_right = sorted(right_side.keys() - left_side.keys())
-    changed = []
-    for key in sorted(left_side.keys() & right_side.keys()):
-        lrec, rrec = left_side[key], right_side[key]
-        differing = {}
-        for field in sorted(set(lrec) | set(rrec)):
-            if lrec.get(field) != rrec.get(field):
-                differing[field] = {
-                    "left": lrec.get(field),
-                    "right": rrec.get(field),
-                }
-        if differing:
-            changed.append({**_identity_out(key), "fields": differing})
-    return {
-        "equal": not (only_left or only_right or changed),
-        "only_left": [_identity_out(k) for k in only_left],
-        "only_right": [_identity_out(k) for k in only_right],
-        "changed": changed,
-    }

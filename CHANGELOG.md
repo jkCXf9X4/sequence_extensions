@@ -60,6 +60,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`RunLog.filter`** documents that `node=...` also matches `run_start`; pass
   `record="node"` for attempts only.
 
+### Internal
+
+- Split `flow.node` into `flow._futures` (deferred results), `flow._gather`
+  (container planning), and `flow._attempt` (the attempt loop); split
+  `flow.runlog` into `flow._serialize` and `flow._diff`.  The public `flow`
+  surface and behavior are unchanged.
+
 ### Documentation
 
 - `INFO-014` records every stress finding, disposition, and regression test.

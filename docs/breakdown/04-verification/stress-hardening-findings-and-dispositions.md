@@ -46,7 +46,7 @@ The release decision is `DR-019`.
 
 ## Verification
 
-- `pytest` - 398 passed; coverage 92.7%.
+- `pytest` - 398 passed; coverage 92.8%.
 - `pytest tests/flow/test_hardening.py` - 40 regressions.
 - `ruff check src tests` - clean.
 - `UPDATE_REF=1 pytest tests/e2e` - reference logs regenerated for D1/D5.

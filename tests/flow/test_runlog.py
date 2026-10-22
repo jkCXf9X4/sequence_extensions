@@ -9,8 +9,8 @@ from datetime import datetime
 
 import pytest
 
+from sequence_extensions.flow._serialize import _SUMMARY_CONTAINER_LIMIT
 from sequence_extensions.flow.runlog import (
-    _SUMMARY_CONTAINER_LIMIT,
     FIXED_CLOCK,
     FIXED_WORKER,
     SCHEMA_VERSION,

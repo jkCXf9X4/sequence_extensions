@@ -27,10 +27,15 @@ The package decomposes into three subpackages plus one standalone CLI with a str
 
 ## `flow` — the audit-first engine
 
-- **`node`** — `@node` decorator and `NodeFunction`: attempt loop (retry, backoff), per-attempt timeout, `submit()`, `NodeTimeoutError`; `__node__` marker.
+- **`node`** — `@node` decorator and `NodeFunction`: policy resolution, `submit()`, `__node__` marker, process alias.
+- **`_futures`** — `FlowOutcome`, `FlowFuture`, `NodeTimeoutError`: deferred results, the blocking guard, and pickle transport.
+- **`_gather`** — `gather`: template planning and filling; cycle/depth guards; mapping and tuple-subclass shapes.
+- **`_attempt`** — `_AttemptRunner`: one iterative attempt loop (retry, backoff, per-attempt timeout), settlement, logging, and future fan-out.
 - **`run`** — `execute_flow(node, ..., options=RunOptions(...))`: top-level run identity, owned or caller-supplied pool, drain, failure/retry/timeout handling, `Run`.
 - **`_options`** — `RunOptions` (per-call run knobs), `NodePolicy` (per-run node defaults), `UNSET`, validation and resolution.
-- **`runlog`** — `RunLog` JSON-lines writer (thread-safe, schema 2), reading toolkit (`filter`, `summarize`, `diff`), `jsonable` serialization policy, reference mode.
+- **`runlog`** — `RunLog` JSON-lines writer (thread-safe, schema 2), reading toolkit (`filter`, `summarize`, `diff`), reference mode.
+- **`_serialize`** — `jsonable` policy, strict JSON bytes, deterministic sets/nested keys, fixed clock constants.
+- **`_diff`** — diff identity, occurrence multiset, and record comparison.
 - **`_context`** — `RunContext` plus `ContextVar` plumbing: run, node path, parent attempt, attempt token, worker markers. Workers and attempt threads restore the context.
 - **`process_pool`** — `ProcessGraphPool`: a `GraphPool` subclass on a `ProcessPoolExecutor` (`CP-022`); workers buffer records, the parent replays them at settle time; process workers cannot submit or return live futures.
 

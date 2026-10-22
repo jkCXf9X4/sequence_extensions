@@ -16,10 +16,15 @@ sequence_extensions/
 ├── graph/      # the execution substrate
 │   └── graph_future.py # GraphFuture / GraphPool
 └── flow/       # the mini flow engine
-    ├── node.py       # @node (retries, backoff, timeout), NodeTimeoutError
+    ├── node.py       # @node, NodeFunction (policy, submit, process alias)
+    ├── _futures.py   # FlowOutcome, FlowFuture, NodeTimeoutError
+    ├── _gather.py    # gather template planning/filling
+    ├── _attempt.py   # _AttemptRunner: retry/backoff/timeout loop
     ├── run.py        # execute_flow, Run, RunOptions wiring
     ├── _options.py   # NodePolicy, RunOptions, UNSET, validation
-    ├── runlog.py     # RunLog JSON-lines writer, reading toolkit, jsonable
+    ├── runlog.py     # RunLog writer/reader, reference mode
+    ├── _serialize.py # jsonable, strict JSON bytes, deterministic keys
+    ├── _diff.py      # diff identity and occurrence multiset
     ├── process_pool.py # ProcessGraphPool, ProcessDispatchError
     └── _context.py   # RunContext + path/attempt/worker ContextVars
 ```
