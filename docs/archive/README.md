@@ -45,6 +45,8 @@ Records live in the cold-storage archive; extract one with `pb archive read <ID>
   Bulk workflow data flows through an opt-in ArtifactStore with minted addresses and an append-only manifest; the structured results-kwarg and blackboard options are rejected.
 - **DR-007** — Substrate reopen — pool-scoped cancellation and a public bind · accepted · 2026-10-14 · `DR-007`
   GraphPool.__exit__ cancels only the pool's own nodes (the global _LIVE_NODES sweep is removed) and GraphPool.bind(gf) becomes the public bind-without-results; the flow layer drops its private _bind_graph call
+- **DR-019** — Stress-hardening pass — fail-safe settlement, iterative retries, canonical logs · accepted · 2026-10-22 · `DR-019`
+  harden the engine against adversarial probes by settling every attempt, retrying iteratively, uniquely aliasing process nodes, canonicalizing strict logs, and counting repeated diff records
 
 ### Verification
 

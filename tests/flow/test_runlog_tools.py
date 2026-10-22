@@ -398,7 +398,7 @@ def test_diff_exclude_override_brings_timing_back():
     assert all("duration_ms" in c["fields"] for c in report["changed"])
 
 
-def test_diff_duplicate_identity_last_wins():
+def test_diff_duplicate_identity_is_not_collapsed():
     left = [
         _run_start("run-a"),
         _node(
@@ -437,12 +437,14 @@ def test_diff_duplicate_identity_last_wins():
         ),
         _run_end("run-b"),
     ]
-    assert RunLog.diff(left, right) == {
-        "equal": True,
-        "only_left": [],
-        "only_right": [],
-        "changed": [],
-    }
+    report = RunLog.diff(left, right)
+    assert report["equal"] is False
+    # The extra execution is an occurrence, not a position: the first copy
+    # keeps the historical shape and the repeat carries occurrence=1.
+    assert any(item.get("occurrence") == 1 for item in report["only_left"])
+    assert report["only_right"] == []
+    assert len(report["changed"]) == 1
+    assert report["changed"][0]["fields"]["status"] == {"left": "error", "right": "ok"}
 
 
 def test_diff_future_done_snapshot_is_ignored():

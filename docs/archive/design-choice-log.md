@@ -7,6 +7,7 @@ stream.
 
 | Date | ID | Decision | Layers | Status | Record |
 |---|---|---|---|---|---|
+| 2026-10-22 | DR-019 | Stress-hardening pass — fail-safe settlement, iterative retries, canonical logs | architecture, implementation, verification | accepted | `DR-019` |
 | 2026-10-21 | DR-018 | Compose with nodes, not nested runs | product, architecture, implementation, verification | accepted | `DR-018` |
 | 2026-10-21 | DR-017 | One node primitive and explicit runs | product, architecture, implementation, verification | accepted | `DR-017` |
 | 2026-10-19 | DR-016 | fixed_clock reference mode — byte-identical run logs for reference storage | product, architecture, implementation, verification | accepted | `DR-016` |

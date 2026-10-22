@@ -278,21 +278,22 @@ def campaign(cases_dir: Path, tolerance: float = 0.5) -> dict:
 
 
 run = execute_flow(campaign, Path("cases"), options=RunOptions(max_workers=16, log="runs"))
-run.result, run.run_id, run.status, run.log, run.duration_ms
+run.result, run.run_id, run.status, run.log, run.duration_ms, run.failed_nodes
 ```
 
 Semantics, in one list:
 
-- **`execute_flow(node, ...)` is the top-level run boundary.** It returns a `Run` (`result`, `run_id`, `node`, `status`, `log`, `duration_ms`, `attempt`, `started`, `ended`, `error`). A failure raises the node's exception with `.run` attached. Calling it inside an active run raises: a node composes nodes, it does not open a second run.
+- **`execute_flow(node, ...)` is the top-level run boundary.** It returns a `Run` (`result`, `run_id`, `node`, `status`, `log`, `duration_ms`, `attempt`, `started`, `ended`, `error`, `failed_nodes`). A failure raises the node's exception with `.run` attached. Calling it inside an active run raises: a node composes nodes, it does not open a second run.
 - **Plain call = sequential** (inline in the caller's thread: a value outside a body, a `FlowOutcome` to return inside one when the call cannot settle); **`.submit()` = concurrent** (the run's bounded pool, default 16 workers; `RunOptions(max_workers=...)`).
-- **Retries and timeouts are node attributes**: `retries=2` means up to three attempts; `timeout=30` bounds one attempt and raises `NodeTimeoutError`. Every attempt is one record in the log.
+- **Retries and timeouts are node attributes**: `retries=2` means up to three attempts; `timeout=30` bounds one attempt and raises `NodeTimeoutError`. Every attempt is one record in the log; zero-delay retries run in one iterative loop, never on the call stack.
 - **Futures as arguments are dependency edges** — any DAG shape, diamonds included; cycles raise at submit time.
 - **Return futures, don't block a body.** A node may return a value or a future. A returned future (`submit()` or `gather(...)`) is awaited by the node attempt; the worker is freed immediately. `.result()` on an incomplete future inside a node body — root body or pool worker — raises with guidance instead of deadlocking.
-- **`gather(...)` resolves futures in place** without a `.result()` wait and keeps the container shape: `gather({"evals": evals})` resolves to `{"evals": [...]}`, and dicts, nested lists, tuples, sets and namedtuples survive. A bare future becomes a one-element list, any other iterable a list, and `[]` is accepted. Pass the resulting future to a dependent node (`merge.submit(gather(evals))`) or return it. Return one future, never a list/dict of futures (that is rejected).
+- **`gather(...)` resolves futures in place** without a `.result()` wait and keeps the container shape: `gather({"evals": evals})` resolves to `{"evals": [...]}`, and dicts, nested lists, tuples, sets and namedtuples survive. Any other `Mapping` resolves to a plain dict; orderable tuple subclasses keep their type. A bare future becomes a one-element list, any other iterable a list, and `[]` is accepted. `gather` needs an active run. Pass the resulting future to a dependent node (`merge.submit(gather(evals))`) or return it. Return one future, never a list/dict of futures (that is rejected).
 - **Drain-on-return**: the run returns only after every submitted node settles. A failed run cancels its pending nodes (recorded `skipped`), waits for the running ones, and re-raises.
+- **Fire-and-forget failures are visible**: `run.failed_nodes` lists settled node paths with an exception, even when the root never gathered them; `run_end.failed_nodes` records the same list. `status` remains the root verdict.
 - **Nested nodes are one run and one log.** A composite is just a node that calls/submits other nodes. Node records carry `path` (the node-name chain) and `parent_attempt`; composite `retries`/`timeout` apply to the returned future as a whole. There are no child runs and no second log.
 - **The run log** (default `runs/<run_id>.jsonl`) records `run_start`, every node attempt (`ok` / `error` / `timeout` / `skipped`), and `run_end`. Paths log as path plus sha256 — bulky payloads return a `Path` by convention and never bloat the log.
-- **Read it back**: `RunLog.records(path)`, `RunLog.filter(...)`, `RunLog.summarize(path)`, and `RunLog.diff(a, b)` — record order, wall-clock, and worker identity never count as differences.
+- **Read it back**: `RunLog.records(path)`, `RunLog.filter(...)`, `RunLog.summarize(path)`, and `RunLog.diff(a, b)` — record order, wall-clock, and worker identity never count as differences. Repeated identical executions are counted as a multiset (`occurrence`).
 - **Concurrent runs are safe in one process** — pool exit cancels only that pool's own nodes. CPU-bound campaigns swap threads for processes:
 
 ```python
@@ -302,7 +303,7 @@ with ProcessGraphPool() as pool:  # worker processes instead of threads
     run = execute_flow(campaign, cases_dir, options=RunOptions(pool=pool))
 ```
 
-Nodes and arguments must be picklable (module-level functions, plain data); attempt records are buffered by the worker and replayed by the run, so the log is still complete on return. An unpicklable payload surfaces as `ProcessDispatchError` with a `skipped` / `dispatch failed` record. The root node body runs on the driver; that is where process-mode fan-out is built. A body already running inside a process worker cannot submit or return a live future, and `execute_flow` inside a process worker is rejected in 3.0.
+Nodes and arguments must be picklable (module-level functions, plain data); each decorated function gets a unique private pickle alias, so lambdas and factory closures do not collide. Attempt records are buffered by the worker and replayed by the run, so the log is still complete on return. An unpicklable payload surfaces as `ProcessDispatchError` with a `skipped` / `dispatch failed` record. The root node body runs on the driver; that is where process-mode fan-out is built. A body already running inside a process worker cannot submit or return a live future, and `execute_flow` inside a process worker is rejected in 3.0.
 
 Two examples of the log's shape (from the acceptance test's campaign — six cases, one flaky):
 
@@ -341,7 +342,7 @@ run = execute_flow(
 
 Resolution is **explicit `@node` keyword > `RunOptions.node_defaults` > built-in default**.
 
-`fixed_clock = true` opts a run into **reference mode**: the run executes as if on a frozen clock, so an identical run produces a byte-identical log. The run id pins to `<node>-fixed` (the log file overwrites itself instead of accumulating), every engine-written timestamp becomes `1970-01-01T00:00:00+00:00`, `duration_ms` becomes `0`, the `worker` field becomes constant, and records are written in canonical order — `run_start`, nodes by path/parent attempt/attempt/inputs, `run_end`. Root-level run retries are rejected with `fixed_clock` (one reference execution per file). Built for storing run logs as reference files (golden files in git) without timestamp churn; the trade is that the file holds nothing until the run returns.
+`fixed_clock = true` opts a run into **reference mode**: the run executes as if on a frozen clock, so an identical run produces a byte-identical log. The run id pins to `<node>-fixed` (a sequential run overwrites the same file instead of accumulating), every engine-written timestamp becomes `1970-01-01T00:00:00+00:00`, `duration_ms` becomes `0`, the `worker` field becomes constant, and records are written in canonical order — `run_start`, nodes by path/parent attempt/attempt/inputs, `run_end` — with nested mapping keys sorted and strict JSON. Root-level run retries are rejected with `fixed_clock` (one reference execution per file), and a fixed path is exclusive: a second concurrent writer raises (POSIX adds a process-level lock). Built for storing run logs as reference files (golden files in git) without timestamp churn; the trade is that the file holds nothing until the run returns.
 
 ## flow-runner
 
@@ -418,7 +419,7 @@ configs/
 - **The log is the artifact**: `[run] log` puts the JSON-lines file where the pipeline collects it; the account line (status, duration, log path) names it.
 - **Look before you run**: `--list` shows the nodes in the module with their docstrings; `--flow NAME` overrides the selection.
 - **Varying inputs per invocation** means one TOML per variant — inputs come from the file, there is no `--set` flag.
-- **Store logs as golden files**: `fixed_clock = true` in `[run]` makes an identical run produce a byte-identical log (pinned run id, pinned timing, canonical record order) — commit it, and re-running the pipeline leaves git clean.
+- **Store logs as golden files**: `fixed_clock = true` in `[run]` makes an identical run produce a byte-identical log (pinned run id, pinned timing, canonical record and nested-key order, strict JSON) — commit it, and re-running the pipeline leaves git clean. Fixed runs are exclusive, so generate reference files sequentially.
 
 ### Embedded in an application
 

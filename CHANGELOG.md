@@ -14,6 +14,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   semantics, run-log reading, process pools, and a `flow-runner` TOML setup.
   `examples/README.md` is the usage walkthrough; `tests/usage_examples/`
   executes every example, so the documentation cannot drift from the code.
+- **`Run.failed_nodes` and `run_end.failed_nodes`** — settled node paths whose
+  future carries an exception, including fire-and-forget children the root never
+  gathered.  `status` remains the root verdict.
+- **`tests/flow/test_hardening.py`** — 40 regressions for every stress finding
+  (`INFO-014`).
+
+### Fixed
+
+- **Hanging runs on finalization errors.**  An attempt now settles its outcome
+  even when logging raises; a failed log write fails the attempt with
+  `run-log write failed` instead of leaving `_drain` waiting forever.
+- **Cyclic/deep/unprintable log values.**  `jsonable` marks cycles and excessive
+  depth, describes unprintable objects, and the writer uses UTF-8 bytes that
+  survive lone surrogates and non-UTF-8 paths.
+- **Zero-delay retry recursion.**  The attempt loop is iterative; thousands of
+  retries no longer hit the recursion limit or livelock.
+- **Process-mode wrong function.**  Every `NodeFunction` gets a unique pickle
+  alias, so lambdas and factory closures execute their own function instead of a
+  colliding one.
+- **`GraphFuture` pending on `BaseException`.**  `SystemExit`/`KeyboardInterrupt`
+  in a worker are wrapped in `RuntimeError` and settle the node.
+- **Cross-pool cancellation.**  Binding a node to a second pool raises
+  `ValueError` and leaves the owner running.
+- **`flow-runner` failures.**  A node parameter named `options` is passed
+  positionally; a keyword-only `options` and a module that raises at import are
+  usage errors (exit 2).
+
+### Changed
+
+- **`RunLog.diff` counts repeated identical executions** as a multiset; the nth
+  copy carries `occurrence: n` (the first omits it), so a changed fan-out count
+  is visible.
+- **`fixed_clock` is hash-seed independent** — nested mapping keys are sorted and
+  mixed-type sets use a deterministic order.  A fixed path is exclusive: a second
+  concurrent writer raises (POSIX adds a process-level lock).
+- **Strict JSON logs** — non-finite floats log as `{"float": "nan" | "inf" |
+  "-inf"}`; `allow_nan=False`.
+- **`list_ext.intersect`/`union`** preserve first-occurrence order, dedupe, and
+  accept unhashable items.
+- **`jsonable` dict keys** disambiguate collisions instead of dropping entries.
+- **`gather`** resolves any `Mapping` to a plain dict and keeps orderable tuple
+  subclasses; it raises outside an active run.  An unbound `GraphFuture.result()`
+  raises with guidance.
+- **`RunLog.filter`** documents that `node=...` also matches `run_start`; pass
+  `record="node"` for attempts only.
+
+### Documentation
+
+- `INFO-014` records every stress finding, disposition, and regression test.
+- `DR-019` records the hardening decision; `INFO-011` and `INFO-006` reflect the
+  new settlement, retry, canonical-log, diff, and test-suite facts.
 
 ## [3.0.0] - 2026-10-21
 

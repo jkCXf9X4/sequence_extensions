@@ -17,6 +17,53 @@ T = TypeVar("T")
 U = TypeVar("U")
 
 
+def _canonical_items(iterable: Iterable) -> list:
+    """Materialize ``iterable``; order a set deterministically when possible."""
+    if isinstance(iterable, (set, frozenset)):
+        try:
+            return sorted(iterable)
+        except TypeError:
+            items = list(iterable)
+            items.sort(key=lambda item: (type(item).__name__, repr(item)))
+            return items
+    return list(iterable)
+
+
+def _dedupe(items: Iterable) -> list:
+    """Remove duplicates, preserving first-appearance order.
+
+    Hashable and unhashable items are both supported, so ``intersect`` and
+    ``union`` work on lists of lists/dicts as well as scalars.
+    """
+    out = []
+    seen_hashable = set()
+    seen_unhashable = []
+    for item in items:
+        try:
+            hash(item)
+        except TypeError:
+            if any(existing == item for existing in seen_unhashable):
+                continue
+            seen_unhashable.append(item)
+        else:
+            if item in seen_hashable:
+                continue
+            seen_hashable.add(item)
+        out.append(item)
+    return out
+
+
+def _contains(items: list, item) -> bool:
+    """Membership that works for both hashable and unhashable items."""
+    for existing in items:
+        try:
+            if existing == item:
+                return True
+        except Exception:
+            continue
+    return False
+
+
 class list_ext(list):
     """
     Extend the normal list class
@@ -352,15 +399,23 @@ class list_ext(list):
 
     def intersect(self, other: Iterable) -> "list_ext":
         """
-        Return common elements shared between two lists
+        Return common elements shared between two lists.
+
+        The order of ``self`` is preserved and duplicates are removed.
+        Elements need not be hashable.  If ``other`` is a set, its members are
+        ordered deterministically before comparison.
         """
-        return type(self)(set(self) & set(other))
+        others = _canonical_items(other)
+        return type(self)(_dedupe(item for item in self if _contains(others, item)))
 
     def union(self, other: Iterable) -> "list_ext":
         """
-        Return a list of the set containing all the items
+        Return the items of ``self`` followed by the unseen items of ``other``.
+
+        Order is preserved (self first) and duplicates are removed.  Elements
+        need not be hashable.  A set ``other`` is ordered deterministically.
         """
-        return type(self)(set(self) | set(other))
+        return type(self)(_dedupe([*self, *_canonical_items(other)]))
 
     def chainmap(self: "list[dict[Any, Any]]") -> "dict_ext":
         """

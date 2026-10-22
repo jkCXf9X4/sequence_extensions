@@ -241,6 +241,62 @@ def _fail(message: str) -> int:
     return EXIT_USAGE
 
 
+def _bind_flow_inputs(fn, inputs: Mapping) -> tuple[tuple, dict]:
+    """Split ``[inputs]`` into positional args and keyword args.
+
+    ``execute_flow`` reserves the keyword ``options`` for run options.  A root
+    node with a parameter also named ``options`` therefore has to receive that
+    input positionally; the runner builds the positional prefix up to and
+    including it.  A keyword-only ``options`` (or one reached after
+    ``*args``/``**kwargs``) is rejected with a config error instead of a
+    confusing ``TypeError`` at call time.
+    """
+    target = getattr(fn, "__wrapped__", fn)
+    sig = inspect.signature(target)
+    kwargs = dict(inputs)
+    args: list = []
+    if "options" in kwargs:
+        handled = False
+        for name, param in sig.parameters.items():
+            if name == "options":
+                if param.kind in (
+                    inspect.Parameter.KEYWORD_ONLY,
+                    inspect.Parameter.VAR_POSITIONAL,
+                    inspect.Parameter.VAR_KEYWORD,
+                ):
+                    raise RunnerConfigError(
+                        "node parameter 'options' must be positional "
+                        "(and precede *args/**kwargs) to be driven by flow-runner"
+                    )
+                args.append(kwargs.pop("options"))
+                handled = True
+                break
+            if param.kind is inspect.Parameter.VAR_POSITIONAL:
+                raise RunnerConfigError(
+                    "node parameter 'options' cannot be reached positionally "
+                    "past *args"
+                )
+            if param.kind is inspect.Parameter.VAR_KEYWORD:
+                raise RunnerConfigError(
+                    "a parameter named 'options' captured only by **kwargs "
+                    "cannot be driven by flow-runner"
+                )
+            if param.kind in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            ):
+                if name in kwargs:
+                    args.append(kwargs.pop(name))
+                elif param.default is not inspect.Parameter.empty:
+                    args.append(param.default)
+                else:
+                    raise RunnerConfigError(f"missing required input {name!r}")
+        if not handled:
+            raise RunnerConfigError("flow has no parameter named 'options'")
+    sig.bind(*args, **kwargs)
+    return tuple(args), kwargs
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the node a TOML config selects.  Returns the process exit code."""
     parser = argparse.ArgumentParser(
@@ -268,6 +324,11 @@ def main(argv: list[str] | None = None) -> int:
         module = importlib.import_module(cfg.module)
     except ImportError as e:
         return _fail(f"cannot import module {cfg.module!r}: {e}")
+    except Exception as e:
+        return _fail(
+            f"module {cfg.module!r} raised while importing: "
+            f"{type(e).__name__}: {e}"
+        )
 
     if args.list:
         print(f"flows in {cfg.module}:")
@@ -294,14 +355,13 @@ def main(argv: list[str] | None = None) -> int:
     inputs = dict(cfg.inputs)
     # Validate against the decorated function's real signature —
     # functools.wraps exposes it through __wrapped__.
-    target = getattr(fn, "__wrapped__", fn)
     try:
-        inspect.signature(target).bind(**inputs)
-    except TypeError as e:
+        call_args, call_kwargs = _bind_flow_inputs(fn, inputs)
+    except (TypeError, RunnerConfigError) as e:
         return _fail(f"[inputs] do not match flow {flow_name!r}: {e}")
 
     try:
-        run = execute_flow(fn, options=cfg.options, **inputs)
+        run = execute_flow(fn, *call_args, options=cfg.options, **call_kwargs)
     except Exception as exc:
         traceback.print_exc()
         _report_run(getattr(exc, "run", None), flow_name)

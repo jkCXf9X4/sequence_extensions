@@ -19,12 +19,14 @@ status: current
 - Two runs of the same campaign on the same code and inputs compare equal.
 - A different outcome is pinpointed: which node path, on which inputs, which attempt, and exactly which facts differ.
 - Work in one run but not the other — a node attempted here, skipped there — is listed.
+- Repeated identical executions are counted, not collapsed: a changed fan-out count shows as an extra/missing `occurrence`.
 - Completion order, clock readings, durations, and worker names never count as differences; neither does the run's own identity.
 - The comparison result is plain data: printable, storable, passable to other tools.
 
 ## Evidence
 
 - `tests/flow/test_runlog_tools.py` — two real two-stage runs compare equal; a flaky difference pinpointed to node path, inputs, attempt, and fields; extra work listed; timing-only differences ignored; what counts as equal stated as policy.
+- `tests/flow/test_hardening.py` — a changed number of identical calls and a reordered multiset.
 
 ## Owns
 

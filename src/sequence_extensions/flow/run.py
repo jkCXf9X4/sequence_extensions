@@ -75,7 +75,13 @@ RunStatus = Literal["ok", "error", "timeout"]
 
 @dataclass(frozen=True)
 class Run:
-    """The account of one run: outcome, identity, and where the truth lives."""
+    """The account of one run: outcome, identity, and where the truth lives.
+
+    ``failed_nodes`` lists the paths of submitted nodes whose settled future
+    carries an exception, including work the root never gathered.  It makes a
+    fire-and-forget failure visible even when ``status`` reflects a successful
+    root.
+    """
 
     result: Any
     run_id: str
@@ -87,6 +93,7 @@ class Run:
     started: str
     ended: str
     error: BaseException | None = None
+    failed_nodes: tuple[tuple[str, ...], ...] = ()
 
 
 # ---------------------------------------------------------------- #
@@ -195,6 +202,7 @@ class _RunAttempt:
         self.duration_ms = 0
         self.ended = self.started
         self.pool_settled = False
+        self.failed_nodes: tuple[tuple[str, ...], ...] = ()
 
     def run(self) -> Run:
         try:
@@ -270,6 +278,7 @@ class _RunAttempt:
                 _drain(self.ctx)
             _write_settle_records(self.ctx, run_failed=True)
 
+        self.failed_nodes = _failed_node_paths(self.ctx)
         self.duration_ms = int((time.perf_counter() - self.started_clock) * 1000)
         self.ended = _utcnow()
         if self.runlog is None:
@@ -281,6 +290,8 @@ class _RunAttempt:
             "ended": self.ended,
             "duration_ms": self.duration_ms,
         }
+        if self.failed_nodes:
+            end_record["failed_nodes"] = [list(path) for path in self.failed_nodes]
         if self.status == "ok":
             end_record["result"] = jsonable(
                 self.result, summary=bool(self.options.summary)
@@ -321,6 +332,7 @@ class _RunAttempt:
             started=self.started,
             ended=self.ended,
             error=self.error,
+            failed_nodes=self.failed_nodes,
         )
 
 
@@ -406,6 +418,26 @@ def _drain(ctx: RunContext) -> None:
                 outcome.result()
             except Exception:
                 pass
+
+
+def _failed_node_paths(ctx: RunContext) -> tuple[tuple[str, ...], ...]:
+    """Paths of submitted nodes whose settled future carries an exception.
+
+    This includes a fire-and-forget child the root never gathered: the log
+    already records its error, and ``Run.failed_nodes`` makes it visible
+    without changing the root verdict.
+    """
+    out = set()
+    for node in ctx.nodes:
+        if node.cancelled() or not node.done():
+            continue
+        try:
+            exc = node.exception()
+        except concurrent.futures.CancelledError:
+            continue
+        if exc is not None:
+            out.add(tuple(node.path))
+    return tuple(sorted(out))
 
 
 def _settle_record(ctx: RunContext, node, *, reason: str, error=None) -> dict:

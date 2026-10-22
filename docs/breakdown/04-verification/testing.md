@@ -9,7 +9,7 @@ status: current
 
 # Test strategy
 
-The suite is pytest (>= 8, < 9) with pytest-cov. `pytest` runs it as-is: `pyproject.toml` sets `pythonpath = ["src"]` and `testpaths = ["tests"]`. `xfail_strict = true` makes a passing xfail a failure. The coverage floor is 90% (`fail_under = 90`); the suite holds about 93%.
+The suite is pytest (>= 8, < 9) with pytest-cov. `pytest` runs it as-is: `pyproject.toml` sets `pythonpath = ["src"]` and `testpaths = ["tests"]`. `xfail_strict = true` makes a passing xfail a failure. The coverage floor is 90% (`fail_under = 90`); the suite holds about 92%.
 
 ## Run
 
@@ -20,7 +20,7 @@ The suite is pytest (>= 8, < 9) with pytest-cov. `pytest` runs it as-is: `pyproj
 
 ## Areas
 
-The suite collects 351 tests.
+The suite collects 398 tests.
 
 - `tests/test_package.py` — package-level smoke tests: root re-exports, ext methods, `GraphFuture`/`GraphPool` basics (30)
 - `tests/ext/` — `list_ext` (51), `dict_ext` (44), `gen_ext` (6)
@@ -33,6 +33,7 @@ The suite collects 351 tests.
 - `tests/flow/test_runlog_tools.py` — reading toolkit: selection, compact account, two-run determinism, synthetic and real logs (25)
 - `tests/flow/test_process_pool.py` — process dispatch, record replay, skip and dispatch-failure records, timeout transport, exit cancellation, execute_flow/submit/future rejection in workers, node defaults on direct calls, gather template pickling, CPU-bound wall gain (17)
 - `tests/flow/test_acceptance.py` — the benchmark campaign end to end (1)
+- `tests/flow/test_hardening.py` — stress regressions: hang-free settlement, iterative retries, unique process aliases, BaseException settlement, hash-seed-stable fixed logs, fixed-log locking, diff occurrence counting, strict JSON, `failed_nodes`, cross-pool rejection, runner `options`, ordered `intersect`/`union`, log key collisions, mapping gather (40)
 - `tests/runner/test_runner.py` — TOML selection, strict validation, node discovery, exit codes (20)
 - `tests/e2e/test_flows.py` — version comparison: two mock runs against the committed reference (`tests/e2e/ref`), logs via `RunLog.diff`, artifacts byte-for-byte; plus root-vs-wrapped position independence for both flows (4)
 
@@ -44,4 +45,5 @@ The suite collects 351 tests.
 - The e2e run id is pinned per root node, and its scratch (`tests/e2e/out`, one stable subtree per run) is versioned: repeated runs leave only timing-field differences in the logs, never file churn
 - Vision claims (`INFO-001`) verify by test: parallelism by wall-clock assertion, audit by node-record assertions, retry by attempt counts
 - Use cases (`INFO-010`) each cite their evidence file in this suite
+- Stress-hardening findings (`INFO-014`) each cite a regression test in `tests/flow/test_hardening.py`
 - The engine under test is `INFO-011`; the product claims it verifies are `INFO-002`

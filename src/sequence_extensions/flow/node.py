@@ -47,11 +47,13 @@ from __future__ import annotations
 
 import concurrent.futures
 import functools
+import itertools
 import pickle
 import re
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -78,27 +80,61 @@ from sequence_extensions.graph.graph_future import GraphFuture
 #: pool-level DFS state).
 _BIND_LOCK = threading.Lock()
 
+#: Process-pool pickle aliases must be unique per NodeFunction.  A qualname
+#: alone collides for lambdas and factory/closure nodes, which then silently
+#: execute the wrong raw function in a worker.
+_ALIAS_LOCK = threading.Lock()
+_ALIAS_COUNTER = itertools.count()
+
 _BLOCKED_IN_BODY = (
     "blocked on an incomplete future inside a node body; return the future "
     "instead (or submit a dependent node)"
 )
+
+#: Recursion guard for container inspection and ``gather`` planning.
+_MAX_CONTAINER_DEPTH = 200
 
 
 def _is_future(value) -> bool:
     return isinstance(value, (GraphFuture, concurrent.futures.Future))
 
 
-def _contains_future(value) -> bool:
+def _contains_future(value, _seen=None, _depth: int = 0) -> bool:
     """True if a returned container still holds futures.
 
     A node should return one future (see :func:`gather`), not a list or
     dict of futures: the graph layer only awaits a single returned future.
+    Self-referential containers and depth beyond ``_MAX_CONTAINER_DEPTH`` are
+    treated as opaque (no future) instead of exhausting the stack; the log
+    records them with a cycle/depth marker.
     """
-    if isinstance(value, dict):
-        return any(_contains_future(v) for v in value.values())
+    if _is_future(value):
+        return True
+    if _depth >= _MAX_CONTAINER_DEPTH:
+        return False
+    if isinstance(value, Mapping):
+        if _seen is None:
+            _seen = set()
+        marker = id(value)
+        if marker in _seen:
+            return False
+        _seen.add(marker)
+        try:
+            return any(_contains_future(v, _seen, _depth + 1) for v in value.values())
+        finally:
+            _seen.discard(marker)
     if isinstance(value, (list, tuple, set, frozenset)):
-        return any(_contains_future(v) for v in value)
-    return _is_future(value)
+        if _seen is None:
+            _seen = set()
+        marker = id(value)
+        if marker in _seen:
+            return False
+        _seen.add(marker)
+        try:
+            return any(_contains_future(v, _seen, _depth + 1) for v in value)
+        finally:
+            _seen.discard(marker)
+    return False
 
 
 class NodeTimeoutError(TimeoutError):
@@ -161,25 +197,64 @@ def _make_slot(index):
     return _Slot(index)
 
 
-def _plan(value, items):
+def _enter_gather(value, _seen, _depth):
+    """Cycle/depth guard shared by the ``_plan`` container branches."""
+    if _depth >= _MAX_CONTAINER_DEPTH:
+        raise ValueError("gather() container is deeper than the supported limit")
+    if _seen is None:
+        _seen = set()
+    marker = id(value)
+    if marker in _seen:
+        raise ValueError("gather() cannot resolve a cyclic container")
+    _seen.add(marker)
+    return _seen, marker
+
+
+def _plan(value, items, _seen=None, _depth: int = 0):
     """Template for ``value``: futures become slots, containers keep shape.
 
     Futures are collected into ``items`` in traversal order, which is the
     order of the collect node's dependencies (and therefore of ``values``
-    in :func:`_fill`).
+    in :func:`_fill`).  Mappings other than ``dict`` are resolved into a
+    plain dict.  A cyclic or over-deep container raises ``ValueError``
+    instead of recursing without bound.
     """
     if _is_future(value):
         items.append(value)
         return _Slot(len(items) - 1)
-    if isinstance(value, dict):
-        return {key: _plan(item, items) for key, item in value.items()}
+    if isinstance(value, Mapping):
+        _seen, marker = _enter_gather(value, _seen, _depth)
+        try:
+            return {
+                key: _plan(item, items, _seen, _depth + 1)
+                for key, item in value.items()
+            }
+        finally:
+            _seen.discard(marker)
     if isinstance(value, list):
-        return [_plan(item, items) for item in value]
+        _seen, marker = _enter_gather(value, _seen, _depth)
+        try:
+            return [_plan(item, items, _seen, _depth + 1) for item in value]
+        finally:
+            _seen.discard(marker)
     if isinstance(value, tuple):
-        planned = [_plan(item, items) for item in value]
-        return type(value)(*planned) if hasattr(value, "_fields") else tuple(planned)
+        _seen, marker = _enter_gather(value, _seen, _depth)
+        try:
+            planned = [_plan(item, items, _seen, _depth + 1) for item in value]
+        finally:
+            _seen.discard(marker)
+        if hasattr(value, "_fields"):
+            return type(value)(*planned)
+        try:
+            return type(value)(planned)
+        except Exception:
+            return tuple(planned)
     if isinstance(value, (set, frozenset)):
-        return type(value)(_plan(item, items) for item in value)
+        _seen, marker = _enter_gather(value, _seen, _depth)
+        try:
+            return type(value)(_plan(item, items, _seen, _depth + 1) for item in value)
+        finally:
+            _seen.discard(marker)
     return value
 
 
@@ -187,13 +262,18 @@ def _fill(template, values):
     """Inverse of :func:`_plan`: rebuild the shape, slots become results."""
     if isinstance(template, _Slot):
         return values[template.index]
-    if isinstance(template, dict):
+    if isinstance(template, Mapping):
         return {key: _fill(item, values) for key, item in template.items()}
     if isinstance(template, list):
         return [_fill(item, values) for item in template]
     if isinstance(template, tuple):
         filled = [_fill(item, values) for item in template]
-        return type(template)(*filled) if hasattr(template, "_fields") else tuple(filled)
+        if hasattr(template, "_fields"):
+            return type(template)(*filled)
+        try:
+            return type(template)(filled)
+        except Exception:
+            return tuple(filled)
     if isinstance(template, (set, frozenset)):
         return type(template)(_fill(item, values) for item in template)
     return template
@@ -208,16 +288,24 @@ def gather(value):
 
     Containers keep their shape, at any depth: ``{"a": submit(1)}``
     resolves to ``{"a": 1}``, a nested list stays a list, and a tuple or
-    set stays a tuple or set.  Only values are resolved (dict keys are
-    kept as-is).  A bare future resolves to a one-element list, and any
-    other iterable is materialized into a list.  The result is a
-    :class:`FlowFuture`, so it can be returned from a node or passed as a
-    dependency to :meth:`NodeFunction.submit`.
+    set stays a tuple or set.  Mappings other than ``dict`` resolve to a
+    plain dict; namedtuples and orderable tuple subclasses keep their type.
+    Only values are resolved (dict keys are kept as-is).  A bare future
+    resolves to a one-element list, and any other iterable is materialized
+    into a list.  The result is a :class:`FlowFuture`, so it can be returned
+    from a node or passed as a dependency to :meth:`NodeFunction.submit`.
+
+    ``gather`` needs an active run (its future is evaluated by the run's
+    pool); outside one it raises ``RuntimeError`` instead of hanging.
     """
+    if current_run() is None:
+        raise RuntimeError(
+            "gather() requires an active run: call execute_flow(...) around the node"
+        )
     if _is_future(value):
         future = FlowFuture(_collect_structural, [_Slot(0)], value)
     else:
-        if not isinstance(value, (list, tuple, dict, set, frozenset)):
+        if not isinstance(value, (list, tuple, Mapping, set, frozenset)):
             value = list(value)
         items = []
         future = FlowFuture(_collect_structural, _plan(value, items), *items)
@@ -267,6 +355,11 @@ class _AttemptRunner:
         self.lock = threading.Lock()
         self.state = _AttemptState()
         self.outcome = FlowOutcome()
+        # Per-thread "inside the attempt loop" marker.  A done-callback that
+        # runs synchronously (the returned future was already settled) must
+        # hand its retry back to the loop instead of nesting another attempt.
+        self._local = threading.local()
+        self._pending_retry = False
         if ctx is not None:
             ctx.outcomes.append(self.outcome)
 
@@ -274,14 +367,54 @@ class _AttemptRunner:
         self._start(1)
         return self.outcome
 
-    def _finish(self, attempt, status, value, token, started_at, started_clock):
+    def _settle_unexpected(self, exc) -> None:
+        """Settle with an engine-side exception instead of leaving a drain hang."""
+        if not isinstance(exc, Exception):
+            exc = RuntimeError(f"{type(exc).__qualname__}: {exc}")
+        with self.lock:
+            if self.state.done or self.outcome.done():
+                return
+            self.state.done = True
+        try:
+            self.outcome.set_exception(exc)
+        except concurrent.futures.InvalidStateError:
+            pass
+
+    def _finish_safely(self, attempt, status, value, token, started_at, started_clock):
+        """``_finish`` from a callback/timer: never let an engine error hang."""
+        try:
+            return self._finish(attempt, status, value, token, started_at, started_clock)
+        except BaseException as exc:
+            self._settle_unexpected(exc)
+            return False
+
+    def _finish(
+        self,
+        attempt,
+        status,
+        value,
+        token,
+        started_at,
+        started_clock,
+        *,
+        defer_retry: bool = False,
+    ) -> bool:
+        """Settle one attempt; return True when the caller should retry now.
+
+        ``defer_retry=True`` is the synchronous path from ``_run_attempt``:
+        the attempt loop continues iteratively.  Callback/timer paths use the
+        default and start the next attempt on their own stack (or schedule a
+        backoff timer).  A failed log write is an engine error: it settles the
+        attempt and is never retried, so a broken audit log cannot hang the
+        drain.
+        """
         with self.lock:
             if (
                 self.state.done
                 or self.state.attempt != attempt
                 or self.state.finished == attempt
             ):
-                return
+                return False
             self.state.finished = attempt
             timer = self.state.timer
             self.state.timer = None
@@ -306,64 +439,86 @@ class _AttemptRunner:
                         inner.cancel()
                 except Exception:
                     pass
+        log_error = None
         if self.ctx is not None and self.ctx.runlog is not None:
-            self.node._log_attempt(
-                self.ctx,
-                self.path,
-                self.parent_attempt,
-                attempt,
-                status,
-                self.args,
-                self.kwargs,
-                value,
-                error,
-                token,
-                self.run_attempt_token,
-                started_at,
-                duration_ms,
-                allow_abandoned=(status == "timeout"),
-                worker=self.worker_name,
-            )
+            try:
+                self.node._log_attempt(
+                    self.ctx,
+                    self.path,
+                    self.parent_attempt,
+                    attempt,
+                    status,
+                    self.args,
+                    self.kwargs,
+                    value,
+                    error,
+                    token,
+                    self.run_attempt_token,
+                    started_at,
+                    duration_ms,
+                    allow_abandoned=(status == "timeout"),
+                    worker=self.worker_name,
+                )
+            except Exception as exc:  # audit write failed: fail the attempt
+                log_error = exc
+        if log_error is not None:
+            status = "error"
+            error = RuntimeError(f"run-log write failed: {log_error}")
+            value = error
+
+        def settle_result() -> None:
+            with self.lock:
+                self.state.done = True
+            try:
+                self.outcome.set_result(value)
+            except concurrent.futures.InvalidStateError:
+                pass
+
+        def settle_error() -> None:
+            with self.lock:
+                self.state.done = True
+            try:
+                self.outcome.set_exception(error)
+            except concurrent.futures.InvalidStateError:
+                pass
+
         if status == "ok":
-            with self.lock:
-                self.state.done = True
-            self.outcome.set_result(value)
-            return
+            settle_result()
+            return False
         if self.ctx is not None and self.ctx.cancelled.is_set():
-            with self.lock:
-                self.state.done = True
-            self.outcome.set_exception(error)
-            return
+            settle_error()
+            return False
         if self.parent_token is not None and self.parent_token.abandoned_in_chain():
-            with self.lock:
-                self.state.done = True
-            self.outcome.set_exception(error)
-            return
-        if attempt < self.max_attempts:
+            settle_error()
+            return False
+        if log_error is None and attempt < self.max_attempts:
             if self.delay > 0:
                 timer = threading.Timer(self.delay, lambda: self._start(attempt + 1))
                 timer.daemon = True
                 timer.start()
-            else:
-                self._start(attempt + 1)
-            return
-        with self.lock:
-            self.state.done = True
-        self.outcome.set_exception(error)
+                return False
+            if defer_retry or getattr(self._local, "in_start", False):
+                return True
+            self._start(attempt + 1)
+            return False
+        settle_error()
+        return False
 
-    def _after_body(self, attempt, value, token, started_at, started_clock, elapsed):
+    def _after_body(
+        self, attempt, value, token, started_at, started_clock, elapsed, *, defer_retry=False
+    ) -> bool:
         if self.base_process and _is_future(value):
-            self._finish(
+            return self._finish(
                 attempt,
                 "error",
                 RuntimeError("a process worker cannot return a live future"),
                 token,
                 started_at,
                 started_clock,
+                defer_retry=defer_retry,
             )
-            return
         if not _is_future(value) and _contains_future(value):
-            self._finish(
+            return self._finish(
                 attempt,
                 "error",
                 RuntimeError(
@@ -373,37 +528,51 @@ class _AttemptRunner:
                 token,
                 started_at,
                 started_clock,
+                defer_retry=defer_retry,
             )
-            return
         if _is_future(value):
             if self.ctx is None or self.ctx.pool is None:
-                self._finish(
+                return self._finish(
                     attempt,
                     "error",
                     RuntimeError("a node returning a future requires an active run"),
                     token,
                     started_at,
                     started_clock,
+                    defer_retry=defer_retry,
                 )
-                return
             if isinstance(value, GraphFuture):
                 try:
                     self.ctx.pool.bind(value)
                 except Exception as exc:  # dependency cycle, dispatch error
-                    self._finish(attempt, "error", exc, token, started_at, started_clock)
-                    return
+                    return self._finish(
+                        attempt,
+                        "error",
+                        exc,
+                        token,
+                        started_at,
+                        started_clock,
+                        defer_retry=defer_retry,
+                    )
             with self.lock:
                 if self.state.done or self.state.finished == attempt:
-                    return
+                    return False
                 self.state.inner = value
             if self.timeout is not None:
                 remaining = self.timeout - elapsed
                 if remaining <= 0:
-                    self._finish(attempt, "timeout", None, token, started_at, started_clock)
-                    return
+                    return self._finish(
+                        attempt,
+                        "timeout",
+                        None,
+                        token,
+                        started_at,
+                        started_clock,
+                        defer_retry=defer_retry,
+                    )
                 timer = threading.Timer(
                     remaining,
-                    lambda: self._finish(
+                    lambda: self._finish_safely(
                         attempt, "timeout", None, token, started_at, started_clock
                     ),
                 )
@@ -416,13 +585,31 @@ class _AttemptRunner:
                 try:
                     result = future.result()
                 except BaseException as exc:
-                    self._finish(attempt, "error", exc, token, started_at, started_clock)
+                    retry = self._finish_safely(
+                        attempt, "error", exc, token, started_at, started_clock
+                    )
                 else:
-                    self._finish(attempt, "ok", result, token, started_at, started_clock)
+                    retry = self._finish_safely(
+                        attempt, "ok", result, token, started_at, started_clock
+                    )
+                if retry:
+                    self._pending_retry = True
 
+            self._pending_retry = False
             value.add_done_callback(_on_done)
-        else:
-            self._finish(attempt, "ok", value, token, started_at, started_clock)
+            if self._pending_retry:
+                self._pending_retry = False
+                return True
+            return False
+        return self._finish(
+            attempt,
+            "ok",
+            value,
+            token,
+            started_at,
+            started_clock,
+            defer_retry=defer_retry,
+        )
 
     def _run_body(self, attempt, token):
         with execution_scope(
@@ -446,9 +633,26 @@ class _AttemptRunner:
             return self.node.fn(*self.args, **self.kwargs)
 
     def _start(self, attempt):
+        """Drive attempts iteratively; a retry never nests another attempt."""
+        self._local.in_start = True
+        try:
+            while True:
+                with self.lock:
+                    if self.state.done or self.state.finished >= attempt:
+                        return
+                if not self._run_attempt(attempt):
+                    return
+                attempt += 1
+        except BaseException as exc:
+            self._settle_unexpected(exc)
+        finally:
+            self._local.in_start = False
+
+    def _run_attempt(self, attempt) -> bool:
+        """Run one attempt; True means retry immediately with the next number."""
         with self.lock:
             if self.state.done or self.state.finished >= attempt:
-                return
+                return False
             self.state.attempt = attempt
             self.state.inner = None
             # A run-level timeout token is an ancestor of the root attempt,
@@ -460,17 +664,24 @@ class _AttemptRunner:
             try:
                 value = self._run_body(attempt, token)
             except BaseException as exc:
-                self._finish(attempt, "error", exc, token, started_at, started_clock)
-            else:
-                self._after_body(
+                return self._finish(
                     attempt,
-                    value,
+                    "error",
+                    exc,
                     token,
                     started_at,
                     started_clock,
-                    time.perf_counter() - started_clock,
+                    defer_retry=True,
                 )
-            return
+            return self._after_body(
+                attempt,
+                value,
+                token,
+                started_at,
+                started_clock,
+                time.perf_counter() - started_clock,
+                defer_retry=True,
+            )
 
         box = {}
 
@@ -487,13 +698,34 @@ class _AttemptRunner:
         thread.join(self.timeout)
         elapsed = time.perf_counter() - started_clock
         if thread.is_alive():
-            self._finish(attempt, "timeout", None, token, started_at, started_clock)
-        elif "error" in box:
-            self._finish(attempt, "error", box["error"], token, started_at, started_clock)
-        else:
-            self._after_body(
-                attempt, box.get("value"), token, started_at, started_clock, elapsed
+            return self._finish(
+                attempt,
+                "timeout",
+                None,
+                token,
+                started_at,
+                started_clock,
+                defer_retry=True,
             )
+        if "error" in box:
+            return self._finish(
+                attempt,
+                "error",
+                box["error"],
+                token,
+                started_at,
+                started_clock,
+                defer_retry=True,
+            )
+        return self._after_body(
+            attempt,
+            box.get("value"),
+            token,
+            started_at,
+            started_clock,
+            elapsed,
+            defer_retry=True,
+        )
 
 
 class NodeFunction:
@@ -503,7 +735,16 @@ class NodeFunction:
     ``node_defaults`` (or the built-in default outside a run).
     """
 
-    def __init__(self, fn, *, retries=UNSET, retry_delay_seconds=UNSET, timeout=UNSET, name=None):
+    def __init__(
+        self,
+        fn,
+        *,
+        retries=UNSET,
+        retry_delay_seconds=UNSET,
+        timeout=UNSET,
+        name=None,
+        _alias=None,
+    ):
         if not callable(fn):
             raise TypeError(f"@node expects a callable, got {fn!r}")
         if name is not None and (not isinstance(name, str) or not name):
@@ -521,15 +762,21 @@ class NodeFunction:
         # Process-pool support: the decorator replaces the module-level
         # name with this NodeFunction, so pickling the raw function by
         # reference would fail pickle's identity check.  Rebind the raw
-        # function under a private alias in its own module; __reduce__
-        # ships (alias, policy) instead of the function object.
-        module = sys.modules.get(getattr(fn, "__module__", None))
-        if module is not None:
-            alias = "__seqext_node_fn_" + re.sub(
-                r"\W+", "_", getattr(fn, "__qualname__", "") or self.name
-            )
-            setattr(module, alias, fn)
-            self._pickle_alias = (fn.__module__, alias)
+        # function under a unique private alias in its own module; __reduce__
+        # ships (alias, policy) instead of the function object.  The counter
+        # keeps lambdas and factory closures distinct: a qualname alone
+        # collides and would execute the wrong function in a worker.
+        if _alias is not None:
+            self._pickle_alias = _alias
+        else:
+            module = sys.modules.get(getattr(fn, "__module__", None))
+            if module is not None:
+                with _ALIAS_LOCK:
+                    tag = next(_ALIAS_COUNTER)
+                stem = re.sub(r"\W+", "_", getattr(fn, "__qualname__", "") or self.name)
+                alias = f"__seqext_node_fn_{stem}_{tag}"
+                setattr(module, alias, fn)
+                self._pickle_alias = (fn.__module__, alias)
         self.__node__ = self.name
 
     # ------------------------------------------------------------ #
@@ -629,6 +876,7 @@ class NodeFunction:
                 retry_delay_seconds=delay,
                 timeout=timeout,
                 name=self.name,
+                _alias=getattr(self, "_pickle_alias", None),
             )
             run_info = {
                 "run_id": ctx.run_id,
@@ -778,6 +1026,7 @@ def _rebuild_node_function(alias, retries, retry_delay_seconds, timeout, name):
         retry_delay_seconds=retry_delay_seconds,
         timeout=timeout,
         name=name,
+        _alias=alias,
     )
 
 

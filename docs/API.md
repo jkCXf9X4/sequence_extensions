@@ -79,7 +79,7 @@ __version__ = "3.0.0"
 | `node` | Decorator: retry, backoff, and timeout policy around a function; `.submit()` |
 | `gather` | One future for a value with every future replaced by its result; container shape preserved |
 | `execute_flow` | Open a top-level run around a root node and return a `Run` |
-| `Run` | One run's account: result, identity, status, log, duration, error |
+| `Run` | One run's account: result, identity, status, log, duration, error, failed nodes |
 | `RunOptions` | Per-run options (pool, log, summary, fixed clock, retries, node defaults) |
 | `NodePolicy` | Default retry/backoff/timeout for nodes that left a value unset |
 | `NodeFunction` | The object `@node` returns: callable inline, plus `.submit()` |
@@ -417,9 +417,9 @@ def intersect(self, l: Iterable) -> "list_ext"
 ```
 
 - **Parameters:** `l` (`Iterable`) — iterable to intersect with.
-- **Returns:** `list_ext` — set-based intersection `set(self) & set(l)`.
-- **Raises:** nothing.
-- **Description:** Return the common elements shared between the two collections (set-based).
+- **Returns:** `list_ext` — common elements in `self` order, duplicates removed.
+- **Raises:** nothing; elements need not be hashable.
+- **Description:** Return the common elements shared between the two collections. A set operand is ordered deterministically first.
 
 ### `union`
 
@@ -428,9 +428,9 @@ def union(self, l: Iterable) -> "list_ext"
 ```
 
 - **Parameters:** `l` (`Iterable`) — iterable to union with.
-- **Returns:** `list_ext` — set-based union `set(self) | set(l)`.
-- **Raises:** nothing.
-- **Description:** Return a list of the set containing all items of both collections (set-based).
+- **Returns:** `list_ext` — items of `self` followed by unseen items of `l`, duplicates removed.
+- **Raises:** nothing; elements need not be hashable.
+- **Description:** Return the union in first-occurrence order (`self` first). A set operand is ordered deterministically first.
 
 ### `chainmap`
 
@@ -756,8 +756,8 @@ def result(self, timeout=None)
 
 - **Parameters:** `timeout` (optional) — seconds to wait before giving up.
 - **Returns:** the node's result (or the forwarded result of a chained inner graph).
-- **Raises:** `TimeoutError` on `timeout` expiry; an **unbound node (no pool)** blocks forever unless a `timeout` is given; the node function's exception propagates.
-- **Description:** Block until the node's result is available and return it.
+- **Raises:** `RuntimeError` when the node is not bound to a pool and is not done; `TimeoutError` on `timeout` expiry; the node function's exception propagates (`SystemExit`/`KeyboardInterrupt` arrive wrapped in `RuntimeError`).
+- **Description:** Block until the node's result is available and return it. Evaluate an unbound node with `pool.result(gf)` or `pool.bind(gf)` first.
 
 ### `has_result`
 
@@ -887,7 +887,7 @@ def bind(self, gf: GraphFuture) -> None
 
 - **Parameters:** `gf` (`GraphFuture`) — the graph node to bind.
 - **Returns:** nothing.
-- **Raises:** `ValueError("dependency cycle detected")` on cyclic graphs.
+- **Raises:** `ValueError("dependency cycle detected")` on cyclic graphs; `ValueError` if a reachable node is already bound to another pool.
 - **Description:** Bind the graph reachable from `gf` without touching any result: submit every ready leaf, wire the rest for event-driven scheduling. A **pure bind** — unlike `result(gf, timeout=0)`, it never raises a settled node's own exception. This is the call `node.submit()` uses.
 
 ### `__enter__`
@@ -918,7 +918,8 @@ def __exit__(self, exc_type, exc_val, exc_tb) -> None
 - Exit cancels the pool's **own** pending nodes (`result()` on those raises `CancelledError`); nodes bound to other pools survive. A node never bound to any pool is left pending — bind nodes through `pool.result()` / `pool.bind()`.
 - Re-entry (`__enter__` twice) raises `RuntimeError`.
 - Cycle detection: `pool.result()` and `pool.bind()` raise `ValueError("dependency cycle detected")` instead of deadlocking.
-- Exceptions in a node function propagate from `pool.result()`.
+- Pool ownership: a node bound to one pool cannot be bound to another; the second bind raises `ValueError` and leaves the owner running.
+- Exceptions in a node function propagate from `pool.result()`; `BaseException`s are wrapped in `RuntimeError` and settle the node.
 
 ---
 
@@ -952,7 +953,7 @@ process-mode fan-out is built, and it cannot wait on a future either. A body
 already running inside a process worker cannot submit or return a live future.
 
 - **`__init__(max_workers=None)`** — worker process count; `None` keeps the executor's own default (the CPU count).
-- **Picklable payloads:** nodes and arguments must survive `pickle` — module-level functions and plain data. `@node`-decorated module-level functions pickle (the raw function is aliased under a private module name at decoration). A lambda, a closure, or an unpicklable argument fails at dispatch: the node settles with `ProcessDispatchError` and the run log records `skipped` / `dispatch failed`.
+- **Picklable payloads:** nodes and arguments must survive `pickle` — module-level functions and plain data. `@node`-decorated module-level functions pickle (each raw function is aliased under a unique private module name at decoration, so lambdas and factory closures do not collide). An unpicklable argument fails at dispatch: the node settles with `ProcessDispatchError` and the run log records `skipped` / `dispatch failed`.
 - **Run-log records replay in the parent:** a worker cannot write the run's open log file, so the worker buffers its attempt records and the run writes them before `run_end` — the log is still complete the moment the run returns.
 - **Dependencies resolve in the parent:** a failed dependency skips the dependent without a process round-trip (same `skipped` record as thread mode).
 - **Node defaults follow direct calls:** a node called directly inside a process worker still resolves unset policy from `RunOptions.node_defaults`; only `.submit()` and returning a live future are process-worker restrictions.
@@ -999,7 +1000,7 @@ def simulate(case): ...
 
 | Keyword | Default | Meaning |
 | --- | --- | --- |
-| `retries` | `0` | additional attempts after a failed one (`2` means up to 3). |
+| `retries` | `0` | additional attempts after a failed one (`2` means up to 3); the attempt loop is iterative, so a large zero-delay count cannot recurse. |
 | `retry_delay_seconds` | `0.0` | backoff delay between attempts (a timer; no worker is held). |
 | `timeout` | `None` | wall budget for ONE attempt; the body runs in its own thread and a returned future gets the remaining budget as a timer; raises `NodeTimeoutError`. |
 | `name` | function name | node name used in the run id, records, and discovery. |
@@ -1009,7 +1010,7 @@ def simulate(case): ...
 - Futures passed as arguments become dependency edges; plain `concurrent.futures.Future` values are dependencies too. Cycles raise at submit time.
 - `.submit()` is legal in the driver and in a pool worker. It does not block: it returns a future and frees the worker.
 - A node may return a value or a future. A returned future (`submit()` or `gather(...)`) is awaited by that node's attempt; the worker is freed. `.result()` on an incomplete future inside a node body (root or worker) raises `RuntimeError` with guidance instead of deadlocking. The guard covers `FlowFuture`/`FlowOutcome`: `.future.result()`, `.exception()`, `wait`/`as_completed`, plain futures, and threads a body starts itself are not inspected — blocking is rejected where the engine's own waiting API is used.
-- `gather(value)` returns one future for `value` with its futures replaced by their results. Containers keep their shape at any depth — `{"a": submit(1)}` resolves to `{"a": 1}`; lists, tuples, dicts, sets and namedtuples included, and dict keys are kept as-is. A bare future resolves to a one-element list, any other iterable to a list, and `[]` is accepted. Return it from a node or pass it as a dependency (`merge.submit(gather(evals))`). A node should not return a list/dict containing futures; wrap it with `gather`.
+- `gather(value)` returns one future for `value` with its futures replaced by their results. Containers keep their shape at any depth — `{"a": submit(1)}` resolves to `{"a": 1}`; lists, tuples, dicts, sets and namedtuples included, and dict keys are kept as-is. Any other `Mapping` resolves to a plain dict; orderable tuple subclasses keep their type. A bare future resolves to a one-element list, any other iterable to a list, and `[]` is accepted. `gather` needs an active run (it raises `RuntimeError` outside one). Return it from a node or pass it as a dependency (`merge.submit(gather(evals))`). A node should not return a list/dict containing futures; wrap it with `gather`.
 - A node body that calls/submits other nodes is a composite; there is no separate decorator and no separate run. Nested nodes share the run's pool and log; `path` and `parent_attempt` record the tree, and the composite's `retries`/`timeout` apply to the returned future as a whole — a retry re-runs the body (hence its subtree) with a new `parent_attempt`.
 - A `BaseException` (`SystemExit`, `KeyboardInterrupt`) from a node body is recorded and re-raised wrapped in `RuntimeError`.
 - Unset keywords resolve from the active run's `RunOptions.node_defaults`, then the built-in default; an explicit keyword always wins.
@@ -1033,10 +1034,12 @@ run = execute_flow(node, *args, options=RunOptions(...), **kwargs)
 | `timeout` | `None` | wall budget for the whole attempt; on expiry the pool is cancelled and `run_end` records `timeout`. |
 | `node_defaults` | `None` | `NodePolicy` for nodes whose decorator left a value unset. |
 
-- Returns a `Run`: `result`, `run_id`, `node`, `status` (`ok` / `error` / `timeout`), `log`, `duration_ms`, `attempt`, `started`, `ended`, `error`.
+- Returns a `Run`: `result`, `run_id`, `node`, `status` (`ok` / `error` / `timeout`), `log`, `duration_ms`, `attempt`, `started`, `ended`, `error`, `failed_nodes`.
+- `failed_nodes` is a tuple of node paths whose settled future carries an exception, including fire-and-forget children; `status` stays the root verdict.
 - On failure `execute_flow` raises the node's exception with `.run` attached (the last attempt's account).
-- `options` is a reserved keyword; pass a node parameter with that name positionally.
+- `options` is a reserved keyword; pass a node parameter with that name positionally. `flow-runner` does this automatically for `[inputs] options`.
 - `execute_flow` is a top-level entry point. Calling it inside an active run raises `RuntimeError`; a node composes nodes directly or by returning their futures. Its first argument must be a `@node` (`NodeFunction`).
+- A thread a node body starts does not inherit the run `ContextVar`; `execute_flow` there opens a second run. Use the same thread or propagate the context.
 - `execute_flow` inside a process worker is rejected in 3.0.
 - `node.submit()` outside an active run raises `RuntimeError`.
 
@@ -1093,7 +1096,7 @@ cases_dir = "cases"
 tolerance = 0.25
 ```
 
-The runner loads and validates the whole file first (unknown keys and sections fail with the file, section, and key named; `[flow]`/`[task]` are rejected with a 3.0 migration message), imports `[run] module`, scans it for the `__node__` marker, validates `[inputs]` against the node's signature, calls `execute_flow`, and reports status, duration, log path, and result. Exit codes: `0` ok, `1` the run raised, `2` usage/config error. Process pools are constructed in code; the runner drives thread-mode runs.
+The runner loads and validates the whole file first (unknown keys and sections fail with the file, section, and key named; `[flow]`/`[task]` are rejected with a 3.0 migration message), imports `[run] module`, scans it for the `__node__` marker, validates `[inputs]` against the node's signature, calls `execute_flow`, and reports status, duration, log path, and result. A root parameter named `options` is passed positionally; a keyword-only `options` is a usage error. A module that raises at import is a usage error. Exit codes: `0` ok, `1` the run raised, `2` usage/config error. Process pools are constructed in code; the runner drives thread-mode runs.
 
 ### The run log — the executed truth
 
@@ -1111,11 +1114,13 @@ One JSON-lines file per run (schema 2). Record kinds:
 Reading:
 
 - `RunLog.records(path)` — the whole log, in file order.
-- `RunLog.filter(records, record=..., node=..., status=..., attempt=..., path=...)` — selection.
+- `RunLog.filter(records, record=..., node=..., status=..., attempt=..., path=...)` — selection. `run_start` also carries `node`, so add `record="node"` when only attempts are wanted.
 - `RunLog.summarize(path)` — per-path account (`attempts`, `statuses`, `status`, `duration_ms`) plus the run verdict.
-- `RunLog.diff(a, b, exclude=DIFF_EXCLUDE)` — semantic comparison; identity is `(path, parent_attempt, attempt, inputs)` for nodes and the kind for run records. `DIFF_EXCLUDE` drops order, run identity, wall-clock, and worker; pass a replacement set to compare more or less.
+- `RunLog.diff(a, b, exclude=DIFF_EXCLUDE)` — semantic comparison; identity is `(path, parent_attempt, attempt, inputs)` for nodes and the kind for run records. Repeated identical executions are a multiset: the nth copy carries `occurrence: n` (the first omits it). `DIFF_EXCLUDE` drops order, run identity, wall-clock, and worker; pass a replacement set to compare more or less.
 
-Reference mode (`fixed_clock=True`) buffers records and writes them at close, in canonical order, with timing pinned to `1970-01-01T00:00:00+00:00`, `duration_ms` to `0`, and `worker` to `fixed`. Identical runs produce byte-identical files — for storing logs as reference artifacts. A fixed run rejects run-level retries.
+`jsonable` marks cyclic and over-deep containers, maps non-finite floats to `{"float": "nan" | "inf" | "-inf"}`, disambiguates colliding dict keys, and describes unprintable objects. The writer emits strict JSON (`allow_nan=False`) and UTF-8 bytes that survive lone surrogates.
+
+Reference mode (`fixed_clock=True`) buffers records and writes them at close, in canonical order, with timing pinned to `1970-01-01T00:00:00+00:00`, `duration_ms` to `0`, `worker` to `fixed`, and nested mapping keys sorted. Identical runs produce byte-identical files — for storing logs as reference artifacts. A fixed run rejects run-level retries, and a fixed path is exclusive: a second concurrent writer raises (POSIX adds a process-level lock).
 
 ### Example campaign
 

@@ -100,6 +100,10 @@ class GraphFuture:
         self.queued = False
         self.future = concurrent.futures.Future()
         self._pool = None
+        # The pool that wired this node (set even while it waits on
+        # dependencies, before ``_pool`` exists at submit time).  A node is
+        # owned by exactly one pool.
+        self._bound_pool = None
         # Guards the check-then-set of ``queued`` and the submit decision so a
         # node is never scheduled twice (and its function never double-runs).
         self._lock = threading.RLock()
@@ -137,10 +141,18 @@ class GraphFuture:
         """
         Return this node's result, blocking until it is available.
 
-        ``timeout`` (seconds) bounds the wait; on expiry a ``TimeoutError`` is
-        raised.  Raises ``CancelledError`` if the node was cancelled, and
-        propagates the node's function exception if it failed.
+        A node that has not been bound to a ``GraphPool`` raises immediately
+        instead of blocking forever: evaluate it with ``pool.result(gf)`` or
+        ``pool.bind(gf)`` first.  ``timeout`` (seconds) bounds the wait; on
+        expiry a ``TimeoutError`` is raised.  Raises ``CancelledError`` if the
+        node was cancelled, and propagates the node's function exception if it
+        failed.
         """
+        if self._bound_pool is None and not self.future.done():
+            raise RuntimeError(
+                "GraphFuture is not bound to a GraphPool; evaluate it with "
+                "pool.result(gf) or pool.bind(gf)"
+            )
         return self.future.result(timeout=timeout)
 
     def has_result(self) -> bool:
@@ -183,6 +195,8 @@ class GraphFuture:
         with self._lock:
             if self.queued:
                 return
+            if self._bound_pool is None:
+                self._bound_pool = pool
             pending = [d for d in self.dependencies if not _dependency_future(d).done()]
             if pending:
                 for dep in pending:
@@ -212,6 +226,7 @@ class GraphFuture:
                 return
             self.queued = True
             self._pool = pool
+            self._bound_pool = pool
         pool._submit_node(self)
 
     # ------------------------------------------------------------ #
@@ -250,14 +265,14 @@ class GraphFuture:
                     # Cancelled at pool exit while the body ran to
                     # completion — the completion is discarded.
                     pass
-        except Exception as e:
-            # ``except Exception`` (not BaseException) so KeyboardInterrupt /
-            # SystemExit propagate instead of being swallowed into the future.
-            if not self.future.done():
-                try:
-                    self.future.set_exception(e)
-                except concurrent.futures.InvalidStateError:
-                    pass
+        except BaseException as e:
+            # A worker cannot propagate a BaseException to the caller: the
+            # executor swallows it and this node's future would stay pending.
+            # Wrap SystemExit/KeyboardInterrupt and settle, so a hung future
+            # is impossible; the attempt's own layer decides what to report.
+            if not isinstance(e, Exception):
+                e = RuntimeError(f"{type(e).__qualname__}: {e}")
+            _set_exception_if_pending(self.future, e)
 
     def _forward_result(self, inner_future) -> None:
         """Copy a chained future's result into this node's future."""
@@ -266,12 +281,10 @@ class GraphFuture:
                 self.future.set_result(inner_future.result())
             except concurrent.futures.InvalidStateError:
                 pass
-        except Exception as e:
-            if not self.future.done():
-                try:
-                    self.future.set_exception(e)
-                except concurrent.futures.InvalidStateError:
-                    pass
+        except BaseException as e:
+            if not isinstance(e, Exception):
+                e = RuntimeError(f"{type(e).__qualname__}: {e}")
+            _set_exception_if_pending(self.future, e)
 
     def _resolve_arguments(self):
         """
@@ -468,6 +481,10 @@ class GraphPool:
                         for dep in node.dependencies:
                             if isinstance(dep, GraphFuture):
                                 visit(dep)
+                        if node._bound_pool is not None and node._bound_pool is not self:
+                            raise ValueError(
+                                "GraphFuture is already bound to another GraphPool"
+                            )
                         node._wire(self)
                         if nid not in self._node_ids:
                             self._node_ids.add(nid)
