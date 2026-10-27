@@ -39,4 +39,5 @@ Direction pointers: `INFO-013`.
 <!-- pb:index:start -->
 <!-- GENERATED FILE — do not edit. Regenerate with pb-registers. -->
 - **INFO-013** [Roadmap](roadmap.md) — Direction pointers for the flow engine — parallelism local and at HPC, determinism and audit, engine hygiene; rows cite canonical homes by ID
+- [selected](selected/README.md)
 <!-- pb:index:end -->
