@@ -33,3 +33,10 @@ Idea to IMP to decision to task, per the change pipeline:
 - `IMP-020` — split `ext` from `flow` at a future release.
 
 Direction pointers: `INFO-013`.
+
+## Contents
+
+<!-- pb:index:start -->
+<!-- GENERATED FILE — do not edit. Regenerate with pb-registers. -->
+- **INFO-013** [Roadmap](roadmap.md) — Direction pointers for the flow engine — parallelism local and at HPC, determinism and audit, engine hygiene; rows cite canonical homes by ID
+<!-- pb:index:end -->
