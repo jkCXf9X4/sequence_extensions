@@ -67,18 +67,34 @@ in `tests/flow/test_position.py`.
 
 ## Scratch output
 
-`out/` is scratch and is git-ignored. The recorded paths stay
-repository-relative (`tests/e2e/out/<flow>`), which keeps the golden stable
-between runs; being ignored keeps `git status` clean, including after a crash in
-the middle of a run. `test_scratch_output_is_ignored_and_untracked` guards both
-properties. `cases/` holds the committed inputs whose paths and hashes end up in
-the logs.
+`out/` is scratch and is git-ignored. Each pytest worker gets its own root,
+`tests/e2e/out/<worker>/` (`PYTEST_XDIST_WORKER`, or `main` without xdist), so
+two workers never share a run tree. The flows, however, are handed the stable
+alias `tests/e2e/out/<flow>` and run from `golden.scratch_view()` — a
+per-worker cwd where that alias and `tests/e2e/cases` resolve through symlinks
+into the worker's root and the committed inputs. The recorded paths therefore
+stay repository-relative and identical for every worker (the golden holds
+`tests/e2e/out/<flow>`), while the files on disk are per-worker. Being ignored
+keeps `git status` clean, including after a crash in the middle of a run.
+`test_scratch_output_is_ignored_and_untracked` guards both properties.
+`cases/` holds the committed inputs whose paths and hashes end up in the logs.
+
+Every committed flow directory carries a `case.md` recording what it pins, and
+the inputs carry one `cases/README.md` for the set. `e2e.fixture_guard` hashes
+`ref/` and `cases/` at session start and fails the session if either drifts
+during a verify run; it is skipped when `UPDATE_REF` is set.
 
 ## Regenerate the reference
 
 ```
 UPDATE_REF=1 python -m pytest tests/e2e
 ```
+
+**Refused in CI.** `save_reference` fails with `refusing to update the e2e
+reference in CI` when both `UPDATE_REF` and `CI` are set, before it writes
+anything. A CI job must never move the goalposts it reports against; the guard
+also skips its hashing under `UPDATE_REF`, so the only writer of `ref/` is a
+human-run regeneration.
 
 Run it only after a change is **decided intended**, then:
 

@@ -7,10 +7,14 @@ The protocol has two phases, and they never share an invocation:
 * **verify** (a normal run) — run the flow, compare against ``ref/``.  It never
   writes, so a red run cannot move the goalposts.
 
-Scratch lives in ``tests/e2e/out/`` and is git-ignored.  The run log records
-the paths it was given, so a fixed repository-relative scratch path keeps the
-golden stable between runs; being ignored keeps ``git status`` clean, even
-after a crash in the middle of a run.
+Scratch lives in ``tests/e2e/out/<worker>/`` — one root per pytest worker, so
+two workers never share a run tree — and is git-ignored.  The run log records
+the paths it was given, and the committed golden records them
+repository-relative, so the flows are handed the stable alias
+``tests/e2e/out/<flow>`` and run from a per-worker view directory
+(:func:`scratch_view`) where that alias resolves into this worker's root.  The
+log bytes therefore do not depend on which worker ran the flow, while the
+files on disk do.
 
 The comparison itself lives in :mod:`e2e.oracle` (hand-written, independent of
 the engine); this module owns the file layout and the two phases.
@@ -24,14 +28,24 @@ import re
 import shutil
 from pathlib import Path
 
+import pytest
+
 from e2e import oracle
 from sequence_extensions.flow import RunLog
 
 E2E = Path(__file__).resolve().parent
 REPO_ROOT = E2E.parent.parent
 
-#: Scratch output — git-ignored, one stable subtree per flow, cleaned per run.
-OUT = E2E / "out"
+#: Which pytest worker owns this process: two workers may never share scratch.
+WORKER_ID = re.sub(r"[^A-Za-z0-9_.-]+", "-", os.environ.get("PYTEST_XDIST_WORKER", "main"))
+WORKER_ID = WORKER_ID.strip("-") or "main"
+
+#: Scratch output — git-ignored, one root per worker, cleaned per run.
+OUT = E2E / "out" / WORKER_ID
+
+#: cwd-relative name for the scratch root.  It appears in the golden, so it is
+#: stable across workers; :func:`scratch_view` resolves it into :data:`OUT`.
+ALIAS = Path("tests/e2e/out")
 
 #: The committed golden: one log per flow plus one artifact tree per flow.
 REF = E2E / "ref"
@@ -41,6 +55,46 @@ CASES = Path("tests/e2e/cases")
 
 #: Regenerate instead of verify.  Read once at import; the tests monkeypatch it.
 UPDATE_REF = bool(os.environ.get("UPDATE_REF"))
+
+#: Provenance note inside each ``ref/<flow>/`` tree: documentation, not an artifact.
+CASE_NOTE = "case.md"
+
+
+def flow_out(flow_name: str) -> Path:
+    """The out argument handed to a flow: the stable, repo-relative alias.
+
+    The flows are given repository-relative paths on purpose — those strings
+    are recorded in the golden — so the caller must run from
+    :func:`scratch_view` for the alias to reach this worker's :data:`OUT`.
+    """
+    return ALIAS / flow_name
+
+
+def _link(link: Path, target: Path) -> None:
+    """Make ``link`` point at ``target`` (idempotent, replaces a wrong link)."""
+    target = Path(target).resolve()
+    if link.is_symlink() and link.resolve() == target:
+        return
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(target)
+
+
+def scratch_view() -> Path:
+    """This worker's cwd for the flows: where :data:`ALIAS` and ``CASES`` resolve.
+
+    The flows record the paths they are handed, and the committed golden holds
+    repository-relative ones, so the alias and the case path must resolve from
+    here: the alias into this worker's :data:`OUT`, the case path into the
+    committed inputs.  Both are symlinks — the inputs stay single-sourced and
+    scratch stays per-worker.
+    """
+    view = OUT / "cwd"
+    _link(view / ALIAS, OUT)
+    _link(view / CASES, E2E / "cases")
+    return view
+
 
 
 def fixed_run_id(flow_name: str) -> str:
@@ -69,10 +123,21 @@ def snapshot(root: Path) -> dict[Path, bytes]:
     }
 
 
+def _artifacts(root: Path) -> dict[Path, bytes]:
+    """Every artifact below ``root``: :func:`snapshot` minus the provenance note."""
+    return {
+        rel: data for rel, data in snapshot(root).items() if rel.name != CASE_NOTE
+    }
+
+
 def compare_artifacts(reference_dir: Path, run_dir: Path) -> list[str]:
-    """Byte-for-byte artifact comparison: same file set, same bytes."""
-    reference = snapshot(reference_dir)
-    produced = snapshot(run_dir)
+    """Byte-for-byte artifact comparison: same file set, same bytes.
+
+    ``case.md`` is provenance, not an artifact, so it is excluded: the flow
+    does not write it and regenerating the reference must not delete it.
+    """
+    reference = _artifacts(reference_dir)
+    produced = _artifacts(run_dir)
     problems = [
         f"artifact missing from the run: {rel}" for rel in sorted(set(reference) - set(produced))
     ]
@@ -134,11 +199,16 @@ def verify(flow_name: str, out: Path, *, ref_root: Path = REF) -> list[str]:
 def save_reference(flow_name: str, out: Path) -> str:
     """Write the golden for one flow.  Generation only — it never compares.
 
+    CI is refused outright: a reference rewrite is a reviewed, human act, and a
+    CI job must never be able to move the goalposts it reports against.
+
     The produced log must pass the structural oracle first: a structurally
     invalid run is not a reference, however recently it was generated.  The
     caller must stop after this call (``pytest.skip``); falling through to
     :func:`verify` would make a regeneration run green by construction.
     """
+    if UPDATE_REF and os.environ.get("CI"):
+        pytest.fail("refusing to update the e2e reference in CI")
     log = log_path(flow_name)
     records, problems = oracle.load_log(log)
     problems += oracle.validate_log(records, where=f"generated {flow_name}")
@@ -149,9 +219,13 @@ def save_reference(flow_name: str, out: Path) -> str:
     REF.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(log, ref_log)
     ref_dir = REF / flow_name
+    note = ref_dir / CASE_NOTE
+    note_bytes = note.read_bytes() if note.is_file() else None
     if ref_dir.exists():
         shutil.rmtree(ref_dir)
     shutil.copytree(out, ref_dir)
+    if note_bytes is not None:
+        note.write_bytes(note_bytes)
     return (
         f"wrote the reference for {flow_name!r}: "
         f"{ref_log.relative_to(REPO_ROOT)} and {ref_dir.relative_to(REPO_ROOT)}"

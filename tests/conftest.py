@@ -2,8 +2,19 @@
 
 import pytest
 
+from e2e import fixture_guard
 from markers import LEVEL_MARKERS, level_for
 from sequence_extensions import dict_ext, list_ext
+
+
+def pytest_sessionstart(session):
+    """Hash the committed e2e fixtures before anything can rewrite them."""
+    fixture_guard.snapshot()
+
+
+def pytest_sessionfinish(session):
+    """Fail the session if a run changed the committed e2e fixtures."""
+    fixture_guard.check(session)
 
 
 @pytest.fixture

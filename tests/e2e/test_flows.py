@@ -10,15 +10,17 @@ and ``README.md``):
 * **regenerate** (``UPDATE_REF=1``) — write ``ref/`` and skip verification, so a
   regeneration run cannot report a passing comparison in the same invocation.
 
-Scratch (``tests/e2e/out/``) is git-ignored: recorded paths stay
-repository-relative and stable, and a run — or a crash mid-run — cannot leave a
-tracked file modified.
+Scratch (``tests/e2e/out/<worker>/``) is git-ignored and per-worker: the flows
+are handed the stable alias ``tests/e2e/out/<flow>`` and run from
+``golden.scratch_view()``, so the log records the same repository-relative path
+for every worker while the files land in a per-worker tree.
 
 Regenerate the reference::
 
     UPDATE_REF=1 python -m pytest tests/e2e
 
 Then review the diff under ``tests/e2e/ref/`` and re-run without ``UPDATE_REF``.
+Regeneration is refused when ``CI`` is set.
 """
 
 from __future__ import annotations
@@ -36,9 +38,9 @@ from sequence_extensions.flow import RunOptions, execute_flow
 
 
 @pytest.fixture(autouse=True)
-def _from_repo_root(monkeypatch):
-    """Run from the repository root (paths end up in the logs)."""
-    monkeypatch.chdir(golden.REPO_ROOT)
+def _from_scratch_view(monkeypatch):
+    """Run from this worker's scratch view (the flows record relative paths)."""
+    monkeypatch.chdir(golden.scratch_view())
 
 
 # ---------------------------------------------------------------- #
@@ -74,7 +76,7 @@ PRODUCERS = {"campaign": _run_campaign, "failing_campaign": _run_failing_campaig
 
 def _check(flow_name: str, produce, *, ref_root: Path = golden.REF) -> None:
     """The one per-flow body: clean, run, then regenerate *or* verify."""
-    out = Path("tests/e2e/out") / flow_name
+    out = golden.flow_out(flow_name)
     golden.clean(out)
     produce(out)
     if golden.UPDATE_REF:
@@ -98,7 +100,7 @@ def test_the_same_flow_gives_the_same_bytes_twice():
     """Determinism: reference mode pins the run id, the timing, the record
     order, and the worker name, so a repeated run rewrites the same bytes —
     not merely an equal verdict."""
-    out = Path("tests/e2e/out/campaign")
+    out = golden.flow_out("campaign")
     runs = []
     for _ in range(2):
         golden.clean(out)
@@ -193,7 +195,7 @@ def test_a_changed_reference_byte_turns_the_golden_red(tmp_path, mutate):
     copy — a test never touches the real reference."""
     copy = tmp_path / "ref"
     shutil.copytree(golden.REF, copy)
-    out = Path("tests/e2e/out/campaign")
+    out = golden.flow_out("campaign")
     golden.clean(out)
     _run_campaign(out)
     assert golden.verify("campaign", out, ref_root=copy) == [], "the untouched copy must be green"
