@@ -52,9 +52,15 @@ def test_jsonable_set_becomes_sorted_list():
     assert jsonable({3, 1, 2}) == [1, 2, 3]
 
 
-def test_jsonable_unorderable_set_falls_back():
-    out = jsonable({"b", "a"}) == ["a", "b"]
-    assert out
+def test_jsonable_mixed_set_falls_back_to_canonical_order():
+    # sorted() raises TypeError for a mixed-type set; the fallback orders by
+    # type name then canonical JSON, so it is deterministic without hashing.
+    with pytest.raises(TypeError):
+        sorted({1, "a"})
+    assert jsonable({1, "a"}) == [1, "a"]
+    assert jsonable({"a", 1}) == [1, "a"]
+    assert jsonable(frozenset({1, "a"})) == [1, "a"]
+    assert jsonable({None, 1}) == [None, 1]
 
 
 def test_jsonable_datetime_iso():

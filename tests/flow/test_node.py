@@ -157,6 +157,7 @@ def test_node_call_outside_run_works_unlogged():
 # ---------------------------------------------------------------- #
 # Retry
 # ---------------------------------------------------------------- #
+@pytest.mark.flaky_timing
 def test_node_retry_succeeds_after_transient_failures():
     calls = {"n": 0}
 
@@ -186,6 +187,7 @@ def test_node_retry_exhausted_raises_last_error():
     assert calls["n"] == 3
 
 
+@pytest.mark.flaky_timing
 def test_node_zero_delay_default_is_fast():
     calls = {"n": 0}
 
@@ -228,6 +230,7 @@ def test_node_baseexception_wrapped_to_runtime_error():
 # ---------------------------------------------------------------- #
 # Timeout
 # ---------------------------------------------------------------- #
+@pytest.mark.flaky_timing
 def test_node_timeout_raises_named_error():
     @node(timeout=0.1)
     def slow():
@@ -268,6 +271,7 @@ def test_node_timeout_counts_as_attempt_failure_and_retries():
     assert excinfo.value.attempt == 3
 
 
+@pytest.mark.flaky_timing
 def test_node_timeout_budget_is_per_attempt():
     attempts = {"n": 0}
 
@@ -393,6 +397,7 @@ def test_submit_future_as_keyword_argument():
     assert execute_flow(campaign, options=RunOptions(log=None)).result == 11
 
 
+@pytest.mark.flaky_timing
 def test_submit_runs_concurrently():
     @node
     def sleepish(i):
@@ -410,6 +415,7 @@ def test_submit_runs_concurrently():
     assert time.perf_counter() - t0 < 0.6
 
 
+@pytest.mark.flaky_timing
 def test_submit_inside_a_worker_fans_out_without_deadlocking():
     @node
     def inner(x):

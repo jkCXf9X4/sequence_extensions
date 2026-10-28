@@ -39,6 +39,17 @@ pythonpath = ["src", "."]
 testpaths = ["tests"]
 xfail_strict = true
 addopts = "-ra"
+markers = [
+  "level_static",
+  "level_unit",
+  "level_component",
+  "level_contract",
+  "level_integration",
+  "level_system",
+  "level_acceptance",
+  "slow",
+  "flaky_timing: asserts a wall-clock bound or uses sleeps for synchronisation",
+]
 
 [tool.coverage.run]
 source = ["sequence_extensions"]
@@ -56,7 +67,7 @@ target-version = "py311"
 select = ["E", "F", "W", "I", "UP", "B"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["e2e", "resources", "sequence_extensions"]
+known-first-party = ["e2e", "markers", "resources", "sequence_extensions"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

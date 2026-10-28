@@ -341,6 +341,7 @@ def test_jsonable_mixed_set_is_deterministic():
 # ---------------------------------------------------------------- #
 # D2 - concurrent fixed-clock runs cannot clobber one log
 # ---------------------------------------------------------------- #
+@pytest.mark.flaky_timing
 def test_concurrent_fixed_clock_runs_are_rejected(tmp_path):
     gate = threading.Event()
 
@@ -731,3 +732,43 @@ def test_fixed_clock_lock_is_cross_process(tmp_path):
     finally:
         holder.terminate()
         holder.wait(timeout=5)
+
+
+# ---------------------------------------------------------------- #
+# E1 - an engine fault while finalizing settles instead of hanging
+# ---------------------------------------------------------------- #
+@pytest.mark.parametrize("fault_type", [RuntimeError, KeyboardInterrupt])
+def test_finish_fault_settles_the_outcome_instead_of_hanging(fault_type):
+    """A callback/timer finalizer that raises must settle the outcome.
+
+    ``_finish_safely`` is the timer/callback entry point; an engine error
+    there (or a non-``Exception`` ``BaseException``) becomes the outcome's
+    exception, so the drain cannot wait on an unsettled future.
+    """
+    from sequence_extensions.flow._attempt import _AttemptRunner
+    from sequence_extensions.flow._context import AttemptToken
+
+    @node
+    def leaf():
+        return 1
+
+    runner = _AttemptRunner(
+        leaf,
+        (),
+        {},
+        None,
+        parent_token=None,
+        run_attempt_token=None,
+        retries=0,
+        delay=0.0,
+        timeout=None,
+    )
+
+    def faulting_finish(*args, **kwargs):
+        raise fault_type("engine fault")
+
+    runner._finish = faulting_finish
+    retry = runner._finish_safely(1, "ok", 1, AttemptToken(), "started", time.perf_counter())
+    assert retry is False
+    with pytest.raises(RuntimeError, match="engine fault"):
+        runner.outcome.result(timeout=1)

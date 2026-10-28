@@ -2,6 +2,7 @@
 
 import pytest
 
+from markers import LEVEL_MARKERS, level_for
 from sequence_extensions import dict_ext, list_ext
 
 
@@ -23,3 +24,11 @@ def int_dict():
 @pytest.fixture
 def empty_dict():
     return dict_ext()
+
+
+def pytest_collection_modifyitems(config, items):
+    """Give every test exactly one level marker, by directory."""
+    for item in items:
+        if any(marker.name in LEVEL_MARKERS for marker in item.iter_markers()):
+            continue
+        item.add_marker(getattr(pytest.mark, level_for(item.path)))

@@ -222,6 +222,7 @@ def test_concurrent_binds_on_one_pool_are_safe():
         assert [node.result(timeout=2) for node in nodes] == list(range(20))
 
 
+@pytest.mark.flaky_timing
 def test_cancelled_queued_node_does_not_run_its_body():
     called = []
     with GraphPool(max_workers=1) as p:

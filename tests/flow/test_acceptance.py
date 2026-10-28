@@ -103,6 +103,7 @@ def campaign(cases_dir: Path, tolerance: float = TOLERANCE) -> dict:
 # ---------------------------------------------------------------- #
 # The test
 # ---------------------------------------------------------------- #
+@pytest.mark.flaky_timing
 def test_campaign_verdict_and_audit_log(tmp_path):
     _FLAKED.clear()
     cases_dir = _write_cases(tmp_path / "cases")

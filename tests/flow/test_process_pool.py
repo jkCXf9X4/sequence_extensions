@@ -375,6 +375,7 @@ def test_process_pool_shared_across_two_runs(tmp_path):
 # ---------------------------------------------------------------- #
 # The point: CPU-bound parallelism
 # ---------------------------------------------------------------- #
+@pytest.mark.flaky_timing
 def test_process_pool_beats_gil_on_cpu_bound_work(tmp_path):
     n = 3_000_000
     t0 = time.perf_counter()

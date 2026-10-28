@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
@@ -27,6 +28,26 @@ def _node_records(recs):
 
 def _read_log(log_dir):
     return RunLog.records(next(Path(log_dir).glob("*.jsonl")))
+
+
+def _within(seconds, fn):
+    """Run ``fn`` on a daemon thread; fail instead of hanging the suite."""
+    box = {}
+
+    def target():
+        try:
+            box["value"] = fn()
+        except BaseException as exc:  # noqa: BLE001 - re-raised below
+            box["error"] = exc
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(seconds)
+    if thread.is_alive():
+        pytest.fail(f"flow did not return within {seconds}s")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
 
 
 # ---------------------------------------------------------------- #
@@ -80,6 +101,7 @@ def test_owned_pool_is_settled_if_drain_raises(monkeypatch):
     assert len(settled) == 1
 
 
+@pytest.mark.flaky_timing
 def test_run_timeout_does_not_block_on_pending_caller_owned_nodes(tmp_path):
     from sequence_extensions.graph import GraphPool
 
@@ -283,19 +305,41 @@ def test_failure_cancels_pending_and_records_them(tmp_path):
     assert recs[-1]["status"] == "error"
 
 
-def test_max_workers_bounds_concurrency(tmp_path):
+@pytest.mark.parametrize("max_workers", [1, 2, 3])
+def test_max_workers_bounds_concurrency(max_workers):
+    """Observed in-flight concurrency reaches the bound and never exceeds it.
+
+    A barrier of ``max_workers`` parties forces that many bodies to overlap;
+    a pool that over-subscribes records a higher peak, and one that
+    under-subscribes breaks the barrier (a failed test, not a hang).
+    """
+    tasks = max_workers * 2
+    barrier = threading.Barrier(max_workers, timeout=5)
+    lock = threading.Lock()
+    in_flight = 0
+    peak = 0
+
     @node
-    def sleepish():
-        time.sleep(0.1)
-        return 1
+    def work(i):
+        nonlocal in_flight, peak
+        with lock:
+            in_flight += 1
+            peak = max(peak, in_flight)
+        try:
+            barrier.wait()
+        finally:
+            with lock:
+                in_flight -= 1
+        return i
 
     @node
     def campaign():
-        return gather([sleepish.submit(), sleepish.submit()])
+        return gather([work.submit(i) for i in range(tasks)])
 
-    t0 = time.perf_counter()
-    execute_flow(campaign, options=RunOptions(log=None, max_workers=1))
-    assert time.perf_counter() - t0 >= 0.2
+    run = execute_flow(campaign, options=RunOptions(log=None, max_workers=max_workers))
+    assert sorted(run.result) == list(range(tasks))
+    assert peak == max_workers
+    assert in_flight == 0
 
 
 def test_node_records_carry_worker_names(tmp_path):
@@ -351,6 +395,7 @@ def test_execute_flow_inside_a_node_is_rejected(tmp_path):
         execute_flow(parent, options=RunOptions(log=tmp_path))
 
 
+@pytest.mark.flaky_timing
 def test_run_timeout_records_timeout_and_drops_late_records(tmp_path):
     @node
     def slow():
@@ -385,6 +430,68 @@ def test_node_timeout_is_an_error_in_the_run_verdict(tmp_path):
     assert _node_records(recs)[0]["status"] == "timeout"
     # The run's own budget did not expire; a node did.
     assert recs[-1]["status"] == "error"
+
+
+# ---------------------------------------------------------------- #
+# Errors raised inside the timeout thread / by the executor
+# ---------------------------------------------------------------- #
+def test_root_raising_inside_the_timeout_thread_surfaces_its_error(tmp_path):
+    """The run-level timeout thread captures the root's exception, not a hang."""
+
+    @node
+    def root():
+        raise ValueError("inside the timeout thread")
+
+    with pytest.raises(ValueError, match="inside the timeout thread") as info:
+        execute_flow(root, options=RunOptions(log=tmp_path, timeout=5))
+
+    assert info.value.run.status == "error"
+    recs = _read_log(tmp_path)
+    root_record = _node_records(recs)[0]
+    assert root_record["node"] == "root"
+    assert root_record["status"] == "error"
+    assert root_record["error"]["type"] == "ValueError"
+    assert recs[-1]["record"] == "run_end"
+    assert recs[-1]["status"] == "error"
+
+
+class _BrokenSubmitExecutor:
+    def submit(self, fn, *args, **kwargs):
+        raise RuntimeError("executor gone")
+
+    def shutdown(self, wait=True, cancel_futures=False):
+        pass
+
+
+def test_executor_submit_failure_surfaces_as_a_failed_node(tmp_path):
+    """A pool that cannot queue work settles the node; the run does not hang."""
+    from sequence_extensions.graph import GraphPool
+
+    @node
+    def leaf(x):
+        return x
+
+    @node
+    def campaign():
+        return leaf.submit(1)
+
+    pool = GraphPool(max_workers=1)
+    pool._executor = _BrokenSubmitExecutor()
+    try:
+        with pytest.raises(RuntimeError, match="executor gone") as info:
+            _within(
+                10,
+                lambda: execute_flow(campaign, options=RunOptions(pool=pool, log=tmp_path)),
+            )
+    finally:
+        pool.__exit__(None, None, None)
+
+    assert info.value.run.failed_nodes == (("campaign", "leaf"),)
+    recs = _read_log(tmp_path)
+    leaf_record = next(r for r in _node_records(recs) if r["node"] == "leaf")
+    assert leaf_record["status"] == "skipped"
+    assert leaf_record["error"]["type"] == "RuntimeError"
+    assert recs[-1]["record"] == "run_end"
 
 
 # ---------------------------------------------------------------- #

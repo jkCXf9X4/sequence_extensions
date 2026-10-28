@@ -174,3 +174,6 @@ runs/
 
 # Scratch output written by the runnable examples
 examples/**/_out/
+
+# Scratch output of the e2e golden runs: rewritten by every run, never committed
+tests/e2e/out/
