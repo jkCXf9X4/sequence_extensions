@@ -41,12 +41,18 @@ The flow layer (`sequence_extensions.flow`) is the audit-first engine, built on 
 - Run retries: one run file per attempt; the raised exception carries the last attempt's `Run`.
 - Run timeout: bounds the whole attempt; on expiry the run's pool is cancelled, the log is abandoned, `run_end` records `timeout`, and `NodeTimeoutError` is raised.
 - Edges: futures (graph or plain) passed as submit arguments resolve to results before the body runs.  General DAGs; cycles raise `ValueError` at submit.
-- Futures first: a node may return a value or a future; the attempt record, retry, and timeout settle on completion.  A node body may submit; it returns the future and does not wait.  `.result()` on an incomplete future inside a node body (root or worker) raises with guidance.  `gather` resolves futures inside a value, preserving its shape.
+- Futures first: a node may return a value or a future; the attempt record, retry, and timeout settle on completion.  A body may submit but cannot consume a pending future in place — see `INFO-015`.
 - Serialization: paths log as path plus sha256; `summary=True` logs counts, not items.
 - `jsonable` marks cyclic containers and over-deep containers; it maps non-finite floats to `{"float": ...}` and disambiguates colliding dict keys.
 - The writer emits strict JSON (`allow_nan=False`) and UTF-8 bytes that survive lone surrogates.
 - A `BaseException` from a node body is wrapped to `RuntimeError` — the node and the graph substrate settle instead of leaving a pending future.
 - Settle-time records (replayed process records, skip records) are written by the run thread before `run_end`, never from done-callbacks: `set_result` wakes drain waiters before callbacks finish, so a callback-side write could race the log closing.
+
+## Node body and future consumption
+
+A node body cannot consume a pending future's value in place — no mid-body
+await, no `.result()`, no iteration.  The contract and the supported fan-out
+shape: `INFO-015`.
 
 ## Lifecycle
 
@@ -96,3 +102,4 @@ The flow layer (`sequence_extensions.flow`) is the audit-first engine, built on 
 - The substrate: `graph.graph_future`.
 - The use-case catalog: `INFO-010`.
 - Why the workflow layer was superseded: `DR-005`.
+- The node-body future-consumption contract: `INFO-015`.

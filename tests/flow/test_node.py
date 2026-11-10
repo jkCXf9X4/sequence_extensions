@@ -485,6 +485,66 @@ def test_returning_a_future_works_from_any_position(tmp_path, position):
     assert run.result == [2, 3]
 
 
+@pytest.mark.parametrize("position", ["root", "wrapped"])
+def test_iterating_a_pending_future_inside_a_node_body_raises(tmp_path, position):
+    """A body cannot fan out over a pending future: the iterated list must be
+    concrete inside the body. The rule does not depend on where the body runs."""
+
+    @node
+    def list_cases():
+        return sorted([3, 1, 2])
+
+    @node
+    def fan_out():
+        cases = list_cases.submit()
+        return sum(x * 2 for x in cases)
+
+    @node
+    def outer():
+        return fan_out.submit()
+
+    flow = outer if position == "wrapped" else fan_out
+    with pytest.raises(TypeError, match="not iterable"):
+        execute_flow(flow, options=RunOptions(log=tmp_path, max_workers=1))
+
+    records = RunLog.records(next(Path(tmp_path).glob("*.jsonl")))
+    failed = [
+        r
+        for r in records
+        if r["record"] == "node" and r["node"] == "fan_out" and r["status"] == "error"
+    ]
+    assert failed and failed[0]["error"]["type"] == "TypeError"
+
+
+def test_fan_out_receives_concrete_list_from_a_submitted_producer(tmp_path):
+    """The supported fan-out shape: submit the list producer and pass its
+    future as an argument, so the list is concrete before the fan-out body runs."""
+
+    @node
+    def list_cases():
+        return [3, 1, 2]
+
+    @node
+    def scale(case: int, factor: int) -> int:
+        return case * factor
+
+    @node
+    def fan_out(cases: list[int], factor: int):
+        scaled = [scale.submit(c, factor) for c in cases]
+        return gather(scaled)
+
+    @node
+    def total(values):
+        return sum(values)
+
+    @node
+    def campaign(factor: int):
+        return total.submit(fan_out.submit(list_cases.submit(), factor))
+
+    run = execute_flow(campaign, 2, options=RunOptions(log=tmp_path))
+    assert run.result == (3 + 1 + 2) * 2
+
+
 def test_plain_call_inside_run_is_logged_sequentially(tmp_path):
     @node
     def inline(x):
