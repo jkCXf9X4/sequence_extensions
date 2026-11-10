@@ -101,10 +101,7 @@ def _plan(value, items, _seen=None, _depth: int = 0):
     if isinstance(value, Mapping):
         _seen, marker = _enter_gather(value, _seen, _depth)
         try:
-            return {
-                key: _plan(item, items, _seen, _depth + 1)
-                for key, item in value.items()
-            }
+            return {key: _plan(item, items, _seen, _depth + 1) for key, item in value.items()}
         finally:
             _seen.discard(marker)
     if isinstance(value, list):

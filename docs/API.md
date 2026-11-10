@@ -954,7 +954,7 @@ def cpu_heavy(i):
 @node
 def campaign(items):
     futures = [cpu_heavy.submit(i) for i in items]  # dispatched to worker processes
-    return gather(futures)                          # no .result() wait
+    return gather(futures)  # no .result() wait
 
 
 with ProcessGraphPool(max_workers=4) as pool:
@@ -984,21 +984,26 @@ from pathlib import Path
 
 from sequence_extensions.flow import NodePolicy, RunOptions, execute_flow, gather, node
 
+
 @node(retries=2, retry_delay_seconds=0.1, timeout=60.0)
 def simulate(case): ...
+
 
 @node
 def evaluate(sim, tolerance): ...
 
+
 @node
 def merge(evaluations):
     return {"count": len(evaluations)}
+
 
 @node
 def campaign(cases_dir):
     cases = sorted(cases_dir.glob("*.csv"))
     sims = [simulate.submit(c) for c in cases]
     return merge.submit(gather([evaluate.submit(s, 0.5) for s in sims]))
+
 
 run = execute_flow(campaign, Path("cases"), options=RunOptions(max_workers=8, log="runs"))
 run.result, run.run_id, run.status, run.log, run.duration_ms
@@ -1144,13 +1149,11 @@ from sequence_extensions.flow import RunOptions, execute_flow, gather, node
 
 
 @node(retries=2, retry_delay_seconds=0.05)
-def simulate(case: Path) -> dict:
-    ...
+def simulate(case: Path) -> dict: ...
 
 
 @node
-def evaluate(sim: dict, tolerance: float) -> dict:
-    ...
+def evaluate(sim: dict, tolerance: float) -> dict: ...
 
 
 @node

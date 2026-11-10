@@ -244,9 +244,7 @@ def test_process_timeout_is_recorded_and_the_pool_stays_usable(tmp_path):
             _within(15, lambda: execute_flow(timed, options=RunOptions(pool=pool, log=timeout_log)))
         assert info.value.node == "_slow_then_mark"
 
-        run = _within(
-            15, lambda: execute_flow(after, options=RunOptions(pool=pool, log=after_log))
-        )
+        run = _within(15, lambda: execute_flow(after, options=RunOptions(pool=pool, log=after_log)))
         assert run.result == 42
 
         # Bounded wait for the abandoned body, which proves it was not killed.
@@ -257,9 +255,7 @@ def test_process_timeout_is_recorded_and_the_pool_stays_usable(tmp_path):
     assert marker.exists(), "abandoned process body was killed; update the documented limit"
 
     timeout_records = _read_log(timeout_log)
-    timed_record = next(
-        r for r in _node_records(timeout_records) if r["node"] == "_slow_then_mark"
-    )
+    timed_record = next(r for r in _node_records(timeout_records) if r["node"] == "_slow_then_mark")
     assert timed_record["status"] == "timeout"
     assert timed_record["error"]["type"] == "NodeTimeoutError"
     assert timeout_records[-1]["record"] == "run_end"

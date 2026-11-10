@@ -17,6 +17,7 @@ _BLOCKED_IN_BODY = (
     "instead (or submit a dependent node)"
 )
 
+
 def _is_future(value) -> bool:
     return isinstance(value, (GraphFuture, concurrent.futures.Future))
 

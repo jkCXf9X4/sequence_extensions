@@ -325,13 +325,13 @@ run = execute_flow(
     campaign,
     Path("cases"),
     options=RunOptions(
-        max_workers=8,                       # default 16
-        log="output/runs",                   # default "runs"; None disables
-        summary=False,                       # log item counts for long containers
-        fixed_clock=False,                   # reference mode (see below)
-        retries=0,                           # run-level retries (one log per attempt)
-        timeout=None,                        # run-level wall budget
-        node_defaults=NodePolicy(            # defaults for nodes that left a value unset
+        max_workers=8,  # default 16
+        log="output/runs",  # default "runs"; None disables
+        summary=False,  # log item counts for long containers
+        fixed_clock=False,  # reference mode (see below)
+        retries=0,  # run-level retries (one log per attempt)
+        timeout=None,  # run-level wall budget
+        node_defaults=NodePolicy(  # defaults for nodes that left a value unset
             retries=2,
             retry_delay_seconds=0.5,
             timeout=30.0,

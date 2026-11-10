@@ -533,9 +533,7 @@ def _run_campaign(runs_dir, *, fail_first=False):
         firsts = [stage.submit(x) for x in items]
         return gather([combine.submit(f, 10) for f in firsts])
 
-    run = execute_flow(
-        mini, [1, 2, 3], options=RunOptions(log=str(runs_dir), name="mini")
-    )
+    run = execute_flow(mini, [1, 2, 3], options=RunOptions(log=str(runs_dir), name="mini"))
     logs = list(Path(runs_dir).glob("*.jsonl"))
     assert len(logs) == 1
     return logs[0], run.result

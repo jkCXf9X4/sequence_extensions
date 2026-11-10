@@ -132,9 +132,7 @@ def test_run_timeout_does_not_block_on_pending_caller_owned_nodes(tmp_path):
     recs = _read_log(tmp_path)
     assert recs[-1]["record"] == "run_end"
     assert recs[-1]["status"] == "timeout"
-    assert any(
-        record.get("reason") == "pending at run end" for record in _node_records(recs)
-    )
+    assert any(record.get("reason") == "pending at run end" for record in _node_records(recs))
 
 
 def test_run_id_is_unique_and_prefixed():
@@ -512,9 +510,7 @@ def test_caller_owned_pool_is_reused_and_not_settled():
                 a = work.submit(21)
                 return work.submit(a)
 
-            assert (
-                execute_flow(campaign, options=RunOptions(log=None, pool=shared)).result == 84
-            )
+            assert execute_flow(campaign, options=RunOptions(log=None, pool=shared)).result == 84
 
 
 def test_caller_owned_pool_is_drained_not_settled_on_error(tmp_path):
@@ -541,11 +537,7 @@ def test_caller_owned_pool_is_drained_not_settled_on_error(tmp_path):
     assert sorted(recorded) == [1, 2]
     recs = _read_log(tmp_path)
     assert recs[-1]["status"] == "error"
-    assert all(
-        r["status"] == "ok"
-        for r in _node_records(recs)
-        if r["node"] == "slow"
-    )
+    assert all(r["status"] == "ok" for r in _node_records(recs) if r["node"] == "slow")
     shared.__exit__(None, None, None)
 
 
@@ -568,12 +560,8 @@ def test_concurrent_runs_in_one_process(tmp_path):
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
     with ThreadPoolExecutor(max_workers=2) as ex:
-        f1 = ex.submit(
-            execute_flow, run_a, options=RunOptions(log=tmp_path / "a", name="fa")
-        )
-        f2 = ex.submit(
-            execute_flow, run_b, options=RunOptions(log=tmp_path / "b", name="fb")
-        )
+        f1 = ex.submit(execute_flow, run_a, options=RunOptions(log=tmp_path / "a", name="fa"))
+        f2 = ex.submit(execute_flow, run_b, options=RunOptions(log=tmp_path / "b", name="fb"))
         assert f1.result(timeout=10).result == 1
         assert f2.result(timeout=10).result == 2
 

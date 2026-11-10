@@ -48,9 +48,9 @@ def test_component_selection_is_stable_and_excludes_flaky_timing(request):
 
     for item in request.session.items:
         names = _marker_names(item)
-        assert matches(item) is (
-            "level_component" in names and "flaky_timing" not in names
-        ), item.nodeid
+        assert matches(item) is ("level_component" in names and "flaky_timing" not in names), (
+            item.nodeid
+        )
 
     # Same descriptor, second evaluation: identical membership and order.
     assert selected == [item.nodeid for item in request.session.items if matches(item)]

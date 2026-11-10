@@ -96,7 +96,6 @@ def scratch_view() -> Path:
     return view
 
 
-
 def fixed_run_id(flow_name: str) -> str:
     """The id ``fixed_clock`` mode pins: same flow, same id, every run."""
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", flow_name).strip("-") or "flow"
@@ -125,9 +124,7 @@ def snapshot(root: Path) -> dict[Path, bytes]:
 
 def _artifacts(root: Path) -> dict[Path, bytes]:
     """Every artifact below ``root``: :func:`snapshot` minus the provenance note."""
-    return {
-        rel: data for rel, data in snapshot(root).items() if rel.name != CASE_NOTE
-    }
+    return {rel: data for rel, data in snapshot(root).items() if rel.name != CASE_NOTE}
 
 
 def compare_artifacts(reference_dir: Path, run_dir: Path) -> list[str]:

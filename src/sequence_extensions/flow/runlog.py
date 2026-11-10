@@ -85,6 +85,7 @@ def _release_fixed_log_lock(key: str | None) -> None:
     with _FIXED_LOG_LOCKS_GUARD:
         _FIXED_LOG_LOCKS.pop(key, None)
 
+
 #: Fields :meth:`RunLog.diff` drops before comparing: record order
 #: (``seq``), run identity (``run_id``), and wall-clock / worker timing —
 #: none of them are determinism claims.  Pass a replacement set to
@@ -320,9 +321,7 @@ class RunLog:
     # Reading: selection, summary, comparison
     # ------------------------------------------------------------ #
     @staticmethod
-    def filter(
-        records, *, record=None, node=None, status=None, attempt=None, path=None
-    ) -> list:
+    def filter(records, *, record=None, node=None, status=None, attempt=None, path=None) -> list:
         """Records matching every given field; ``None`` means no constraint.
 
         ``record`` selects the record kind (``"run_start"`` / ``"node"``

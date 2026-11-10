@@ -109,9 +109,7 @@ def test_non_utf8_path_result_is_logged(tmp_path):
 
     run = _within(5, lambda: execute_flow(weird_path, options=RunOptions(log=tmp_path)))
     assert run.status == "ok"
-    assert any(
-        "bad_" in str(record.get("result", "")) for record in RunLog.records(run.log)
-    )
+    assert any("bad_" in str(record.get("result", "")) for record in RunLog.records(run.log))
 
 
 def test_broken_str_result_is_described(tmp_path):
@@ -257,9 +255,7 @@ def test_process_factory_closures_execute_their_own_function(tmp_path):
     with ProcessGraphPool(max_workers=2) as pool:
         run = _within(
             20,
-            lambda: execute_flow(
-                _root_factories, options=RunOptions(pool=pool, log=tmp_path)
-            ),
+            lambda: execute_flow(_root_factories, options=RunOptions(pool=pool, log=tmp_path)),
         )
     assert run.result == [1, 10]
     results = {
@@ -655,8 +651,7 @@ def test_runner_passes_options_after_other_positional_inputs(tmp_path):
 
     _write_runner_module(tmp_path)
     (tmp_path / "cfg.toml").write_text(
-        "[run]\nmodule='optmod'\nflow='pair'\nlog=''\n"
-        "[inputs]\nx=1\noptions=2\ny=3\n"
+        "[run]\nmodule='optmod'\nflow='pair'\nlog=''\n[inputs]\nx=1\noptions=2\ny=3\n"
     )
     sys.path.insert(0, str(tmp_path))
     try:

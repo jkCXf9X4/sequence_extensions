@@ -330,9 +330,7 @@ class GraphPool:
     def __init__(self, max_workers: int | None = 16):
         """Create a pool; the executor is created lazily on first use."""
         if max_workers is not None and (
-            isinstance(max_workers, bool)
-            or not isinstance(max_workers, int)
-            or max_workers < 1
+            isinstance(max_workers, bool) or not isinstance(max_workers, int) or max_workers < 1
         ):
             raise ValueError(f"max_workers must be a positive integer or None, got {max_workers!r}")
         self.max_workers = max_workers
@@ -468,6 +466,7 @@ class GraphPool:
                     raise ValueError("dependency cycle detected")
                 self._visiting.add(source_id)
             try:
+
                 def visit(node):
                     nid = id(node)
                     if nid in self._visiting:
@@ -482,9 +481,7 @@ class GraphPool:
                             if isinstance(dep, GraphFuture):
                                 visit(dep)
                         if node._bound_pool is not None and node._bound_pool is not self:
-                            raise ValueError(
-                                "GraphFuture is already bound to another GraphPool"
-                            )
+                            raise ValueError("GraphFuture is already bound to another GraphPool")
                         node._wire(self)
                         if nid not in self._node_ids:
                             self._node_ids.add(nid)

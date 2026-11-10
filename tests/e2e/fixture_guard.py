@@ -66,9 +66,7 @@ def check(session) -> None:
         return
     session.exitstatus = 1
     reporter = session.config.pluginmanager.get_plugin("terminalreporter")
-    message = "committed fixtures changed during the run:\n" + "\n".join(
-        f"  {d}" for d in drifted
-    )
+    message = "committed fixtures changed during the run:\n" + "\n".join(f"  {d}" for d in drifted)
     if reporter:
         reporter.write_line(message, red=True)
     else:

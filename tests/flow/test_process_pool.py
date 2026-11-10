@@ -224,9 +224,7 @@ def test_process_pool_gather_template_crosses_the_boundary(tmp_path):
 
     @node
     def root():
-        return gather(
-            {"a": _plain.submit(1), "b": [_plain.submit(2), {"c": _plain.submit(3)}]}
-        )
+        return gather({"a": _plain.submit(1), "b": [_plain.submit(2), {"c": _plain.submit(3)}]})
 
     with pool:
         run = execute_flow(root, options=RunOptions(pool=pool, log=tmp_path))
@@ -425,16 +423,12 @@ def test_concurrent_runs_one_process_pool_per_run(tmp_path):
         f1 = ex.submit(
             execute_flow,
             run_a,
-            options=RunOptions(
-                pool=ProcessGraphPool(max_workers=1), log=tmp_path / "a", name="fa"
-            ),
+            options=RunOptions(pool=ProcessGraphPool(max_workers=1), log=tmp_path / "a", name="fa"),
         )
         f2 = ex.submit(
             execute_flow,
             run_b,
-            options=RunOptions(
-                pool=ProcessGraphPool(max_workers=1), log=tmp_path / "b", name="fb"
-            ),
+            options=RunOptions(pool=ProcessGraphPool(max_workers=1), log=tmp_path / "b", name="fb"),
         )
         assert f1.result(timeout=10).result == 1
         assert f2.result(timeout=10).result == 2

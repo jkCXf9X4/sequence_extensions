@@ -621,6 +621,3 @@ def test_pickle_roundtrips_policy_values():
     bare = node(lambda: "ok")
     clone = pickle.loads(pickle.dumps(bare))
     assert clone.retries is UNSET
-
-
-

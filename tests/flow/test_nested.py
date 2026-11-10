@@ -408,7 +408,5 @@ def test_fixed_clock_concurrent_fanout_is_byte_stable(tmp_path):
     first = run_once()
     records = RunLog.records(tmp_path / "campaign-fixed.jsonl")
     assert [r["record"] for r in records] == ["run_start"] + ["node"] * 5 + ["run_end"]
-    assert {tuple(r["path"]) for r in records if r.get("node") == "leaf"} == {
-        ("campaign", "leaf")
-    }
+    assert {tuple(r["path"]) for r in records if r.get("node") == "leaf"} == {("campaign", "leaf")}
     assert run_once() == first

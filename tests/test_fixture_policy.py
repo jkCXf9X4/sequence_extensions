@@ -85,9 +85,7 @@ def test_every_reference_flow_carries_its_case_note():
 def test_the_inputs_are_documented_as_one_case_set():
     """The four csvs are one set: one note, and it says why."""
     assert (CASES / "README.md").is_file(), "tests/e2e/cases has no README.md"
-    assert not (CASES / "case.md").is_file(), (
-        "cases/case.md contradicts the one-case-set README.md"
-    )
+    assert not (CASES / "case.md").is_file(), "cases/case.md contradicts the one-case-set README.md"
 
 
 @pytest.mark.parametrize("note", _notes(), ids=lambda p: p.relative_to(E2E).as_posix())
