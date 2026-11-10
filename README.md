@@ -1,6 +1,6 @@
 # sequence_extensions
 
-**Version:** 3.0.0 · **Python:** >=3.11
+**Version:** 3.0.1 · **Python:** >=3.11
 
 Higher-order function extensions for Python lists, dicts, and generators, plus a mini flow engine on dependency-graph futures: deterministic parallel campaigns, local or at HPC — retries, timeouts, and a JSON-lines run log that is the executed truth of every run.
 
