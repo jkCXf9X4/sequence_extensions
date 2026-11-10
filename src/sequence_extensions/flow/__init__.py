@@ -43,7 +43,7 @@ from sequence_extensions.flow._options import (
 )
 from sequence_extensions.flow.node import NodeFunction, node
 from sequence_extensions.flow.process_pool import ProcessDispatchError, ProcessGraphPool
-from sequence_extensions.flow.run import Run, execute_flow
+from sequence_extensions.flow.run import FlowPlan, Run, execute_flow, plan
 from sequence_extensions.flow.runlog import DIFF_EXCLUDE, SCHEMA_VERSION, RunLog, jsonable
 
 __all__ = [
@@ -52,6 +52,7 @@ __all__ = [
     "DIFF_EXCLUDE",
     "FlowFuture",
     "FlowOutcome",
+    "FlowPlan",
     "NodeFunction",
     "NodePolicy",
     "NodeTimeoutError",
@@ -68,5 +69,6 @@ __all__ = [
     "gather",
     "jsonable",
     "node",
+    "plan",
     "validate_node_policy",
 ]
