@@ -68,4 +68,4 @@ ruff format .
 ## Reporting issues
 
 Please report bugs and request features via the
-[issue tracker](https://github.com/jkCXf9X4/sequence_extensions/issues).
+[issue tracker](https://github.com/pyssporg/sequence_extensions/issues).

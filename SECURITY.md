@@ -5,7 +5,7 @@
 If you discover a security vulnerability in this project, please report it by
 opening a GitHub issue at:
 
-https://github.com/jkCXf9X4/sequence_extensions/issues
+https://github.com/pyssporg/sequence_extensions/issues
 
 Please include as much detail as possible to help us reproduce and understand
 the issue:
