@@ -1,0 +1,165 @@
+{
+  "edges": [
+    {
+      "from": 3,
+      "to": 0
+    },
+    {
+      "from": 3,
+      "to": 1
+    },
+    {
+      "from": 3,
+      "to": 2
+    },
+    {
+      "from": 4,
+      "to": 3
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "instance": 1,
+      "kind": "node",
+      "name": "score",
+      "params": [
+        {
+          "default": null,
+          "name": "case",
+          "required": true,
+          "type": "Path",
+          "value": {
+            "path": "/home/eriro/pwa/2_work/seq_ext_graph/sequence_extensions/examples/plan_workflow/artifacts/cases/alpha.txt",
+            "sha256": "fb8e20fc2e4c3f248c60c39bd652f3c1347298bb977b8b4d5903b85055620603"
+          }
+        },
+        {
+          "default": 1.0,
+          "name": "scale",
+          "required": false,
+          "type": "float",
+          "value": 1.0
+        }
+      ],
+      "path": [
+        "score"
+      ],
+      "policy": {
+        "retries": 0,
+        "retry_delay_seconds": 0.0,
+        "timeout": null
+      }
+    },
+    {
+      "id": 1,
+      "instance": 2,
+      "kind": "node",
+      "name": "score",
+      "params": [
+        {
+          "default": null,
+          "name": "case",
+          "required": true,
+          "type": "Path",
+          "value": {
+            "path": "/home/eriro/pwa/2_work/seq_ext_graph/sequence_extensions/examples/plan_workflow/artifacts/cases/beta.txt",
+            "sha256": "88d4266fd4e6338d13b845fcf289579d209c897823b9217da3e161936f031589"
+          }
+        },
+        {
+          "default": 1.0,
+          "name": "scale",
+          "required": false,
+          "type": "float",
+          "value": 1.0
+        }
+      ],
+      "path": [
+        "score"
+      ],
+      "policy": {
+        "retries": 0,
+        "retry_delay_seconds": 0.0,
+        "timeout": null
+      }
+    },
+    {
+      "id": 2,
+      "instance": 3,
+      "kind": "node",
+      "name": "score",
+      "params": [
+        {
+          "default": null,
+          "name": "case",
+          "required": true,
+          "type": "Path",
+          "value": {
+            "path": "/home/eriro/pwa/2_work/seq_ext_graph/sequence_extensions/examples/plan_workflow/artifacts/cases/gamma.txt",
+            "sha256": "bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721"
+          }
+        },
+        {
+          "default": 1.0,
+          "name": "scale",
+          "required": false,
+          "type": "float",
+          "value": 1.0
+        }
+      ],
+      "path": [
+        "score"
+      ],
+      "policy": {
+        "retries": 0,
+        "retry_delay_seconds": 0.0,
+        "timeout": null
+      }
+    },
+    {
+      "id": 3,
+      "instance": 1,
+      "kind": "gather",
+      "name": "gather",
+      "params": [],
+      "path": [
+        "gather"
+      ],
+      "policy": {
+        "retries": 0,
+        "retry_delay_seconds": 0.0,
+        "timeout": null
+      }
+    },
+    {
+      "id": 4,
+      "instance": 1,
+      "kind": "node",
+      "name": "total",
+      "params": [],
+      "path": [
+        "total"
+      ],
+      "policy": {
+        "retries": 0,
+        "retry_delay_seconds": 0.0,
+        "timeout": null
+      }
+    }
+  ],
+  "parameters": [
+    {
+      "default": null,
+      "name": "cases_dir",
+      "required": true,
+      "type": "Path",
+      "value": {
+        "path": "/home/eriro/pwa/2_work/seq_ext_graph/sequence_extensions/examples/plan_workflow/artifacts/cases",
+        "sha256": null
+      }
+    }
+  ],
+  "root": "campaign",
+  "schema": "flow-plan/1"
+}

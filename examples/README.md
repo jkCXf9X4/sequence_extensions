@@ -12,6 +12,7 @@ python examples/graph_futures.py
 python examples/campaign.py --out /tmp/campaign
 python examples/policies.py --out /tmp/policies
 python examples/run_log.py --out /tmp/run-log
+python examples/plan_workflow/plan_workflow.py
 python examples/process_pool.py --out /tmp/process-pool
 
 cd examples/flow_runner
@@ -20,8 +21,10 @@ flow-runner campaign.toml
 
 The file-writing scripts accept `--out` (default `examples/_out/<name>`).
 That output is scratch: it is gitignored, and a fresh `--out` directory gives
-a clean rerun. Nothing here needs a network, a simulator install, or a
-service.
+a clean rerun. `plan_workflow.py` is the exception: its artifacts are
+committed next to it, under `plan_workflow/artifacts/`, so rerunning
+regenerates them in place. Nothing here needs a network, a simulator
+install, or a service.
 
 | Example | What it shows |
 | --- | --- |
@@ -30,6 +33,7 @@ service.
 | [`campaign.py`](campaign.py) | `@node`, `.submit()`, dependency edges, `gather`, retries, `RunOptions`, run log |
 | [`policies.py`](policies.py) | retries/backoff, `node_defaults`, node and run timeouts, skipped dependencies |
 | [`run_log.py`](run_log.py) | `RunLog.records` / `filter` / `summarize` / `diff`, reference mode, `summary`, `log=None` |
+| [`plan_workflow.py`](plan_workflow/plan_workflow.py) | `plan`, `plan_document`, `plan_manifest`, `apply_override`, `diff_plans`, `parameters_from_document` → run |
 | [`process_pool.py`](process_pool.py) | `ProcessGraphPool` for CPU-bound fan-out |
 | [`flow_runner/`](flow_runner) | the TOML-driven `flow-runner` command |
 
@@ -200,6 +204,48 @@ Worth noticing:
 - `summary=True` replaces long containers with counts (`{"type": "list",
   "len": 20}`) while the returned `Run.result` stays complete.
 - `log=None` disables the log file for tests and short-lived embedding.
+
+## `plan_workflow.py` — plan, document, and diff
+
+Plan the flow first, inspect and edit the JSON document, then run with the
+edited parameters.
+
+```bash
+python examples/plan_workflow/plan_workflow.py
+```
+
+```text
+plan:      ('score', 'score', 'score', 'gather', 'total')
+edges:     ((3, 0), (3, 1), (3, 2), (4, 3))
+diff:      ['scale: 1.0 -> 2.0', 'scale: 1.0 -> 2.0', 'scale: 1.0 -> 2.0']
+status:  ok
+result:  {'count': 3, 'total': 24.0}
+log:     examples/plan_workflow/artifacts/logs/campaign-fixed.jsonl
+records: 7
+```
+
+The generated artifacts live committed next to the example, under
+`plan_workflow/artifacts/`, so you can open them and see the documents the
+flow produced: `plan.json` (full document), `plan.manifest.json` (values
+stripped), `plan.override.json` (after `apply_override`), `diff.json` (what
+changed), `cases/` (the inputs), and `logs/campaign-fixed.jsonl` (the run
+log).  Rerunning regenerates them in place; `fixed_clock` pins the run id so
+the log is byte-identical on every rerun.  `--out` overrides the location.
+
+Worth noticing:
+
+- `plan()` executes nothing — the DAG and resolved policy are available
+  before any node body runs.
+- `plan_document()` is the `flow-plan/1` JSON; `Path` values serialize via
+  `jsonable` to `{path, sha256}`.
+- `plan_manifest()` keeps the shape but strips every `value`, so a manifest
+  is the stable "what runs" projection for review or commit.
+- `apply_override` sets node parameters by name; `diff_plans` reports the
+  exact changed fields (`param_changed`, policy, edges, ...). One entry per
+  node occurrence — here one `scale` change for each of the three `score`
+  instances (UC-C).
+- `parameters_from_document` turns the edited document back into the
+  `RunOptions(parameters=...)` registry, so the override reaches the run.
 
 ## `process_pool.py` — CPU-bound fan-out
 

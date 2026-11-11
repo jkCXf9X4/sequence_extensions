@@ -19,6 +19,7 @@ import pytest
 
 from examples import campaign as campaign_example
 from examples import graph_futures, policies, process_pool, run_log, sequences
+from examples.plan_workflow import plan_workflow as plan_workflow_example
 from sequence_extensions.flow import RunLog
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -141,6 +142,51 @@ def test_run_log_example(tmp_path, capsys):
     assert result["summary_args"] == {"type": "list", "len": 20}
     assert result["quiet_log"] is None
     assert "fixed logs byte-identical: True" in capsys.readouterr().out
+
+
+def test_plan_workflow_example(tmp_path, capsys):
+    out = tmp_path / "plan_workflow"
+    result = plan_workflow_example.main(["--out", str(out)])
+    run = result["run"]
+
+    assert run.status == "ok"
+    # three cases (2 + 4 + 6), scale overridden 1.0 -> 2.0 via the registry
+    assert run.result == {"count": 3, "total": 24.0}
+    # fixed_clock pins the run id
+    assert run.run_id == "campaign-fixed"
+    assert run.log.exists()
+
+    doc = result["document"]
+    assert doc["schema"] == "flow-plan/1"
+    assert doc["root"] == "campaign"
+    assert {entry["name"] for entry in doc["nodes"]} == {"score", "gather", "total"}
+
+    # the override and its diff were written as artifacts
+    assert (out / "plan.json").exists()
+    assert (out / "plan.override.json").exists()
+    assert not result["diff"]["equal"]
+    assert result["diff"]["changes"][0]["kind"] == "param_changed"
+    assert result["diff"]["changes"][0]["new"] == 2.0
+
+    # the manifest keeps the shape but strips every value
+    manifest = json.loads((out / "plan.manifest.json").read_text(encoding="utf-8"))
+    assert manifest["schema"] == "flow-plan/1"
+    assert "value" not in manifest["parameters"][0]
+    for entry in manifest["nodes"]:
+        for p in entry["params"]:
+            assert "value" not in p
+
+    # the override reached the node through the registry
+    assert result["overridden"]["nodes"][0]["params"][1]["value"] == 2.0
+
+    records = RunLog.records(run.log)
+    assert records[0]["record"] == "run_start"
+    assert records[-1]["record"] == "run_end"
+    assert records[-1]["status"] == "ok"
+
+    out = capsys.readouterr().out
+    assert "plan:      ('score', 'score', 'score', 'gather', 'total')" in out
+    assert "status:  ok" in out
 
 
 def test_process_pool_example(tmp_path, capsys):

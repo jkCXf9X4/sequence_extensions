@@ -1,0 +1,47 @@
+{
+  "changes": [
+    {
+      "field": "value",
+      "kind": "param_changed",
+      "name": "scale",
+      "new": 2.0,
+      "node": {
+        "instance": 1,
+        "name": "score",
+        "path": [
+          "score"
+        ]
+      },
+      "old": 1.0
+    },
+    {
+      "field": "value",
+      "kind": "param_changed",
+      "name": "scale",
+      "new": 2.0,
+      "node": {
+        "instance": 2,
+        "name": "score",
+        "path": [
+          "score"
+        ]
+      },
+      "old": 1.0
+    },
+    {
+      "field": "value",
+      "kind": "param_changed",
+      "name": "scale",
+      "new": 2.0,
+      "node": {
+        "instance": 3,
+        "name": "score",
+        "path": [
+          "score"
+        ]
+      },
+      "old": 1.0
+    }
+  ],
+  "equal": false
+}

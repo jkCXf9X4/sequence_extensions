@@ -1,0 +1,146 @@
+{
+  "edges": [
+    {
+      "from": 3,
+      "to": 0
+    },
+    {
+      "from": 3,
+      "to": 1
+    },
+    {
+      "from": 3,
+      "to": 2
+    },
+    {
+      "from": 4,
+      "to": 3
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "instance": 1,
+      "kind": "node",
+      "name": "score",
+      "params": [
+        {
+          "default": null,
+          "name": "case",
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "default": 1.0,
+          "name": "scale",
+          "required": false,
+          "type": "float"
+        }
+      ],
+      "path": [
+        "score"
+      ],
+      "policy": {
+        "retries": 0,
+        "retry_delay_seconds": 0.0,
+        "timeout": null
+      }
+    },
+    {
+      "id": 1,
+      "instance": 2,
+      "kind": "node",
+      "name": "score",
+      "params": [
+        {
+          "default": null,
+          "name": "case",
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "default": 1.0,
+          "name": "scale",
+          "required": false,
+          "type": "float"
+        }
+      ],
+      "path": [
+        "score"
+      ],
+      "policy": {
+        "retries": 0,
+        "retry_delay_seconds": 0.0,
+        "timeout": null
+      }
+    },
+    {
+      "id": 2,
+      "instance": 3,
+      "kind": "node",
+      "name": "score",
+      "params": [
+        {
+          "default": null,
+          "name": "case",
+          "required": true,
+          "type": "Path"
+        },
+        {
+          "default": 1.0,
+          "name": "scale",
+          "required": false,
+          "type": "float"
+        }
+      ],
+      "path": [
+        "score"
+      ],
+      "policy": {
+        "retries": 0,
+        "retry_delay_seconds": 0.0,
+        "timeout": null
+      }
+    },
+    {
+      "id": 3,
+      "instance": 1,
+      "kind": "gather",
+      "name": "gather",
+      "params": [],
+      "path": [
+        "gather"
+      ],
+      "policy": {
+        "retries": 0,
+        "retry_delay_seconds": 0.0,
+        "timeout": null
+      }
+    },
+    {
+      "id": 4,
+      "instance": 1,
+      "kind": "node",
+      "name": "total",
+      "params": [],
+      "path": [
+        "total"
+      ],
+      "policy": {
+        "retries": 0,
+        "retry_delay_seconds": 0.0,
+        "timeout": null
+      }
+    }
+  ],
+  "parameters": [
+    {
+      "default": null,
+      "name": "cases_dir",
+      "required": true,
+      "type": "Path"
+    }
+  ],
+  "root": "campaign",
+  "schema": "flow-plan/1"
+}
