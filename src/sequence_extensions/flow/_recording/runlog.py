@@ -40,8 +40,8 @@ import os
 import threading
 from pathlib import Path
 
-from sequence_extensions.flow._diff import _diff_records, _path_of
-from sequence_extensions.flow._serialize import _canon, _json_bytes, _sort_nested, jsonable
+from .diff import _diff_records, _path_of
+from .serialize import _canon, _json_bytes, _sort_nested, jsonable
 
 try:  # POSIX advisory locks for fixed-clock reference files
     import fcntl
@@ -126,6 +126,16 @@ def _pin_timing(record: dict) -> dict:
     if "worker" in out:
         out["worker"] = FIXED_WORKER
     return out
+
+
+def _stamp_record(seq: int, record: dict) -> dict:
+    """A write line: ``seq``/``schema`` first, then the record fields."""
+    line = {"seq": seq, "schema": SCHEMA_VERSION}
+    line.update(record)
+    # Engine fields win: a record cannot spoof its own sequence.
+    line["seq"] = seq
+    line["schema"] = SCHEMA_VERSION
+    return line
 
 
 def _canonical_order(item) -> tuple:
@@ -281,12 +291,7 @@ class RunLog:
                 self._buffer.append((len(self._buffer), dict(record)))
                 return
             self._seq += 1
-            line = {"seq": self._seq, "schema": SCHEMA_VERSION}
-            line.update(record)
-            # Engine fields win: a record cannot spoof its own sequence.
-            line["seq"] = self._seq
-            line["schema"] = SCHEMA_VERSION
-            self._fh.write(_json_bytes(line))
+            self._fh.write(_json_bytes(_stamp_record(self._seq, record)))
             self._fh.flush()
 
     def _flush_canonical(self) -> None:
@@ -298,12 +303,8 @@ class RunLog:
         for _arrival, record in sorted(self._buffer, key=_canonical_order):
             self._seq += 1
             pinned = _pin_timing(record)
-            line = {"seq": self._seq, "schema": SCHEMA_VERSION}
-            for key, value in pinned.items():
-                line[key] = _sort_nested(value)
-            line["seq"] = self._seq
-            line["schema"] = SCHEMA_VERSION
-            self._fh.write(_json_bytes(line))
+            nested = {key: _sort_nested(value) for key, value in pinned.items()}
+            self._fh.write(_json_bytes(_stamp_record(self._seq, nested)))
         self._fh.flush()
 
     @staticmethod

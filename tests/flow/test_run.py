@@ -75,7 +75,7 @@ def test_run_writes_run_start_and_run_end(tmp_path):
 
 
 def test_owned_pool_is_settled_if_drain_raises(monkeypatch):
-    import sequence_extensions.flow.run as run_module
+    import sequence_extensions.flow._execution.run as run_module
     from sequence_extensions.graph import GraphPool
 
     settled = []

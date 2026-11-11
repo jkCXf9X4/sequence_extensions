@@ -11,15 +11,16 @@ import inspect
 from dataclasses import dataclass
 from typing import Any
 
-from sequence_extensions.flow._context import (
+from sequence_extensions.graph.graph_future import GraphFuture, GraphPool, is_dependency
+
+from .._config.context import (
     RunContext,
     current_run,
     execution_scope,
     in_process_worker,
 )
-from sequence_extensions.flow._decorator import NodeFunction
-from sequence_extensions.flow._options import RunOptions
-from sequence_extensions.graph.graph_future import GraphFuture, GraphPool, is_dependency
+from .._config.options import RunOptions, _signature_parameters
+from .._execution.node import NodeFunction
 
 
 # ---------------------------------------------------------------- #
@@ -186,15 +187,7 @@ def _root_parameters(root_fn) -> tuple[FlowParameter, ...]:
     except (TypeError, ValueError):
         return ()
     params = []
-    for name, p in sig.parameters.items():
-        if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
-            continue
-        annotation = p.annotation
-        ann = (
-            getattr(annotation, "__name__", str(annotation))
-            if annotation is not inspect.Parameter.empty
-            else ""
-        )
+    for name, p, ann in _signature_parameters(sig):
         has_default = p.default is not inspect.Parameter.empty
         params.append(
             FlowParameter(

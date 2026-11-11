@@ -1,6 +1,6 @@
 """The run's settle phase: drain every node, settle the pool, close records.
 
-The run boundary (:mod:`sequence_extensions.flow.run`) owns identity,
+The run boundary (:mod:`sequence_extensions.flow._execution.run`) owns identity,
 execution, and retries; this module owns what happens once the root has
 returned or failed — waiting for submitted work, cancelling the owned pool,
 replaying process-worker records, and writing one skip record per node that
@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import concurrent.futures
 
-from sequence_extensions.flow._context import RunContext
-from sequence_extensions.flow._records import skipped_record
-from sequence_extensions.flow.process_pool import ProcessDispatchError
 from sequence_extensions.graph.graph_future import GraphPool
+
+from .._config.context import RunContext
+from .._recording.records import skipped_record
+from .process_pool import ProcessDispatchError
 
 
 def settle(pool: GraphPool) -> None:

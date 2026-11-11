@@ -18,7 +18,7 @@ Semantics:
 
 * **run identity** — ``run_id`` is ``<name>-<UTC timestamp>-<short uuid>``;
   ``fixed_clock=True`` pins it to ``<name>-fixed`` and makes an identical
-  run byte-identical (see :mod:`sequence_extensions.flow.runlog`).
+  run byte-identical (see :mod:`sequence_extensions.flow._recording.runlog`).
 * **drain-on-return** — the run returns only after every submitted node
   settles.  A failed run cancels its own pool's pending nodes (recorded
   ``skipped``) and waits for the running ones.
@@ -40,33 +40,33 @@ inside an active run is rejected.
 
 from __future__ import annotations
 
-import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from sequence_extensions.flow._context import (
+from sequence_extensions.graph.graph_future import GraphPool
+
+from .._config.context import (
     AttemptToken,
     RunContext,
     current_run,
     execution_scope,
     in_process_worker,
 )
-from sequence_extensions.flow._decorator import NodeFunction
-from sequence_extensions.flow._futures import NodeTimeoutError
-from sequence_extensions.flow._identity import new_run_id, utcnow
-from sequence_extensions.flow._options import RunOptions, fill_parameters
-from sequence_extensions.flow._planning import plan
-from sequence_extensions.flow._records import run_end_record, run_start_record
-from sequence_extensions.flow._settle import (
+from .._config.options import RunOptions, fill_parameters
+from .._execution.node import NodeFunction
+from .._planning.dag import plan
+from .._recording.records import new_run_id, run_end_record, run_start_record, utcnow
+from .._recording.runlog import RunLog
+from ._timeout import _run_with_timeout
+from .futures import NodeTimeoutError
+from .settle import (
     drain,
     failed_node_paths,
     settle,
     write_settle_records,
 )
-from sequence_extensions.flow.runlog import RunLog
-from sequence_extensions.graph.graph_future import GraphPool
 
 try:  # package version stamped into run_start; import is cycle-free
     from sequence_extensions import __version__ as _PACKAGE_VERSION
@@ -324,10 +324,9 @@ def _call_root(node, args, kwargs, timeout, ctx, attempt):
     if timeout is None:
         return node(*args, **kwargs)
 
-    box = {}
     outer = AttemptToken()
 
-    def _target():
+    def _run_root():
         with execution_scope(
             ctx=ctx,
             path=(),
@@ -337,15 +336,10 @@ def _call_root(node, args, kwargs, timeout, ctx, attempt):
             worker=False,
             process_worker=False,
         ):
-            try:
-                box["result"] = node(*args, **kwargs)
-            except BaseException as exc:
-                box["error"] = exc
+            return node(*args, **kwargs)
 
-    thread = threading.Thread(target=_target, name=f"{node.name}-run-attempt", daemon=True)
-    thread.start()
-    thread.join(timeout)
-    if thread.is_alive():
+    verdict = _run_with_timeout(_run_root, timeout, thread_name=f"{node.name}-run-attempt")
+    if verdict.timed_out:
         # The attempt cannot be preempted; drop its late records and stop
         # any further retries or submits.
         outer.abandoned.set()
@@ -353,9 +347,9 @@ def _call_root(node, args, kwargs, timeout, ctx, attempt):
         error = NodeTimeoutError(node.name, timeout, attempt)
         error.run_timeout = ctx.run_id
         raise error
-    if "error" in box:
-        raise box["error"]
-    return box.get("result")
+    if verdict.error is not None:
+        raise verdict.error
+    return verdict.result
 
 
 def _attach_run(error: BaseException, run: Run) -> None:

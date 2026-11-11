@@ -53,7 +53,7 @@ def _reduce_node_function(self):
 
 def _rebuild_node_function(alias, retries, retry_delay_seconds, timeout, name):
     """Unpickle a NodeFunction from its module alias (see __reduce__)."""
-    from sequence_extensions.flow._decorator import NodeFunction
+    from .node import NodeFunction
 
     module = sys.modules.get(alias[0])
     fn = getattr(module, alias[1], None) if module is not None else None

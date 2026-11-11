@@ -30,11 +30,8 @@ Typical shape::
     run.result, run.run_id, run.status, run.log
 """
 
-from sequence_extensions.flow._context import RunContext, current_run
-from sequence_extensions.flow._decorator import NodeFunction, node
-from sequence_extensions.flow._futures import FlowFuture, FlowOutcome, NodeTimeoutError
-from sequence_extensions.flow._gather import gather
-from sequence_extensions.flow._options import (
+from ._config.context import RunContext, current_run
+from ._config.options import (
     DEFAULT_LOG_DIR,
     DEFAULT_MAX_WORKERS,
     UNSET,
@@ -42,21 +39,24 @@ from sequence_extensions.flow._options import (
     RunOptions,
     validate_node_policy,
 )
-from sequence_extensions.flow._plandoc import (
+from ._execution.futures import FlowFuture, FlowOutcome, NodeTimeoutError
+from ._execution.gather import gather
+from ._execution.node import NodeFunction, node
+from ._execution.process_pool import ProcessDispatchError, ProcessGraphPool
+from ._execution.run import Run, execute_flow, plan
+from ._planning.dag import (
+    FlowNodeInfo,
+    FlowParameter,
+    FlowPlan,
+)
+from ._planning.document import (
     apply_override,
     diff_plans,
     parameters_from_document,
     plan_document,
     plan_manifest,
 )
-from sequence_extensions.flow._planning import (
-    FlowNodeInfo,
-    FlowParameter,
-    FlowPlan,
-)
-from sequence_extensions.flow.process_pool import ProcessDispatchError, ProcessGraphPool
-from sequence_extensions.flow.run import Run, execute_flow, plan
-from sequence_extensions.flow.runlog import DIFF_EXCLUDE, SCHEMA_VERSION, RunLog, jsonable
+from ._recording.runlog import DIFF_EXCLUDE, SCHEMA_VERSION, RunLog, jsonable
 
 __all__ = [
     "DEFAULT_LOG_DIR",

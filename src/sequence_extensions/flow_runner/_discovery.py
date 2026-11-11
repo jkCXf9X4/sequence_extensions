@@ -10,7 +10,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable, Mapping
 
-from sequence_extensions.flow._options import bind_flow_inputs
+from sequence_extensions.flow._config.options import bind_flow_inputs
 from sequence_extensions.flow_runner._config import RunnerConfigError
 
 __all__ = ["find_nodes", "list_nodes"]
@@ -51,7 +51,7 @@ def _bind_flow_inputs(fn, inputs: Mapping) -> tuple[tuple, dict]:
 
     The reserved-``options`` rule (``execute_flow`` takes ``options`` as its
     own keyword; a node parameter of that name must be passed positionally)
-    lives in :func:`sequence_extensions.flow._options.bind_flow_inputs`.
+    lives in :func:`sequence_extensions.flow._config.options.bind_flow_inputs`.
     Its ``ValueError`` violations surface as config errors so the CLI keeps
     its exit-code contract; a ``TypeError`` from the final signature bind
     (inputs that do not match at all) passes through unchanged.

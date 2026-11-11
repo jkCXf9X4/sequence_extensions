@@ -46,6 +46,48 @@ def _dependency_future(dep):
     return dep.future if isinstance(dep, GraphFuture) else dep
 
 
+def iter_postorder(nodes, deps_of, *, visiting=None):
+    """
+    Yield the dependency-graph nodes reachable from ``nodes``, post-order.
+
+    Each reachable node is yielded exactly once, after all of its
+    dependencies: leaves first, dependents only after the nodes they
+    depend on.  ``nodes`` is an iterable of root nodes, walked in order;
+    ``deps_of(node)`` returns the iterable of that node's dependencies.
+    The order of a node's dependencies is preserved, so for given inputs
+    the yield order is deterministic.
+
+    Cycle detection: a node reached again while it is still being visited
+    (a DFS back-edge) means the graph is cyclic and a ``ValueError`` is
+    raised instead of looping forever; a node already fully yielded is
+    not revisited, so diamond joins are emitted once.  ``visiting``
+    optionally supplies the set of node ids that count as already in
+    progress: a caller can keep a node marked across several calls, and a
+    graph that reaches it raises rather than recursing indefinitely.
+    """
+    if visiting is None:
+        visiting = set()
+    seen = set()
+
+    def visit(node):
+        nid = id(node)
+        if nid in visiting:
+            raise ValueError("dependency cycle detected")
+        if nid in seen:
+            return
+        visiting.add(nid)
+        seen.add(nid)
+        try:
+            for dep in deps_of(node):
+                yield from visit(dep)
+            yield node
+        finally:
+            visiting.discard(nid)
+
+    for node in nodes:
+        yield from visit(node)
+
+
 class GraphFuture:
     """
     A small dependency-graph future.
@@ -469,8 +511,6 @@ class GraphPool:
         """
         with self._bind_lock:
             self._ensure_executor()
-            seen = set()
-            visited_nodes = []
             source_id = id(source) if source is not None else None
             if source_id is not None:
                 if source_id in self._visiting:
@@ -478,29 +518,19 @@ class GraphPool:
                 self._visiting.add(source_id)
             try:
 
-                def visit(node):
-                    nid = id(node)
-                    if nid in self._visiting:
-                        raise ValueError("dependency cycle detected")
-                    if nid in seen:
-                        return
-                    self._visiting.add(nid)
-                    seen.add(nid)
-                    visited_nodes.append(node)
-                    try:
-                        for dep in node.dependencies:
-                            if isinstance(dep, GraphFuture):
-                                visit(dep)
-                        if node._bound_pool is not None and node._bound_pool is not self:
-                            raise ValueError("GraphFuture is already bound to another GraphPool")
-                        node._wire(self)
-                        if nid not in self._node_ids:
-                            self._node_ids.add(nid)
-                            self._nodes.append(node)
-                    finally:
-                        self._visiting.discard(nid)
+                def deps_of(node):
+                    return (dep for dep in node.dependencies if isinstance(dep, GraphFuture))
 
-                visit(gf)
+                visited_nodes = []
+                for node in iter_postorder([gf], deps_of, visiting=self._visiting):
+                    if node._bound_pool is not None and node._bound_pool is not self:
+                        raise ValueError("GraphFuture is already bound to another GraphPool")
+                    node._wire(self)
+                    nid = id(node)
+                    if nid not in self._node_ids:
+                        self._node_ids.add(nid)
+                        self._nodes.append(node)
+                    visited_nodes.append(node)
                 if self._shutdown:
                     for node in visited_nodes:
                         if not node.future.done():

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from sequence_extensions.flow import RunLog
-from sequence_extensions.flow.runlog import DIFF_EXCLUDE, SCHEMA_VERSION
+from sequence_extensions.flow._recording.runlog import DIFF_EXCLUDE, SCHEMA_VERSION
 
 _UNSET = object()
 

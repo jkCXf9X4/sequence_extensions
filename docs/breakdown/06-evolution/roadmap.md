@@ -27,6 +27,7 @@ Direction: the `INFO-001` goal — parallel, deterministic, audited. This file p
 
 - Package split: `IMP-020`.
 - Substrate reopen pair shipped 1.1.0 (`DR-007`): public bind, pool-scoped cancellation.
+- Phase sub-packages and dedup: `IMP-025`; engine-core size budget: `DR-021`.
 
 ## Owns
 

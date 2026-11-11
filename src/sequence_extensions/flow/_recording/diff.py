@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from sequence_extensions.flow._serialize import _canon
+from .serialize import _canon
 
 
 def _drop_future_done(value):

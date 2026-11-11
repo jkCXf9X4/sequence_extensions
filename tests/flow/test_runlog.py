@@ -9,14 +9,14 @@ from datetime import datetime
 
 import pytest
 
-from sequence_extensions.flow._serialize import _SUMMARY_CONTAINER_LIMIT
-from sequence_extensions.flow.runlog import (
+from sequence_extensions.flow._recording.runlog import (
     FIXED_CLOCK,
     FIXED_WORKER,
     SCHEMA_VERSION,
     RunLog,
     jsonable,
 )
+from sequence_extensions.flow._recording.serialize import _SUMMARY_CONTAINER_LIMIT
 
 
 # ---------------------------------------------------------------- #

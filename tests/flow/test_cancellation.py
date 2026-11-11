@@ -11,7 +11,7 @@ import threading
 import pytest
 
 from sequence_extensions.flow import NodeTimeoutError, RunOptions, execute_flow, node
-from sequence_extensions.flow._context import AttemptToken, RunContext, execution_scope
+from sequence_extensions.flow._config.context import AttemptToken, RunContext, execution_scope
 from sequence_extensions.graph import GraphPool
 
 
@@ -49,8 +49,8 @@ def test_submit_after_a_timed_out_attempt_is_rejected(tmp_path):
 
 def test_attempt_with_an_abandoned_parent_token_is_rejected():
     """A child attempt under an abandoned parent settles abandoned, not pending."""
-    from sequence_extensions.flow._attempt import _AttemptRunner
-    from sequence_extensions.flow._context import AttemptToken
+    from sequence_extensions.flow._config.context import AttemptToken
+    from sequence_extensions.flow._execution.attempt import _AttemptRunner
 
     @node
     def leaf():

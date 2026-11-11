@@ -33,9 +33,10 @@ import concurrent.futures
 import multiprocessing
 import threading
 
-from sequence_extensions.flow._context import RunContext, execution_scope
-from sequence_extensions.flow._options import RunOptions
 from sequence_extensions.graph.graph_future import GraphFuture, GraphPool
+
+from .._config.context import RunContext, execution_scope
+from .._config.options import RunOptions
 
 __all__ = ["ProcessDispatchError", "ProcessGraphPool"]
 
@@ -60,7 +61,7 @@ class _ProcessOutcome:
 
 
 class _RecordBuffer:
-    """A :class:`~sequence_extensions.flow.runlog.RunLog` stand-in that
+    """A :class:`~sequence_extensions.flow._recording.runlog.RunLog` stand-in that
     collects records in worker memory."""
 
     def __init__(self, summary: bool):

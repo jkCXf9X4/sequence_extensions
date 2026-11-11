@@ -13,15 +13,16 @@ from __future__ import annotations
 import copy
 import inspect
 
-from sequence_extensions.flow._decorator import NodeFunction
-from sequence_extensions.flow._options import RunOptions, fill_parameters
-from sequence_extensions.flow._planning import (
+from sequence_extensions.graph.graph_future import GraphFuture, is_dependency
+
+from .._config.options import RunOptions, _signature_parameters, fill_parameters
+from .._execution.node import NodeFunction
+from .dag import (
     _argument_name_map,
     _in_plan_scope,
     _node_function,
     _plan_entry_guards,
 )
-from sequence_extensions.graph.graph_future import GraphFuture, is_dependency
 
 #: The document schema marker: every artifact (plan document, manifest,
 #: override, diff input) of the plan JSON interface shares this one schema.
@@ -56,16 +57,8 @@ def _root_parameter_values(node, args, kwargs) -> list[dict]:
     bound = sig.bind(*args, **kwargs)
     bound.apply_defaults()
     out = []
-    for name, p in sig.parameters.items():
-        if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
-            continue
+    for name, p, ann in _signature_parameters(sig):
         has_default = p.default is not inspect.Parameter.empty
-        annotation = p.annotation
-        ann = (
-            getattr(annotation, "__name__", str(annotation))
-            if annotation is not inspect.Parameter.empty
-            else ""
-        )
         out.append(
             {
                 "name": name,
@@ -97,18 +90,10 @@ def _node_parameters(gf, nf: NodeFunction) -> list[dict]:
             continue
         submitted[name] = value
     out = []
-    for name, p in sig.parameters.items():
-        if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
-            continue
+    for name, p, ann in _signature_parameters(sig):
         if name in submitted and is_dependency(submitted[name]):
             continue
         has_default = p.default is not inspect.Parameter.empty
-        annotation = p.annotation
-        ann = (
-            getattr(annotation, "__name__", str(annotation))
-            if annotation is not inspect.Parameter.empty
-            else ""
-        )
         value = submitted[name] if name in submitted else (p.default if has_default else None)
         out.append(
             {

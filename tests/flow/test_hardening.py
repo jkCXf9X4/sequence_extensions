@@ -740,8 +740,8 @@ def test_finish_fault_settles_the_outcome_instead_of_hanging(fault_type):
     there (or a non-``Exception`` ``BaseException``) becomes the outcome's
     exception, so the drain cannot wait on an unsettled future.
     """
-    from sequence_extensions.flow._attempt import _AttemptRunner
-    from sequence_extensions.flow._context import AttemptToken
+    from sequence_extensions.flow._config.context import AttemptToken
+    from sequence_extensions.flow._execution.attempt import _AttemptRunner
 
     @node
     def leaf():

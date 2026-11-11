@@ -11,8 +11,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from sequence_extensions.flow._context import current_run
-from sequence_extensions.flow._futures import FlowFuture, _is_future
+from sequence_extensions.graph.graph_future import is_dependency
+
+from .._config.context import current_run
+from .futures import FlowFuture
 
 #: Recursion guard for container inspection and ``gather`` planning.
 _MAX_CONTAINER_DEPTH = 200
@@ -27,7 +29,7 @@ def _contains_future(value, _seen=None, _depth: int = 0) -> bool:
     treated as opaque (no future) instead of exhausting the stack; the log
     records them with a cycle/depth marker.
     """
-    if _is_future(value):
+    if is_dependency(value):
         return True
     if _depth >= _MAX_CONTAINER_DEPTH:
         return False
@@ -95,7 +97,7 @@ def _plan(value, items, _seen=None, _depth: int = 0):
     plain dict.  A cyclic or over-deep container raises ``ValueError``
     instead of recursing without bound.
     """
-    if _is_future(value):
+    if is_dependency(value):
         items.append(value)
         return _Slot(len(items) - 1)
     if isinstance(value, Mapping):
@@ -175,7 +177,7 @@ def gather(value):
         raise RuntimeError(
             "gather() requires an active run: call execute_flow(...) around the node"
         )
-    if _is_future(value):
+    if is_dependency(value):
         future = FlowFuture(_collect_structural, [_Slot(0)], value)
     else:
         if not isinstance(value, (list, tuple, Mapping, set, frozenset)):

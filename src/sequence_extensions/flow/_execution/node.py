@@ -10,8 +10,7 @@ from __future__ import annotations
 import functools
 import threading
 
-from sequence_extensions.flow._attempt import _AttemptRunner
-from sequence_extensions.flow._context import (
+from .._config.context import (
     AttemptToken,
     RunContext,
     current_attempt_token,
@@ -24,11 +23,12 @@ from sequence_extensions.flow._context import (
     in_process_worker,
     in_worker,
 )
-from sequence_extensions.flow._futures import FlowFuture, FlowOutcome, NodeTimeoutError
-from sequence_extensions.flow._gather import gather
-from sequence_extensions.flow._options import UNSET, fill_parameters, validate_node_policy
-from sequence_extensions.flow._pickle import _reduce_node_function, register_alias
-from sequence_extensions.flow.process_pool import _process_node_runner
+from .._config.options import UNSET, fill_parameters, validate_node_policy
+from .attempt import _AttemptRunner
+from .futures import FlowFuture, FlowOutcome, NodeTimeoutError
+from .gather import gather
+from .pickle import _reduce_node_function, register_alias
+from .process_pool import _process_node_runner
 
 __all__ = [
     "FlowFuture",

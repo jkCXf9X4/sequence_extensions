@@ -230,6 +230,27 @@ class RunOptions:
         )
 
 
+def _signature_parameters(sig) -> list[tuple[str, inspect.Parameter, str]]:
+    """A signature's plain parameters: ``(name, parameter, annotation)`` triples.
+
+    ``*args`` and ``**kwargs`` are skipped; each annotation becomes its
+    ``__name__`` when the annotation is a named object, else its string form,
+    and ``""`` when the parameter is unannotated.  Order is signature order.
+    """
+    out = []
+    for name, p in sig.parameters.items():
+        if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
+            continue
+        annotation = p.annotation
+        ann = (
+            getattr(annotation, "__name__", str(annotation))
+            if annotation is not inspect.Parameter.empty
+            else ""
+        )
+        out.append((name, p, ann))
+    return out
+
+
 def fill_parameters(node_name: str, fn, args: tuple, kwargs: dict, registry) -> tuple:
     """Fill MISSING kwargs for ``node_name`` from the override ``registry``.
 

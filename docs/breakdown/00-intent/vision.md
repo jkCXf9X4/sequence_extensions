@@ -58,7 +58,7 @@ A zero-dependency, embeddable mini flow engine:
 ## Success criteria
 
 - A six-case simulated campaign runs parallel, retries its flaky case, and yields one verdict plus a complete audit log (acceptance test).
-- Package stays small: about 4,000 lines of engine core plus ext helpers.
+- Package stays small: engine core (`flow` + `graph`) under 5,000 source lines, enforced by a guardrail test (`DR-021`).
 - The audit log is diffable, greppable, and readable without the code beside it.
 
 ## Owns

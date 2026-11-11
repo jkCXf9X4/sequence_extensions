@@ -182,8 +182,8 @@ class _RecordSink:
 
 
 def test_failed_node_paths_skips_a_future_cancelled_while_settling():
-    from sequence_extensions.flow._context import RunContext
-    from sequence_extensions.flow._settle import failed_node_paths
+    from sequence_extensions.flow._config.context import RunContext
+    from sequence_extensions.flow._execution.settle import failed_node_paths
 
     ctx = RunContext(run_id="r", node_name="r", runlog=None, pool=None, options=RunOptions())
     ctx.nodes.append(_CancelledWhileSettling())
@@ -191,8 +191,8 @@ def test_failed_node_paths_skips_a_future_cancelled_while_settling():
 
 
 def test_write_settle_records_skips_a_future_cancelled_while_settling():
-    from sequence_extensions.flow._context import RunContext
-    from sequence_extensions.flow._settle import write_settle_records
+    from sequence_extensions.flow._config.context import RunContext
+    from sequence_extensions.flow._execution.settle import write_settle_records
 
     sink = _RecordSink()
     ctx = RunContext(run_id="r", node_name="r", runlog=sink, pool=None, options=RunOptions())

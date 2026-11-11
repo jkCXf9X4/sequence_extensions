@@ -13,7 +13,9 @@ import threading
 import time
 from dataclasses import dataclass
 
-from sequence_extensions.flow._context import (
+from sequence_extensions.graph.graph_future import GraphFuture, is_dependency
+
+from .._config.context import (
     AttemptToken,
     RunContext,
     current_node_attempt,
@@ -22,11 +24,10 @@ from sequence_extensions.flow._context import (
     in_process_worker,
     in_worker,
 )
-from sequence_extensions.flow._futures import FlowOutcome, NodeTimeoutError, _is_future
-from sequence_extensions.flow._gather import _contains_future
-from sequence_extensions.flow._identity import utcnow
-from sequence_extensions.flow._records import node_record
-from sequence_extensions.graph.graph_future import GraphFuture
+from .._recording.records import node_record, utcnow
+from ._timeout import _run_with_timeout
+from .futures import FlowOutcome, NodeTimeoutError
+from .gather import _contains_future
 
 
 @dataclass
@@ -239,7 +240,7 @@ class _AttemptRunner:
     def _after_body(
         self, attempt, value, token, started_at, started_clock, elapsed, *, defer_retry=False
     ) -> bool:
-        if self.base_process and _is_future(value):
+        if self.base_process and is_dependency(value):
             return self._finish(
                 attempt,
                 "error",
@@ -249,7 +250,7 @@ class _AttemptRunner:
                 started_clock,
                 defer_retry=defer_retry,
             )
-        if not _is_future(value) and _contains_future(value):
+        if not is_dependency(value) and _contains_future(value):
             return self._finish(
                 attempt,
                 "error",
@@ -262,7 +263,7 @@ class _AttemptRunner:
                 started_clock,
                 defer_retry=defer_retry,
             )
-        if _is_future(value):
+        if is_dependency(value):
             if self.ctx is None or self.ctx.pool is None:
                 return self._finish(
                     attempt,
@@ -413,19 +414,13 @@ class _AttemptRunner:
                 defer_retry=True,
             )
 
-        box = {}
-
-        def _target():
-            try:
-                box["value"] = self._run_body(attempt, token)
-            except BaseException as exc:
-                box["error"] = exc
-
-        thread = threading.Thread(target=_target, name=f"{self.node.name}-attempt", daemon=True)
-        thread.start()
-        thread.join(self.timeout)
+        verdict = _run_with_timeout(
+            lambda: self._run_body(attempt, token),
+            self.timeout,
+            thread_name=f"{self.node.name}-attempt",
+        )
         elapsed = time.perf_counter() - started_clock
-        if thread.is_alive():
+        if verdict.timed_out:
             return self._finish(
                 attempt,
                 "timeout",
@@ -435,11 +430,11 @@ class _AttemptRunner:
                 started_clock,
                 defer_retry=True,
             )
-        if "error" in box:
+        if verdict.error is not None:
             return self._finish(
                 attempt,
                 "error",
-                box["error"],
+                verdict.error,
                 token,
                 started_at,
                 started_clock,
@@ -447,7 +442,7 @@ class _AttemptRunner:
             )
         return self._after_body(
             attempt,
-            box.get("value"),
+            verdict.result,
             token,
             started_at,
             started_clock,

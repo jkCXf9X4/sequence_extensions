@@ -324,6 +324,109 @@ def test_process_worker_cannot_return_a_live_future(tmp_path):
 
 
 # ---------------------------------------------------------------- #
+# Worker entry point, in-process (a fork child's lines are only
+# measured when the runner is called directly, in this process)
+# ---------------------------------------------------------------- #
+def _worker_run_info(node_name):
+    return {
+        "run_id": "in-proc",
+        "node_name": node_name,
+        "summary": True,
+        "node_defaults": None,
+        "parent_path": [],
+        "parent_attempt": None,
+    }
+
+
+def _run_worker(node_fn, node_name, *args, **kwargs):
+    import threading
+
+    from sequence_extensions.flow._execution.process_pool import _process_node_runner
+
+    thread = threading.current_thread()
+    name = thread.name
+    try:
+        return _process_node_runner(node_fn, _worker_run_info(node_name), *args, **kwargs)
+    finally:
+        thread.name = name
+
+
+def test_process_node_runner_success_buffers_records():
+    from sequence_extensions.flow._execution.process_pool import _ProcessOutcome
+
+    outcome = _run_worker(_plain, "_plain", 3)
+    assert isinstance(outcome, _ProcessOutcome)
+    assert outcome.value == 6
+    assert outcome.error is None
+    assert outcome.records  # run records buffered for parent replay
+
+
+def test_process_node_runner_error_buffers_records():
+    from sequence_extensions.flow._execution.process_pool import _ProcessOutcome
+
+    outcome = _run_worker(_boom, "_boom", 1)
+    assert isinstance(outcome, _ProcessOutcome)
+    assert outcome.value is None
+    assert isinstance(outcome.error, ValueError)
+    assert "bad 1" in str(outcome.error)
+    assert outcome.records
+
+
+def test_process_node_runner_replays_retry_records():
+    from sequence_extensions.flow._execution.process_pool import _ProcessOutcome
+
+    _flaky.seen = {}
+    outcome = _run_worker(_flaky, "_flaky", 9)
+    assert isinstance(outcome, _ProcessOutcome)
+    assert outcome.value == 10
+    statuses = [r["status"] for r in outcome.records if r.get("node") == "_flaky"]
+    assert statuses == ["error", "error", "ok"]
+
+
+def test_process_pool_submit_raises_sets_dispatch_error():
+    class _BrokenExecutor:
+        def submit(self, fn, *args, **kwargs):
+            raise BrokenPipeError("worker broke")
+
+        def shutdown(self, wait=True, cancel_futures=True):
+            return None
+
+    pool = ProcessGraphPool(max_workers=1)
+    pool._executor = _BrokenExecutor()
+    gf = GraphFuture(_plain, 1)
+    pool.bind(gf)
+    with pytest.raises(ProcessDispatchError, match="BrokenPipeError"):
+        gf.result(timeout=5)
+
+
+def test_process_pool_settle_cancelled_future_cancels_node():
+    import concurrent.futures
+
+    class _CancellableExecutor:
+        def __init__(self):
+            self.futures = []
+
+        def submit(self, fn, *args, **kwargs):
+            fut = concurrent.futures.Future()
+            self.futures.append(fut)
+            return fut
+
+        def shutdown(self, wait=True, cancel_futures=True):
+            return None
+
+    pool = ProcessGraphPool(max_workers=1)
+    executor = _CancellableExecutor()
+    pool._executor = executor
+    gf = GraphFuture(_plain, 1)
+    pool.bind(gf)
+    assert not gf.future.done()
+    # Cancel the process future before it settles: the done-callback
+    # discards the node as cancelled (exit-cancellation branch).
+    executor.futures[0].cancel()
+    assert gf.future.cancelled() is True
+
+
+# ---------------------------------------------------------------- #
 # Pool lifecycle
 # ---------------------------------------------------------------- #
 def _sleep_plain(x, marker=None):

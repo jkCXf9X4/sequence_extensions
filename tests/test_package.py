@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 import threading
+from pathlib import Path
 from statistics import StatisticsError
 
 import pytest
@@ -317,3 +318,20 @@ def test_flow_public_surface_pinned():
     # every exported name is actually bound on the package
     for name in flow.__all__:
         assert getattr(flow, name) is not None
+
+
+# ---------------------------------------------------------------- #
+# engine core size budget
+# ---------------------------------------------------------------- #
+def test_engine_core_size_budget():
+    # contract (DR-021): engine core (flow + graph) stays under the
+    # 5,000-line budget.  Growth must be justified, not silent; crossing
+    # the budget triggers a deliberate review, not an automatic refactor.
+    import sequence_extensions
+
+    root = Path(sequence_extensions.__file__).parent
+    total = 0
+    for pkg in ("flow", "graph"):
+        for path in (root / pkg).rglob("*.py"):
+            total += len(path.read_text(encoding="utf-8").splitlines())
+    assert total < 5000, f"engine core is {total} lines; budget is 5000 (DR-021)"

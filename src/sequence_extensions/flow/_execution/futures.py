@@ -9,17 +9,14 @@ from __future__ import annotations
 
 import concurrent.futures
 
-from sequence_extensions.flow._context import in_node_body, in_worker
 from sequence_extensions.graph.graph_future import GraphFuture
+
+from .._config.context import in_node_body, in_worker
 
 _BLOCKED_IN_BODY = (
     "blocked on an incomplete future inside a node body; return the future "
     "instead (or submit a dependent node)"
 )
-
-
-def _is_future(value) -> bool:
-    return isinstance(value, (GraphFuture, concurrent.futures.Future))
 
 
 class NodeTimeoutError(TimeoutError):
