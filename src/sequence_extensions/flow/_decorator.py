@@ -1,53 +1,13 @@
-"""``@node`` — the one composable unit: policy plus ``.submit()``.
+"""``@node`` and :class:`NodeFunction`: decoration, policy, submit.
 
-A decorated node is still the function:
-
-* **called directly** it runs inline in the caller's thread.  Outside a node
-  body it returns the body's value (waiting for a returned future if
-  needed).  Inside a node body — on the driver or in a pool worker — it
-  cannot wait: an unsettled call returns a future/outcome, and the caller
-  should return it.
-* **``.submit(...)``** schedules it on the run's pool (concurrent) and
-  returns a :class:`FlowFuture`.
-
-A node may return a concrete value or a future.  A returned future (from
-``.submit()`` or :func:`gather`) is bound to the run's pool and its result
-is forwarded by the graph layer; the worker is freed immediately.  The
-node's attempt record, retry policy, and timeout are applied when that
-future settles.  This is how nested composite nodes fan out without
-blocking a pool worker and without opening a second run.
-
-Semantics (per node, set as decorator keywords or, when left unset, by
-``RunOptions.node_defaults`` of the active run):
-
-* ``retries`` — additional attempts after a failed one (``retries=2``
-  means up to 3 attempts).  Every attempt is one record in the run log.
-* ``retry_delay_seconds`` — backoff sleep between attempts.  The delay is a
-  timer, not a held worker.
-* ``timeout`` — wall budget in seconds for ONE attempt.  The body runs in
-  its own thread joined with the budget; if it returns a future, the
-  remaining budget is a timer.  Python threads cannot be preempted: a
-  timed-out attempt is abandoned, its late records (and those of its
-  subtree) are dropped, and :class:`NodeTimeoutError` is raised once
-  attempts are exhausted.
-
-A node body raising a non-``Exception`` ``BaseException`` (``SystemExit``,
-``KeyboardInterrupt``) is recorded and re-raised wrapped in ``RuntimeError``
-— the graph node must settle; a non-``Exception`` is wrapped before it
-reaches the future.
-
-On a :class:`~sequence_extensions.flow.ProcessGraphPool` the same policy
-runs in a worker process: the node and its arguments must be picklable,
-and the run-log records are buffered by the worker and replayed by the
-parent when the future settles.  A process worker cannot submit or return
-a live future; process-mode fan-out is built in the parent process.
-"""
+Holds the decorator and the node object: policy resolution, inline
+and concurrent execution.  Process-pool pickle/transport lives in
+``_pickle``; ``__init__`` re-exports this module and ``_pickle`` as the
+public surface."""
 
 from __future__ import annotations
 
 import functools
-import pickle
-import sys
 import threading
 
 from sequence_extensions.flow._attempt import _AttemptRunner
@@ -67,7 +27,7 @@ from sequence_extensions.flow._context import (
 from sequence_extensions.flow._futures import FlowFuture, FlowOutcome, NodeTimeoutError
 from sequence_extensions.flow._gather import gather
 from sequence_extensions.flow._options import UNSET, fill_parameters, validate_node_policy
-from sequence_extensions.flow._pickle import register_alias
+from sequence_extensions.flow._pickle import _reduce_node_function, register_alias
 from sequence_extensions.flow.process_pool import _process_node_runner
 
 __all__ = [
@@ -143,18 +103,6 @@ class NodeFunction:
         )
         timeout = self.timeout if self.timeout is not UNSET else getattr(defaults, "timeout", None)
         return int(retries), float(delay), None if timeout is None else float(timeout)
-
-    def __reduce__(self):
-        """Pickle transport for process pools (see __init__)."""
-        alias = getattr(self, "_pickle_alias", None)
-        if alias is None:
-            raise pickle.PicklingError(
-                f"node '{self.name}' is not picklable: its function has no importable module"
-            )
-        return (
-            _rebuild_node_function,
-            (alias, self.retries, self.retry_delay_seconds, self.timeout, self.name),
-        )
 
     def __repr__(self):
         return f"<NodeFunction {self.name} retries={self.retries} timeout={self.timeout}>"
@@ -314,22 +262,9 @@ class NodeFunction:
         ).run()
 
 
-def _rebuild_node_function(alias, retries, retry_delay_seconds, timeout, name):
-    """Unpickle a NodeFunction from its module alias (see __reduce__)."""
-    module = sys.modules.get(alias[0])
-    fn = getattr(module, alias[1], None) if module is not None else None
-    if fn is None:
-        # E.g. a spawn-started worker: the alias only exists where the
-        # decoration ran (module level), not in a fresh interpreter.
-        raise pickle.UnpicklingError(f"node function {alias!r} is not importable")
-    return NodeFunction(
-        fn,
-        retries=retries,
-        retry_delay_seconds=retry_delay_seconds,
-        timeout=timeout,
-        name=name,
-        _alias=alias,
-    )
+#: Pickle transport for process pools lives in ``_pickle``; attach it so
+#: ``NodeFunction`` still answers ``__reduce__`` without hosting the logic.
+NodeFunction.__reduce__ = _reduce_node_function
 
 
 def node(

@@ -10,6 +10,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable, Mapping
 
+from sequence_extensions.flow._options import bind_flow_inputs
 from sequence_extensions.flow_runner._config import RunnerConfigError
 
 __all__ = ["find_nodes", "list_nodes"]
@@ -48,53 +49,14 @@ def list_nodes(module) -> list[tuple[str, str]]:
 def _bind_flow_inputs(fn, inputs: Mapping) -> tuple[tuple, dict]:
     """Split ``[inputs]`` into positional args and keyword args.
 
-    ``execute_flow`` reserves the keyword ``options`` for run options.  A root
-    node with a parameter also named ``options`` therefore has to receive that
-    input positionally; the runner builds the positional prefix up to and
-    including it.  A keyword-only ``options`` (or one reached after
-    ``*args``/``**kwargs``) is rejected with a config error instead of a
-    confusing ``TypeError`` at call time.
+    The reserved-``options`` rule (``execute_flow`` takes ``options`` as its
+    own keyword; a node parameter of that name must be passed positionally)
+    lives in :func:`sequence_extensions.flow._options.bind_flow_inputs`.
+    Its ``ValueError`` violations surface as config errors so the CLI keeps
+    its exit-code contract; a ``TypeError`` from the final signature bind
+    (inputs that do not match at all) passes through unchanged.
     """
-    target = getattr(fn, "__wrapped__", fn)
-    sig = inspect.signature(target)
-    kwargs = dict(inputs)
-    args: list = []
-    if "options" in kwargs:
-        handled = False
-        for name, param in sig.parameters.items():
-            if name == "options":
-                if param.kind in (
-                    inspect.Parameter.KEYWORD_ONLY,
-                    inspect.Parameter.VAR_POSITIONAL,
-                    inspect.Parameter.VAR_KEYWORD,
-                ):
-                    raise RunnerConfigError(
-                        "node parameter 'options' must be positional "
-                        "(and precede *args/**kwargs) to be driven by flow-runner"
-                    )
-                args.append(kwargs.pop("options"))
-                handled = True
-                break
-            if param.kind is inspect.Parameter.VAR_POSITIONAL:
-                raise RunnerConfigError(
-                    "node parameter 'options' cannot be reached positionally past *args"
-                )
-            if param.kind is inspect.Parameter.VAR_KEYWORD:
-                raise RunnerConfigError(
-                    "a parameter named 'options' captured only by **kwargs "
-                    "cannot be driven by flow-runner"
-                )
-            if param.kind in (
-                inspect.Parameter.POSITIONAL_ONLY,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            ):
-                if name in kwargs:
-                    args.append(kwargs.pop(name))
-                elif param.default is not inspect.Parameter.empty:
-                    args.append(param.default)
-                else:
-                    raise RunnerConfigError(f"missing required input {name!r}")
-        if not handled:
-            raise RunnerConfigError("flow has no parameter named 'options'")
-    sig.bind(*args, **kwargs)
-    return tuple(args), kwargs
+    try:
+        return bind_flow_inputs(fn, inputs)
+    except ValueError as e:
+        raise RunnerConfigError(str(e)) from None

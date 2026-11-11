@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 from runner import flows as runner_flows
+from sequence_extensions.flow import RunOptions
 from sequence_extensions.flow_runner import (
     RunnerConfig,
     RunnerConfigError,
@@ -249,6 +250,30 @@ def test_config_rejects_unknown_run_key():
         assert "unknown key" in str(e)
     else:  # pragma: no cover
         raise AssertionError("expected RunnerConfigError")
+
+
+def test_run_option_keys_are_runoptions_toml_surface():
+    """The accepted ``[run]`` option keys are RunOptions' own field list
+    minus the code-only exclusions; drift in either direction fails here."""
+    assert RunOptions.toml_keys() == {
+        "max_workers",
+        "log",
+        "summary",
+        "fixed_clock",
+        "retries",
+        "retry_delay_seconds",
+        "timeout",
+    }
+
+
+def test_code_only_run_options_rejected_from_toml():
+    for key in ("name", "pool", "node_defaults", "parameters"):
+        try:
+            RunnerConfig.from_dict({"run": {key: None}})
+        except RunnerConfigError as e:
+            assert "unknown key" in str(e)
+        else:  # pragma: no cover
+            raise AssertionError(f"expected RunnerConfigError for {key!r}")
 
 
 # --------------------------------------------------------------- #

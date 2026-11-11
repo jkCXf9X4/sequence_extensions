@@ -12,6 +12,7 @@ function in a worker.
 from __future__ import annotations
 
 import itertools
+import pickle
 import re
 import sys
 import threading
@@ -35,3 +36,36 @@ def register_alias(fn, name: str) -> tuple[str, str] | None:
     alias = f"__seqext_node_fn_{stem}_{tag}"
     setattr(module, alias, fn)
     return (fn.__module__, alias)
+
+
+def _reduce_node_function(self):
+    """Pickle transport for process pools (see __init__)."""
+    alias = getattr(self, "_pickle_alias", None)
+    if alias is None:
+        raise pickle.PicklingError(
+            f"node '{self.name}' is not picklable: its function has no importable module"
+        )
+    return (
+        _rebuild_node_function,
+        (alias, self.retries, self.retry_delay_seconds, self.timeout, self.name),
+    )
+
+
+def _rebuild_node_function(alias, retries, retry_delay_seconds, timeout, name):
+    """Unpickle a NodeFunction from its module alias (see __reduce__)."""
+    from sequence_extensions.flow._decorator import NodeFunction
+
+    module = sys.modules.get(alias[0])
+    fn = getattr(module, alias[1], None) if module is not None else None
+    if fn is None:
+        # E.g. a spawn-started worker: the alias only exists where the
+        # decoration ran (module level), not in a fresh interpreter.
+        raise pickle.UnpicklingError(f"node function {alias!r} is not importable")
+    return NodeFunction(
+        fn,
+        retries=retries,
+        retry_delay_seconds=retry_delay_seconds,
+        timeout=timeout,
+        name=name,
+        _alias=alias,
+    )

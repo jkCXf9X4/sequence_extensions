@@ -17,15 +17,7 @@ from sequence_extensions.flow import NodePolicy, RunOptions
 
 __all__ = ["RunnerConfig", "RunnerConfigError"]
 
-_RUN_OPTION_KEYS = {
-    "max_workers",
-    "log",
-    "summary",
-    "fixed_clock",
-    "retries",
-    "retry_delay_seconds",
-    "timeout",
-}
+_RUN_OPTION_KEYS = RunOptions.toml_keys()
 _RUN_KEYS = {"module", "flow"} | _RUN_OPTION_KEYS
 _NODE_KEYS = {"retries", "retry_delay_seconds", "timeout"}
 _LEGACY_SECTIONS = {

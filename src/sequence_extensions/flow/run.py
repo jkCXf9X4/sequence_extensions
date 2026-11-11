@@ -27,7 +27,7 @@ Semantics:
 * **run timeout** — bounds the whole attempt: the root executes in a
   thread joined with the budget; on expiry the run's pool is cancelled,
   the log is abandoned (late records are dropped), ``run_end`` records
-  ``timeout``, and :class:`~sequence_extensions.flow.node.NodeTimeoutError`
+   ``timeout``, and :class:`~sequence_extensions.flow.NodeTimeoutError`
   is raised.
 * **a caller-owned pool** (``RunOptions.pool=``) is never settled by the
   run; its lifecycle belongs to the caller.
@@ -53,10 +53,11 @@ from sequence_extensions.flow._context import (
     execution_scope,
     in_process_worker,
 )
+from sequence_extensions.flow._decorator import NodeFunction
 from sequence_extensions.flow._futures import NodeTimeoutError
 from sequence_extensions.flow._identity import new_run_id, utcnow
 from sequence_extensions.flow._options import RunOptions, fill_parameters
-from sequence_extensions.flow._plan import plan
+from sequence_extensions.flow._planning import plan
 from sequence_extensions.flow._records import run_end_record, run_start_record
 from sequence_extensions.flow._settle import (
     drain,
@@ -64,7 +65,6 @@ from sequence_extensions.flow._settle import (
     settle,
     write_settle_records,
 )
-from sequence_extensions.flow.node import NodeFunction
 from sequence_extensions.flow.runlog import RunLog
 from sequence_extensions.graph.graph_future import GraphPool
 

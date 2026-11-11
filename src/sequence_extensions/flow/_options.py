@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import inspect
 import math
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -123,6 +124,13 @@ class NodePolicy:
 # ---------------------------------------------------------------- #
 # Per-run options
 # ---------------------------------------------------------------- #
+#: RunOptions fields that are run code concerns, never config-file options:
+#: ``name`` (the runner derives identity from module+flow), ``pool`` (a
+#: caller-owned pool built in code), ``node_defaults`` (the ``[node]``
+#: table), and ``parameters`` (the override registry).
+_RUN_OPTION_EXCLUDED = frozenset({"name", "pool", "node_defaults", "parameters"})
+
+
 @dataclass(frozen=True)
 class RunOptions:
     """Options for one ``execute_flow`` call.
@@ -182,6 +190,19 @@ class RunOptions:
                     )
 
     # ------------------------------------------------------------ #
+    # Config-file surface
+    # ------------------------------------------------------------ #
+    @classmethod
+    def toml_keys(cls) -> frozenset[str]:
+        """The :class:`RunOptions` field names a config file may set.
+
+        Derived from the dataclass fields minus the code concerns in
+        ``_RUN_OPTION_EXCLUDED``; a field added to the dataclass appears
+        here unless it is deliberately excluded.
+        """
+        return frozenset(f.name for f in fields(cls) if f.name not in _RUN_OPTION_EXCLUDED)
+
+    # ------------------------------------------------------------ #
     # Resolution
     # ------------------------------------------------------------ #
     def resolve(self, node_name: str) -> RunOptions:
@@ -232,3 +253,58 @@ def fill_parameters(node_name: str, fn, args: tuple, kwargs: dict, registry) -> 
     if not missing:
         return args, kwargs
     return args, {**kwargs, **missing}
+
+
+def bind_flow_inputs(fn, inputs: Mapping) -> tuple[tuple, dict]:
+    """Split a flow's inputs into positional args and keyword args.
+
+    ``execute_flow`` reserves the keyword ``options`` for run options, so a
+    node with a parameter also named ``options`` receives that input
+    positionally: the positional prefix is built up to and including it.  A
+    keyword-only ``options`` (or one reached after ``*args``/``**kwargs``)
+    raises ``ValueError`` instead of failing with a confusing ``TypeError``
+    at call time.
+    """
+    target = getattr(fn, "__wrapped__", fn)
+    sig = inspect.signature(target)
+    kwargs = dict(inputs)
+    args: list = []
+    if "options" in kwargs:
+        handled = False
+        for name, param in sig.parameters.items():
+            if name == "options":
+                if param.kind in (
+                    inspect.Parameter.KEYWORD_ONLY,
+                    inspect.Parameter.VAR_POSITIONAL,
+                    inspect.Parameter.VAR_KEYWORD,
+                ):
+                    raise ValueError(
+                        "node parameter 'options' must be positional "
+                        "(and precede *args/**kwargs) to be driven by flow-runner"
+                    )
+                args.append(kwargs.pop("options"))
+                handled = True
+                break
+            if param.kind is inspect.Parameter.VAR_POSITIONAL:
+                raise ValueError(
+                    "node parameter 'options' cannot be reached positionally past *args"
+                )
+            if param.kind is inspect.Parameter.VAR_KEYWORD:
+                raise ValueError(
+                    "a parameter named 'options' captured only by **kwargs "
+                    "cannot be driven by flow-runner"
+                )
+            if param.kind in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            ):
+                if name in kwargs:
+                    args.append(kwargs.pop(name))
+                elif param.default is not inspect.Parameter.empty:
+                    args.append(param.default)
+                else:
+                    raise ValueError(f"missing required input {name!r}")
+        if not handled:
+            raise ValueError("flow has no parameter named 'options'")
+    sig.bind(*args, **kwargs)
+    return tuple(args), kwargs

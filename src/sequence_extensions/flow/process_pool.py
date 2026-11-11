@@ -35,11 +35,7 @@ import threading
 
 from sequence_extensions.flow._context import RunContext, execution_scope
 from sequence_extensions.flow._options import RunOptions
-from sequence_extensions.graph.graph_future import (
-    GraphFuture,
-    GraphPool,
-    _set_exception_if_pending,
-)
+from sequence_extensions.graph.graph_future import GraphFuture, GraphPool
 
 __all__ = ["ProcessDispatchError", "ProcessGraphPool"]
 
@@ -146,13 +142,13 @@ class ProcessGraphPool(GraphPool):
         try:
             args, kwargs = node._resolve_arguments()
         except Exception as exc:
-            _set_exception_if_pending(node.future, exc)  # dependency failure
+            node.set_exception_if_pending(exc)  # dependency failure
             return
         try:
             pfuture = executor.submit(node.function, *args, **kwargs)
         except Exception as exc:
-            _set_exception_if_pending(
-                node.future, ProcessDispatchError(f"{type(exc).__name__}: {exc}")
+            node.set_exception_if_pending(
+                ProcessDispatchError(f"{type(exc).__name__}: {exc}")
             )
             return
 

@@ -271,3 +271,49 @@ def test_result_timeout():
             release.set()
             t.join(5)
         assert gf.result(timeout=5) == 42
+
+
+# ---------------------------------------------------------------- #
+# flow public surface
+# ---------------------------------------------------------------- #
+def test_flow_public_surface_pinned():
+    # contract: the public `flow` surface is fixed.  Changing __all__ is a
+    # deliberate, reviewed decision — not an incidental import-side effect.
+    import sequence_extensions.flow as flow
+
+    assert flow.__all__ == [
+        "DEFAULT_LOG_DIR",
+        "DEFAULT_MAX_WORKERS",
+        "DIFF_EXCLUDE",
+        "FlowFuture",
+        "FlowOutcome",
+        "FlowNodeInfo",
+        "FlowParameter",
+        "FlowPlan",
+        "NodeFunction",
+        "NodePolicy",
+        "NodeTimeoutError",
+        "ProcessDispatchError",
+        "ProcessGraphPool",
+        "Run",
+        "RunContext",
+        "RunLog",
+        "RunOptions",
+        "SCHEMA_VERSION",
+        "UNSET",
+        "apply_override",
+        "current_run",
+        "diff_plans",
+        "execute_flow",
+        "gather",
+        "jsonable",
+        "node",
+        "parameters_from_document",
+        "plan",
+        "plan_document",
+        "plan_manifest",
+        "validate_node_policy",
+    ]
+    # every exported name is actually bound on the package
+    for name in flow.__all__:
+        assert getattr(flow, name) is not None

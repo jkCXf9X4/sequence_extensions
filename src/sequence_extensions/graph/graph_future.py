@@ -30,24 +30,20 @@ def _shutdown_live_pools() -> None:
 atexit.register(_shutdown_live_pools)
 
 
-def _is_dependency(value) -> bool:
-    """A graph node may depend on another graph node or a plain Future."""
+def is_dependency(value) -> bool:
+    """Return whether ``value`` is a graph dependency.
+
+    A graph node may depend on another graph node (:class:`GraphFuture`) or
+    a plain :class:`concurrent.futures.Future`.  Edge construction and
+    argument resolution use this predicate; a pool subclass that inspects a
+    node's ``dependencies`` can rely on it to identify them.
+    """
     return isinstance(value, (GraphFuture, concurrent.futures.Future))
 
 
 def _dependency_future(dep):
     """The underlying ``concurrent.futures.Future`` of a dependency."""
     return dep.future if isinstance(dep, GraphFuture) else dep
-
-
-def _set_exception_if_pending(future, exc) -> None:
-    """Settle ``future`` with ``exc`` unless cancellation won the race."""
-    if future.done():
-        return
-    try:
-        future.set_exception(exc)
-    except concurrent.futures.InvalidStateError:
-        pass
 
 
 class GraphFuture:
@@ -95,7 +91,7 @@ class GraphFuture:
 
         # Keep positional order via integer keys: {0: arg0, 1: arg1, **kwargs}
         self.arguments = {**{i: arg for i, arg in enumerate(positional)}, **kwargs}
-        self.dependencies = [x for x in self.arguments.values() if _is_dependency(x)]
+        self.dependencies = [x for x in self.arguments.values() if is_dependency(x)]
 
         self.queued = False
         self.future = concurrent.futures.Future()
@@ -235,8 +231,8 @@ class GraphFuture:
     def _run(self) -> None:
         """Execute this node's function on a worker thread and settle ``future``."""
         if self._pool is None:
-            _set_exception_if_pending(
-                self.future, RuntimeError("GraphFuture executed without a bound GraphPool")
+            self.set_exception_if_pending(
+                RuntimeError("GraphFuture executed without a bound GraphPool")
             )
             return
         if self.future.done():
@@ -272,7 +268,7 @@ class GraphFuture:
             # is impossible; the attempt's own layer decides what to report.
             if not isinstance(e, Exception):
                 e = RuntimeError(f"{type(e).__qualname__}: {e}")
-            _set_exception_if_pending(self.future, e)
+            self.set_exception_if_pending(e)
 
     def _forward_result(self, inner_future) -> None:
         """Copy a chained future's result into this node's future."""
@@ -284,7 +280,16 @@ class GraphFuture:
         except BaseException as e:
             if not isinstance(e, Exception):
                 e = RuntimeError(f"{type(e).__qualname__}: {e}")
-            _set_exception_if_pending(self.future, e)
+            self.set_exception_if_pending(e)
+
+    def set_exception_if_pending(self, exc) -> None:
+        """Settle this node with ``exc`` unless cancellation won the race."""
+        if self.future.done():
+            return
+        try:
+            self.future.set_exception(exc)
+        except concurrent.futures.InvalidStateError:
+            pass
 
     def _resolve_arguments(self):
         """
@@ -295,7 +300,7 @@ class GraphFuture:
         kw = {k: v for k, v in self.arguments.items() if not isinstance(k, int)}
 
         def materialize(v):
-            return _dependency_future(v).result() if _is_dependency(v) else v
+            return _dependency_future(v).result() if is_dependency(v) else v
 
         args = [materialize(pos[k]) for k in sorted(pos)]
         kwargs = {k: materialize(v) for k, v in kw.items()}
@@ -424,9 +429,15 @@ class GraphPool:
     def _submit_node(self, node: GraphFuture) -> None:
         """Queue ``node`` for execution on this pool (dispatch seam).
 
-        Subclasses redirect execution here — e.g. a process-pool subclass
-        ships the node's function and resolved arguments to a worker
-        process instead of running ``node._run`` on a worker thread.
+        ``_submit_node`` is the extension seam (the "substrate reopen").
+        It receives a single bound :class:`GraphFuture` whose dependencies
+        are already resolved and whose ``future`` is pending.  It must
+        guarantee that ``node.future`` is settled exactly once — by running
+        the node (thread mode), by dispatching its function to a worker, or
+        by settling it with an exception/cancellation — and it must not
+        raise.  A pool subclass overrides this method to change how nodes
+        are dispatched (e.g. an HPC recipe pool that sbatch-ships the
+        function and polls a job), without touching graph internals.
         """
         with self._bind_lock:
             if self._shutdown:
@@ -438,7 +449,7 @@ class GraphPool:
         try:
             executor.submit(node._run)
         except Exception as exc:
-            _set_exception_if_pending(node.future, exc)
+            node.set_exception_if_pending(exc)
 
     def _bind_graph(self, gf: GraphFuture, *, source=None) -> None:
         """

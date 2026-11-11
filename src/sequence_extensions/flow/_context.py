@@ -2,23 +2,24 @@
 
 A :class:`RunContext` exists for the duration of one run.  ``execute_flow``
 creates it (run identity, audit log, pool, effective options) and installs
-it in a ``ContextVar``; ``@node`` reads it at ``submit()`` time and restores
-it inside pool workers and deferred-attempt callback threads, so nodes
+it in the context; ``@node`` reads it at ``submit()`` time and restores it
+inside pool workers and deferred-attempt callback threads, so nodes
 submitted from within a node join the same run.
 
-Additional ContextVars carry the execution position and the worker
-markers:
+The execution position and the worker markers travel in the same context
+slot, one immutable state object held by a single ``ContextVar``:
 
-* ``_node_path`` — the chain of node names currently executing
+* ``node_path`` — the chain of node names currently executing
   (``("campaign", "phase")``); a node appends its own name while its body
   runs.  The run log records it as ``path``.
-* ``_node_attempt`` — the enclosing node's current attempt number
+* ``node_attempt`` — the enclosing node's current attempt number
   (``parent_attempt`` on descendant records).
-* ``_attempt_token`` — the attempt's token; an abandoned attempt checks it
+* ``attempt_token`` — the attempt's token; an abandoned attempt checks it
   (and its ancestors) before writing a record, so a timed-out composite
   drops late records from its subtree.
-* ``_in_worker`` / ``_in_process_worker`` — set in pool workers.
-* ``_in_node_body`` — set while a node's function runs, wherever it runs
+* ``run_attempt_token`` — the run-level timeout attempt token.
+* ``in_worker`` / ``in_process_worker`` — set in pool workers.
+* ``in_node_body`` — set while a node's function runs, wherever it runs
   (root body or pool worker).  Blocking on an incomplete future is rejected
   there; returning the future is the supported way to fan out.
 
@@ -32,8 +33,10 @@ worker inherits the forking thread's context instead, so
 from __future__ import annotations
 
 import contextvars
+import dataclasses
 import threading
 from contextlib import contextmanager
+from dataclasses import dataclass
 
 
 class AttemptToken:
@@ -86,134 +89,85 @@ class RunContext:
         )
 
 
-_current_run: contextvars.ContextVar = contextvars.ContextVar(
-    "sequence_extensions_current_run", default=None
+@dataclass(frozen=True)
+class _ContextState:
+    """The execution context carried by one ContextVar.
+
+    Immutable: every ``set_*`` replaces a single field by copy-on-write, so
+    the ``ContextVar`` token/reset semantics are unchanged and a mutation is
+    never visible to another thread sharing the object.
+    """
+
+    run: RunContext | None = None
+    node_path: tuple = ()
+    node_attempt: int | None = None
+    attempt_token: AttemptToken | None = None
+    run_attempt_token: AttemptToken | None = None
+    in_worker: bool = False
+    in_process_worker: bool = False
+    in_node_body: bool = False
+
+
+_EMPTY = _ContextState()
+
+_context: contextvars.ContextVar = contextvars.ContextVar(
+    "sequence_extensions_context", default=None
 )
-_node_path: contextvars.ContextVar = contextvars.ContextVar(
-    "sequence_extensions_node_path", default=()
-)
-_node_attempt: contextvars.ContextVar = contextvars.ContextVar(
-    "sequence_extensions_node_attempt", default=None
-)
-_attempt_token: contextvars.ContextVar = contextvars.ContextVar(
-    "sequence_extensions_attempt_token", default=None
-)
-_run_attempt_token: contextvars.ContextVar = contextvars.ContextVar(
-    "sequence_extensions_run_attempt_token", default=None
-)
-_in_worker: contextvars.ContextVar = contextvars.ContextVar(
-    "sequence_extensions_in_worker", default=False
-)
-_in_process_worker: contextvars.ContextVar = contextvars.ContextVar(
-    "sequence_extensions_in_process_worker", default=False
-)
-_in_node_body: contextvars.ContextVar = contextvars.ContextVar(
-    "sequence_extensions_in_node_body", default=False
-)
+
+# getter name -> (setter base name, state field, value coercion)
+_ACCESSORS = {
+    "current_run": ("current_run", "run", None),
+    "current_node_path": ("node_path", "node_path", tuple),
+    "current_node_attempt": ("node_attempt", "node_attempt", None),
+    "current_attempt_token": ("attempt_token", "attempt_token", None),
+    "current_run_attempt_token": ("run_attempt_token", "run_attempt_token", None),
+    "in_worker": ("in_worker", "in_worker", bool),
+    "in_process_worker": ("in_process_worker", "in_process_worker", bool),
+    "in_node_body": ("in_node_body", "in_node_body", bool),
+}
+
+# state field name -> value coercion, shared by the accessors and the scope.
+_COERCE = {field: coerce for _, (_, field, coerce) in _ACCESSORS.items()}
 
 
-def current_run() -> RunContext | None:
-    """Return the innermost active run context, or ``None`` outside a run."""
-    return _current_run.get()
+def _state() -> _ContextState:
+    """The current state, or the shared empty state outside any run."""
+    st = _context.get()
+    return st if st is not None else _EMPTY
 
 
-def set_current_run(ctx: RunContext | None):
-    """Install ``ctx`` as the current run; returns the reset token."""
-    return _current_run.set(ctx)
+def _replace(**fields):
+    """Install a copy of the state with the given fields replaced."""
+    return _context.set(dataclasses.replace(_state(), **fields))
 
 
-def reset_current_run(token) -> None:
-    """Restore the previous current run (pair of :func:`set_current_run`)."""
-    _current_run.reset(token)
+def _make_accessors(getter_name, setter_name, field, coerce):
+    """Build the getter/setter/resetter trio for one context field."""
+
+    def getter():
+        return _state().__getattribute__(field)
+
+    getter.__name__ = getter_name
+
+    def setter(value):
+        return _replace(**{field: coerce(value) if coerce is not None else value})
+
+    setter.__name__ = "set_" + setter_name
+
+    def resetter(token):
+        _context.reset(token)
+
+    resetter.__name__ = "reset_" + setter_name
+    return getter, setter, resetter
 
 
-def current_node_path() -> tuple:
-    """The node-name chain currently executing (empty at the root)."""
-    return _node_path.get()
+for _getter, (_setter, _field, _coerce) in _ACCESSORS.items():
+    _get, _set, _reset = _make_accessors(_getter, _setter, _field, _coerce)
+    globals()[_getter] = _get
+    globals()["set_" + _setter] = _set
+    globals()["reset_" + _setter] = _reset
 
-
-def set_node_path(path):
-    return _node_path.set(tuple(path))
-
-
-def reset_node_path(token) -> None:
-    _node_path.reset(token)
-
-
-def current_node_attempt():
-    """The enclosing node's current attempt number, or ``None`` at the root."""
-    return _node_attempt.get()
-
-
-def set_node_attempt(attempt):
-    return _node_attempt.set(attempt)
-
-
-def reset_node_attempt(token) -> None:
-    _node_attempt.reset(token)
-
-
-def current_attempt_token() -> AttemptToken | None:
-    return _attempt_token.get()
-
-
-def set_attempt_token(token):
-    return _attempt_token.set(token)
-
-
-def reset_attempt_token(token) -> None:
-    _attempt_token.reset(token)
-
-
-def current_run_attempt_token() -> AttemptToken | None:
-    """The run-level timeout attempt token, or ``None`` without one."""
-    return _run_attempt_token.get()
-
-
-def set_run_attempt_token(token):
-    return _run_attempt_token.set(token)
-
-
-def reset_run_attempt_token(token) -> None:
-    _run_attempt_token.reset(token)
-
-
-def in_worker() -> bool:
-    return _in_worker.get()
-
-
-def set_in_worker(value: bool):
-    return _in_worker.set(bool(value))
-
-
-def reset_in_worker(token) -> None:
-    _in_worker.reset(token)
-
-
-def in_process_worker() -> bool:
-    return _in_process_worker.get()
-
-
-def set_in_process_worker(value: bool):
-    return _in_process_worker.set(bool(value))
-
-
-def reset_in_process_worker(token) -> None:
-    _in_process_worker.reset(token)
-
-
-def in_node_body() -> bool:
-    """True while a node's function runs, on the driver or in a worker."""
-    return _in_node_body.get()
-
-
-def set_in_node_body(value: bool):
-    return _in_node_body.set(bool(value))
-
-
-def reset_in_node_body(token) -> None:
-    _in_node_body.reset(token)
-
+del _get, _set, _reset, _getter, _setter, _field, _coerce
 
 _MISSING = object()
 
@@ -232,25 +186,27 @@ def execution_scope(
 ):
     """Install an execution position and restore it on exit.
 
-    Omitted keyword arguments leave their ``ContextVar`` untouched.  This is
-    the single place that pairs every ``set_*`` with its reset token.
+    Omitted keyword arguments leave their field untouched.  This is the
+    single place that pairs every ``set_*`` with its reset token.
     """
-    tokens = []
-    values = (
-        (ctx, set_current_run, reset_current_run),
-        (path, set_node_path, reset_node_path),
-        (attempt, set_node_attempt, reset_node_attempt),
-        (token, set_attempt_token, reset_attempt_token),
-        (run_token, set_run_attempt_token, reset_run_attempt_token),
-        (worker, set_in_worker, reset_in_worker),
-        (process_worker, set_in_process_worker, reset_in_process_worker),
-        (in_body, set_in_node_body, reset_in_node_body),
-    )
+    provided = {}
+    for field, value in (
+        ("run", ctx),
+        ("node_path", path),
+        ("node_attempt", attempt),
+        ("attempt_token", token),
+        ("run_attempt_token", run_token),
+        ("in_worker", worker),
+        ("in_process_worker", process_worker),
+        ("in_node_body", in_body),
+    ):
+        if value is not _MISSING:
+            coerce = _COERCE.get(field)
+            provided[field] = coerce(value) if coerce else value
+
+    token = _replace(**provided) if provided else None
     try:
-        for value, setter, resetter in values:
-            if value is not _MISSING:
-                tokens.append((resetter, setter(value)))
         yield
     finally:
-        for resetter, reset_token in reversed(tokens):
-            resetter(reset_token)
+        if token is not None:
+            _context.reset(token)
