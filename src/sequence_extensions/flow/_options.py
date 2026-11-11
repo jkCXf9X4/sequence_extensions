@@ -16,6 +16,7 @@ default.  ``log=None`` disables the file.
 
 from __future__ import annotations
 
+import inspect
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,7 @@ __all__ = [
     "NodePolicy",
     "RunOptions",
     "UNSET",
+    "fill_parameters",
     "validate_node_policy",
 ]
 
@@ -139,6 +141,7 @@ class RunOptions:
     retry_delay_seconds: float | int | _Unset = UNSET
     timeout: float | int | None | _Unset = UNSET
     node_defaults: NodePolicy | None | _Unset = UNSET
+    parameters: dict[str, dict[str, Any]] | None | _Unset = UNSET
 
     def __post_init__(self) -> None:
         if self.name is not None:
@@ -166,6 +169,17 @@ class RunOptions:
                 raise ValueError(
                     f"node_defaults must be a NodePolicy or None, got {self.node_defaults!r}"
                 )
+        if self.parameters is not UNSET and self.parameters is not None:
+            if not isinstance(self.parameters, dict):
+                raise ValueError(
+                    "parameters must be a dict of "
+                    f"{{node: {{param: value}}}}, got {self.parameters!r}"
+                )
+            for name, entry in self.parameters.items():
+                if not isinstance(entry, dict):
+                    raise ValueError(
+                        f"parameters[{name!r}] must be a dict of {{param: value}}, got {entry!r}"
+                    )
 
     # ------------------------------------------------------------ #
     # Resolution
@@ -191,4 +205,30 @@ class RunOptions:
             retry_delay_seconds=default("retry_delay_seconds", 0.0),
             timeout=default("timeout", None),
             node_defaults=default("node_defaults", None),
+            parameters=default("parameters", None),
         )
+
+
+def fill_parameters(node_name: str, fn, args: tuple, kwargs: dict, registry) -> tuple:
+    """Fill MISSING kwargs for ``node_name`` from the override ``registry``.
+
+    A parameter already bound positionally (via ``fn``'s signature) or
+    explicitly in ``kwargs`` is code and wins; it is not overwritten.
+    A no-op when ``registry`` is None/empty or ``node_name`` is absent.
+    Returns ``(args, new_kwargs)``.
+    """
+    if not registry:
+        return args, kwargs
+    entry = registry.get(node_name)
+    if not entry:
+        return args, kwargs
+    try:
+        bound = inspect.signature(fn).bind_partial(*args, **kwargs)
+    except (TypeError, ValueError):
+        bound_names = set(kwargs)
+    else:
+        bound_names = set(bound.arguments)
+    missing = {name: value for name, value in entry.items() if name not in bound_names}
+    if not missing:
+        return args, kwargs
+    return args, {**kwargs, **missing}

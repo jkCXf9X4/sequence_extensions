@@ -38,6 +38,8 @@ A zero-dependency, embeddable mini flow engine:
 - Independent tasks run concurrently; concurrency is bounded.
 - The run log is complete the moment a flow returns.
 - Zero runtime dependencies; Python >= 3.11.
+- A construct-only plan pass yields the pre-execution DAG and its parameter
+  surface without executing any node (`IMP-023`).
 
 ## Library Boundary Commitment
 
@@ -49,7 +51,6 @@ A zero-dependency, embeddable mini flow engine:
 
 ## Out of scope
 
-- Plan-before-execution (dry run): structurally impossible with imperative submission.
 - Replay by re-execution: the log proves what ran; re-running is a fresh run.
 - Distributed execution: recipes only — no scheduler adapters, no cluster runtime.
 - Workflow XML, node trees, adaptation, artifact store.

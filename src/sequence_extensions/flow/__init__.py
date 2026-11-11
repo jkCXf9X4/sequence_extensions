@@ -41,9 +41,19 @@ from sequence_extensions.flow._options import (
     RunOptions,
     validate_node_policy,
 )
+from sequence_extensions.flow._plan import (
+    FlowNodeInfo,
+    FlowParameter,
+    FlowPlan,
+    apply_override,
+    diff_plans,
+    parameters_from_document,
+    plan_document,
+    plan_manifest,
+)
 from sequence_extensions.flow.node import NodeFunction, node
 from sequence_extensions.flow.process_pool import ProcessDispatchError, ProcessGraphPool
-from sequence_extensions.flow.run import FlowPlan, Run, execute_flow, plan
+from sequence_extensions.flow.run import Run, execute_flow, plan
 from sequence_extensions.flow.runlog import DIFF_EXCLUDE, SCHEMA_VERSION, RunLog, jsonable
 
 __all__ = [
@@ -52,6 +62,8 @@ __all__ = [
     "DIFF_EXCLUDE",
     "FlowFuture",
     "FlowOutcome",
+    "FlowNodeInfo",
+    "FlowParameter",
     "FlowPlan",
     "NodeFunction",
     "NodePolicy",
@@ -64,11 +76,16 @@ __all__ = [
     "RunOptions",
     "SCHEMA_VERSION",
     "UNSET",
+    "apply_override",
     "current_run",
+    "diff_plans",
     "execute_flow",
     "gather",
     "jsonable",
     "node",
+    "parameters_from_document",
     "plan",
+    "plan_document",
+    "plan_manifest",
     "validate_node_policy",
 ]

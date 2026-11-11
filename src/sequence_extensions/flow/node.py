@@ -66,7 +66,7 @@ from sequence_extensions.flow._context import (
 )
 from sequence_extensions.flow._futures import FlowFuture, FlowOutcome, NodeTimeoutError
 from sequence_extensions.flow._gather import gather
-from sequence_extensions.flow._options import UNSET, validate_node_policy
+from sequence_extensions.flow._options import UNSET, fill_parameters, validate_node_policy
 from sequence_extensions.flow._pickle import register_alias
 from sequence_extensions.flow.process_pool import _process_node_runner
 
@@ -208,6 +208,12 @@ class NodeFunction:
             raise RuntimeError("node.submit() on an abandoned attempt")
         if ctx.cancelled.is_set():
             raise RuntimeError("node.submit() on a cancelled run")
+
+        # Override registry (UC-C): fill params this call omitted; a param
+        # already bound positionally or in kwargs is code and wins.
+        args, kwargs = fill_parameters(
+            self.name, self.fn, args, kwargs, getattr(ctx.options, "parameters", None)
+        )
 
         parent_token = token
         run_attempt_token = current_run_attempt_token()

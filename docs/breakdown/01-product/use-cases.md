@@ -2,7 +2,7 @@
 id: INFO-010
 type: info
 title: Use cases
-summary: The use-case catalog — fifteen capability leaves (CP-016 to CP-030) concretizing the INFO-001 goal
+summary: The use-case catalog — capability leaves (CP-016 to CP-035) concretizing the INFO-001 goal
 date: 2026-10-14
 status: current
 ---
@@ -28,6 +28,11 @@ The use cases concretize the goal in `INFO-001`. Each is a capability leaf, cite
 - `CP-028` — start runs from a shell or pipeline: `flow-runner` in make, CI, cron, and batch scripts; exit codes branch, the run log is the artifact.
 - `CP-029` — keep a run log byte-stable for reference storage: `fixed_clock` pins run id, timing, worker, and record order; identical runs, identical bytes.
 - `CP-030` — compose nodes: a reusable node tree runs as a step in a larger tree — one run, one log, future-first fan-out, and composite policy for the subtree.
+- `CP-031` — see a flow before it runs: one plan document holds the complete task graph, fan-out width, and parameter values; nothing executed.
+- `CP-032` — extract what a flow can be tuned with: a stable input manifest — every settable input, required/optional, and default.
+- `CP-033` — override an input for a whole node kind: one edited plan document sets a value for every node of a kind; explicit code values keep winning.
+- `CP-034` — see an override's effect before the run: a before/after view from re-planning and comparing plan documents.
+- `CP-035` — diff two flow plans: a plain-data diff of two plan documents; identical plans compare equal.
 
 ## Owns
 

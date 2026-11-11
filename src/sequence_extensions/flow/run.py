@@ -55,7 +55,8 @@ from sequence_extensions.flow._context import (
 )
 from sequence_extensions.flow._futures import NodeTimeoutError
 from sequence_extensions.flow._identity import new_run_id, utcnow
-from sequence_extensions.flow._options import RunOptions
+from sequence_extensions.flow._options import RunOptions, fill_parameters
+from sequence_extensions.flow._plan import plan
 from sequence_extensions.flow._records import run_end_record, run_start_record
 from sequence_extensions.flow._settle import (
     drain,
@@ -65,7 +66,7 @@ from sequence_extensions.flow._settle import (
 )
 from sequence_extensions.flow.node import NodeFunction
 from sequence_extensions.flow.runlog import RunLog
-from sequence_extensions.graph.graph_future import GraphFuture, GraphPool
+from sequence_extensions.graph.graph_future import GraphPool
 
 try:  # package version stamped into run_start; import is cycle-free
     from sequence_extensions import __version__ as _PACKAGE_VERSION
@@ -143,140 +144,6 @@ def execute_flow(node: NodeFunction, *args, options: RunOptions | None = None, *
                 continue
             raise
     raise AssertionError("unreachable: the run retry loop always returns or raises")
-
-
-# ---------------------------------------------------------------- #
-# Plan pass (pre-execution DAG discovery)
-# ---------------------------------------------------------------- #
-class _PlanPool(GraphPool):
-    """A GraphPool that records the graph but never executes any node.
-
-    The root body runs on the driver during ``plan()``; every ``submit`` /
-    ``gather`` inside it builds a ``FlowFuture`` and binds its edges, but
-    ``_submit_node`` is a no-op, so no worker thread is ever scheduled and
-    no node body executes.  The discovered DAG is what a real run would
-    execute — same edges, same fan-out width, nothing run.
-    """
-
-    process_workers = False
-
-    def __init__(self):
-        super().__init__(max_workers=None)
-
-    def _ensure_executor(self):
-        # Never create a thread pool: plan mode schedules nothing.
-        return
-
-    def _submit_node(self, node):
-        # Record the node as bound but do not schedule it.  Edges are already
-        # captured at ``GraphFuture`` construction, so the DAG is complete
-        # without running anything.
-        with self._bind_lock:
-            if node.future.done():
-                return
-        self._nodes.append(node)
-
-
-@dataclass(frozen=True)
-class FlowPlan:
-    """The pre-execution dependency graph of a run, without running it.
-
-    ``nodes`` lists every submitted/gathered node in bind order (leaves
-    first); each entry is ``(name, path)``.  ``edges`` lists the dependency
-    edges as ``(dependent_index, dependency_index)`` indices into ``nodes``,
-    so fan-out (one dependency feeding several nodes) and fan-in (gather)
-    are both explicit.  ``root`` is the name of the node the run would
-    execute.
-    """
-
-    root: str
-    nodes: tuple[tuple[str, tuple, int], ...]  # (name, path, instance) per occurrence
-    edges: tuple[tuple[int, int], ...]  # (dependent, dependency) node indices
-
-    def names(self):
-        """Node names in bind order, one per occurrence (fan-out repeats)."""
-        return tuple(name for name, _path, _inst in self.nodes)
-
-
-def plan(node: NodeFunction, *args, options: RunOptions | None = None, **kwargs) -> FlowPlan:
-    """Discover the DAG ``node`` would execute, without running any node.
-
-    The root body runs once (its plain logic executes — e.g. a
-    ``sorted(...)`` fan-out source — so the fan-out width is concrete), while
-    every ``submit`` / ``gather`` inside it builds and binds its edges but is
-    never scheduled.  The result is a :class:`FlowPlan`: the same graph a real
-    run would execute, with nothing run and no run log written.
-    """
-    if not isinstance(node, NodeFunction):
-        raise TypeError(f"plan() expects a @node function, got {node!r}")
-    if options is None:
-        options = RunOptions()
-    if not isinstance(options, RunOptions):
-        raise TypeError(f"options must be RunOptions or None, got {options!r}")
-    if in_process_worker():
-        raise RuntimeError("plan() inside a process worker is not supported")
-    if current_run() is not None:
-        raise RuntimeError("plan() is a top-level entry point")
-
-    resolved = options.resolve(node.name)
-    pool = _PlanPool()
-    ctx = RunContext(
-        run_id=f"{resolved.name}-plan",
-        node_name=resolved.name,
-        runlog=None,
-        pool=pool,
-        options=resolved,
-    )
-    with execution_scope(
-        ctx=ctx,
-        path=(),
-        attempt=None,
-        token=None,
-        run_token=None,
-        worker=False,
-        process_worker=False,
-        in_body=True,
-    ):
-        result = node.fn(*args, **kwargs)
-    return _build_plan(node.name, result)
-
-
-def _build_plan(root_name: str, result) -> FlowPlan:
-    """Collect the DAG reachable from the root body's returned future."""
-    if not isinstance(result, GraphFuture):
-        return FlowPlan(root=root_name, nodes=(), edges=())
-
-    nodes: list[GraphFuture] = []
-    index: dict[int, int] = {}
-    visited: set[int] = set()
-
-    def visit(gf) -> None:
-        gid = id(gf)
-        if gid in visited:
-            return
-        visited.add(gid)
-        for dep in gf.dependencies:
-            if isinstance(dep, GraphFuture):
-                visit(dep)
-        index[gid] = len(nodes)
-        nodes.append(gf)
-
-    visit(result)
-
-    edges = []
-    for i, gf in enumerate(nodes):
-        for dep in gf.dependencies:
-            if isinstance(dep, GraphFuture) and id(dep) in index:
-                edges.append((i, index[id(dep)]))
-
-    counts: dict[str, int] = {}
-    entries = []
-    for gf in nodes:
-        name = gf.name
-        counts[name] = counts.get(name, 0) + 1
-        path = getattr(gf, "path", ()) or (name,)
-        entries.append((name, tuple(path), counts[name]))
-    return FlowPlan(root=root_name, nodes=tuple(entries), edges=tuple(edges))
 
 
 # ---------------------------------------------------------------- #
@@ -449,6 +316,11 @@ def _run_once(node, args, kwargs, options, attempt) -> Run:
 
 def _call_root(node, args, kwargs, timeout, ctx, attempt):
     """Run the root node, optionally bounded by the run-level timeout."""
+    # Override registry (UC-C): fill params the caller omitted; a param
+    # already bound positionally or in kwargs is code and wins.
+    args, kwargs = fill_parameters(
+        node.name, node.fn, args, kwargs, getattr(ctx.options, "parameters", None)
+    )
     if timeout is None:
         return node(*args, **kwargs)
 
