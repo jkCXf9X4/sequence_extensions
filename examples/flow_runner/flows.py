@@ -18,7 +18,7 @@ import json
 import time
 from pathlib import Path
 
-from sequence_extensions.flow import gather, node
+from sequence_extensions.flow import current_run, gather, node
 
 
 def _load_case(case_path: Path) -> dict:
@@ -26,9 +26,12 @@ def _load_case(case_path: Path) -> dict:
     return {"case": name, "value": float(value)}
 
 
-@node
+@node(retries=1)
 def simulate(case_path: Path, out_dir: Path) -> Path:
-    """Double the case value; fail once per case to exercise retries."""
+    """Double the case value; fail once per case and run to exercise retries."""
+    context = current_run()
+    if context is not None:
+        out_dir = out_dir / context.run_id
     marker = out_dir / "markers" / f"{case_path.stem}.failed-once"
     if not marker.exists():
         marker.parent.mkdir(parents=True, exist_ok=True)
@@ -65,7 +68,7 @@ def summarize(evaluations: list[dict]) -> dict:
 
 
 @node
-def campaign(cases_dir: Path, out_dir: Path, tolerance: float = 1.5) -> dict:
+def campaign(cases_dir: Path, out_dir: Path = "out", tolerance: float = 1.5) -> dict:
     """Run every case through simulate and evaluate; return one verdict."""
     # The plan loader decodes typed paths; normalize defensively for callers.
     cases_dir = Path(cases_dir)
