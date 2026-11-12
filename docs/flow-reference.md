@@ -297,7 +297,7 @@ run = execute_flow(
 )
 ```
 
-Resolution is **plan per-node policy > explicit `@node` keyword > `RunOptions.node_defaults` > built-in default**.
+Resolution is **exact-identity plan policy > name-wide plan policy > explicit `@node` keyword > `RunOptions.node_defaults` > built-in default**.  A `NodeIdentity` key in `RunOptions.node_policies` wins over a bare node-name key; the name key still covers every occurrence.
 
 `fixed_clock = true` opts a run into **reference mode**: the run executes as if on a frozen clock, so an identical run produces a byte-identical log. The run id pins to `<node>-fixed` (a sequential run overwrites the same file instead of accumulating), every engine-written timestamp becomes `1970-01-01T00:00:00+00:00`, `duration_ms` becomes `0`, the `worker` field becomes constant, and records are written in canonical order — `run_start`, nodes by path/parent attempt/attempt/inputs, `run_end` — with nested mapping keys sorted and strict JSON. Root-level run retries are rejected with `fixed_clock` (one reference execution per file), and a fixed path is exclusive: a second concurrent writer raises (POSIX adds a process-level lock). Built for storing run logs as reference files (golden files in git) without timestamp churn; the trade is that the file holds nothing until the run returns.
 
@@ -310,6 +310,7 @@ import json
 from pathlib import Path
 
 from sequence_extensions.flow import (
+    NodeIdentity,
     RunOptions,
     apply_override,
     diff_plans,
@@ -323,7 +324,13 @@ document = plan_document(campaign, Path("cases"), options=RunOptions(max_workers
 manifest = plan_manifest(document)  # same shape, every value stripped
 edited = apply_override(
     document,
-    {"nodes": [{"name": "evaluate", "params": [{"name": "tolerance", "value": 0.7}]}]},
+    {"nodes": [
+        # Name-wide: every evaluate occurrence.
+        {"name": "evaluate", "params": [{"name": "tolerance", "value": 0.7}]},
+        # Exact identity: only the second evaluate occurrence.
+        {"name": "evaluate", "path": ["campaign", "evaluate"], "instance": 2,
+         "params": [{"name": "tolerance", "value": 0.9}]},
+    ]},
 )
 diff_plans(document, edited)  # {"equal": False, "changes": [...]}
 
@@ -333,6 +340,7 @@ run = execute_plan(campaign, json.loads(Path("plan.json").read_text()), log="run
 
 - `plan_document(node, *args, options=..., **kwargs)` runs the plan pass only; nothing executes. `options` is always emitted with concrete defaults (`max_workers=16`, `summary=false`, `fixed_clock=false`, run-level `retries=0`, `retry_delay_seconds=0.0`, `timeout=null`).
 - Values stay raw Python in the document (`Path` etc.); `jsonable` serializes them, `execute_plan` decodes `{path, sha256}` back to `Path`.
-- `apply_override` edits root values, node params (every occurrence of a name), partial node `policy`, and partial `options`; unknown names or keys raise `ValueError` before execution, and the input document is not mutated.
-- `execute_plan` is the import path: it rebuilds the root kwargs, the node parameter registry, per-node `RunOptions.node_policies`, and `RunOptions` from the document, then calls `execute_flow`.
+- Every node entry carries a canonical identity: `name`, `path` (the node-name chain from the run root, inclusive), and `instance` (the 1-based occurrence among submissions with the same `(name, path)` in **submission order**).  The plan pass and a real run execute the same root body, so both reproduce the identity; post-order document order does not change `instance`.  `NodeIdentity(name, path, instance)` is the public representation.
+- `apply_override` edits root values, node params and partial node `policy`, and partial `options`.  A node entry with both `path` and `instance` targets exactly one occurrence; omitting both keeps the legacy name-wide behavior (every occurrence of that name); providing only one is an error.  An unknown node, identity, parameter, policy key, or option key raises `ValueError` before execution, and the input document is not mutated.
+- `execute_plan` is the import path: it rebuilds the root kwargs, the node parameter registry, per-node `RunOptions.node_policies`, and `RunOptions` from the document, then calls `execute_flow`.  Document entries with `path`+`instance` are keyed by identity; a legacy document without them is keyed by name.  At submit the run computes the same identity; an exact identity value wins over a name-wide value, and a value bound in code still wins over both.
 - `diff_plans` compares two documents as plain data (parameters, nodes, policy, params, edges, options); there is no root comparison.

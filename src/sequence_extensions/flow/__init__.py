@@ -35,8 +35,10 @@ from ._config.options import (
     DEFAULT_LOG_DIR,
     DEFAULT_MAX_WORKERS,
     UNSET,
+    NodeIdentity,
     NodePolicy,
     RunOptions,
+    node_key,
     validate_node_policy,
 )
 from ._execution.futures import FlowFuture, FlowOutcome, NodeTimeoutError
@@ -60,6 +62,7 @@ __all__ = [
     "FlowFuture",
     "FlowOutcome",
     "NodeFunction",
+    "NodeIdentity",
     "NodePolicy",
     "NodeTimeoutError",
     "ProcessDispatchError",
@@ -78,6 +81,7 @@ __all__ = [
     "gather",
     "jsonable",
     "node",
+    "node_key",
     "plan_document",
     "plan_manifest",
     "validate_node_policy",

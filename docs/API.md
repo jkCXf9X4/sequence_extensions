@@ -48,6 +48,8 @@ from sequence_extensions.flow import (
     gather,
     Run,
     RunOptions,
+    NodeIdentity,
+    node_key,
     NodePolicy,
     NodeFunction,
     FlowFuture,
@@ -88,12 +90,14 @@ __version__ = "3.0.1"
 | `gather` | One future for a value with every future replaced by its result; container shape preserved |
 | `execute_flow` | Open a top-level run around a root node and return a `Run` |
 | `plan_document` | Emit the `flow-plan/2` JSON document for a call — nothing executes |
-| `apply_override` | Merge parameter, node-policy, and option overrides into a document |
+| `NodeIdentity` | Canonical identity of one submitted occurrence: `(name, path, instance)` |
+| `node_key` | Normalize an override key: a node name or `NodeIdentity` |
+| `apply_override` | Merge parameter, node-policy, and option overrides into a document (name-wide or one identity) |
 | `execute_plan` | Decode a `flow-plan/2` document and run it — the import path |
 | `plan_manifest` | The same document with every `value` stripped |
 | `diff_plans` | Plain-data diff of two documents; identical plans compare equal |
 | `Run` | One run's account: result, identity, status, log, duration, error, failed nodes |
-| `RunOptions` | Per-run options (pool, log, summary, fixed clock, retries, node defaults, per-node policies) |
+| `RunOptions` | Per-run options (pool, log, summary, fixed clock, retries, node defaults, per-node policies, parameter injection) |
 | `NodePolicy` | Default retry/backoff/timeout for nodes that left a value unset |
 | `NodeFunction` | The object `@node` returns: callable inline, plus `.submit()` |
 | `FlowFuture` | A submitted node's future (`.result()` is rejected on an incomplete future inside a node body) |
@@ -1031,7 +1035,7 @@ def simulate(case): ...
 - `gather(value)` returns one future for `value` with its futures replaced by their results. Containers keep their shape at any depth — `{"a": submit(1)}` resolves to `{"a": 1}`; lists, tuples, dicts, sets and namedtuples included, and dict keys are kept as-is. Any other `Mapping` resolves to a plain dict; orderable tuple subclasses keep their type. A bare future resolves to a one-element list, any other iterable to a list, and `[]` is accepted. `gather` needs an active run (it raises `RuntimeError` outside one). Return it from a node or pass it as a dependency (`merge.submit(gather(evals))`). A node should not return a list/dict containing futures; wrap it with `gather`.
 - A node body that calls/submits other nodes is a composite; there is no separate decorator and no separate run. Nested nodes share the run's pool and log; `path` and `parent_attempt` record the tree, and the composite's `retries`/`timeout` apply to the returned future as a whole — a retry re-runs the body (hence its subtree) with a new `parent_attempt`.
 - A `BaseException` (`SystemExit`, `KeyboardInterrupt`) from a node body is recorded and re-raised wrapped in `RuntimeError`.
-- Unset keywords resolve from the active run's `RunOptions.node_policies` for that node name, then `node_defaults`, then the built-in default; a plan per-node policy wins over an explicit keyword.
+- Unset keywords resolve from the active run's `RunOptions.node_policies` for that node occurrence: an exact `NodeIdentity` key wins over a node-name key, then `node_defaults`, then the built-in default; a plan per-node policy wins over an explicit keyword.
 
 ### `execute_flow` — the run boundary
 
@@ -1051,7 +1055,8 @@ run = execute_flow(node, *args, options=RunOptions(...), **kwargs)
 | `retry_delay_seconds` | `0.0` | backoff between run attempts. |
 | `timeout` | `None` | wall budget for the whole attempt; on expiry the pool is cancelled and `run_end` records `timeout`. |
 | `node_defaults` | `None` | `NodePolicy` for nodes whose decorator left a value unset. |
-| `node_policies` | `None` | `{node: NodePolicy}` from a plan document; wins over an explicit `@node` keyword. |
+| `node_policies` | `None` | `{node or NodeIdentity: NodePolicy}`; an exact identity wins over a name, and either wins over an explicit `@node` keyword. |
+| `parameters` | `None` | `{node or NodeIdentity: {param: value}}`; fills omitted node parameters. Exact identity wins over name; a value bound in code still wins. |
 
 - Returns a `Run`: `result`, `run_id`, `node`, `status` (`ok` / `error` / `timeout`), `log`, `duration_ms`, `attempt`, `started`, `ended`, `error`, `failed_nodes`.
 - `failed_nodes` is a tuple of node paths whose settled future carries an exception, including fire-and-forget children; `status` stays the root verdict.
@@ -1073,7 +1078,7 @@ run = execute_flow(node, *args, options=RunOptions(...), **kwargs)
 
 ### Configuration
 
-There is no global configuration. Run-level knobs travel with `execute_flow` (`RunOptions`); node-level defaults come from `RunOptions.node_defaults` (`NodePolicy`) or the decorator, and a plan document supplies per-node policy through `RunOptions.node_policies`. Precedence: **plan per-node policy > explicit decorator keyword > `node_defaults` > built-in default**. `RunOptions` fields left unset take the built-in default; nothing is inherited from an enclosing run (there is none).
+There is no global configuration. Run-level knobs travel with `execute_flow` (`RunOptions`); node-level defaults come from `RunOptions.node_defaults` (`NodePolicy`) or the decorator, and a plan document supplies per-node policy through `RunOptions.node_policies`. Precedence: **exact-identity plan policy > name-wide plan policy > explicit decorator keyword > `node_defaults` > built-in default**. `RunOptions` fields left unset take the built-in default; nothing is inherited from an enclosing run (there is none).
 
 ```python
 RunOptions(
@@ -1098,7 +1103,7 @@ One JSON document is the whole run configuration: root parameters with bound val
      "value": {"path": "cases", "sha256": null}}
   ],
   "nodes": [
-    {"id": 0, "name": "score", "kind": "node", "path": ["score"], "instance": 1,
+    {"id": 0, "name": "score", "kind": "node", "path": ["campaign", "score"], "instance": 1,
      "policy": {"retries": 0, "retry_delay_seconds": 0.0, "timeout": null},
      "params": [
        {"name": "scale", "type": "float", "required": false,
@@ -1115,8 +1120,9 @@ One JSON document is the whole run configuration: root parameters with bound val
 
 - `plan_document(node, *args, options=None, **kwargs)` — the plan pass only. `options` is always concrete (`max_workers=16`, `summary=false`, `fixed_clock=false`, run-level retries/backoff, `timeout=null`); `log`, `name`, `pool`, `node_defaults`, and `parameters` are runtime-only. Values stay raw Python until `jsonable`.
 - `plan_manifest(document)` — the same shape with every root and node `value` stripped; the stable "what runs" projection.
-- `apply_override(document, override)` — merges root `parameters`, node `params`, partial node `policy`, and partial `options` into a deep copy. Node edits reach every occurrence of a name. An unknown root param, node, node param, policy key, or option key raises `ValueError` before execution.
-- `execute_plan(node, document, *, options=None, log=None)` — validates `schema`, decodes `{path, sha256}` back to `Path` when the type ends in `Path`, rejects missing required root values, binds root parameters, builds the node registry and `RunOptions.node_policies`, overlays `options=`/`log=`, then calls `execute_flow`. `log=None` does not override the default (`"runs"`).
+- Every node entry carries a canonical identity: `name`, `path` (the node-name chain from the run root, inclusive), and `instance` (the 1-based occurrence among submissions with the same `(name, path)` in **submission order**). The plan pass and a real run execute the same root body, so both reproduce it; post-order document order does not change `instance`. `NodeIdentity(name, path, instance)` is the public representation.
+- `apply_override(document, override)` — merges root `parameters`, node `params`, partial node `policy`, and partial `options` into a deep copy. A node entry with both `path` and `instance` targets exactly one occurrence; omitting both keeps the legacy name-wide behavior (every occurrence); providing only one is an error. An unknown root param, node, identity, node param, policy key, or option key raises `ValueError` before execution.
+- `execute_plan(node, document, *, options=None, log=None)` — validates `schema`, decodes `{path, sha256}` back to `Path` when the type ends in `Path`, rejects missing required root values, binds root parameters, builds the node registry and `RunOptions.node_policies` (keyed by identity when the entry has `path`+`instance`, else by name), overlays `options=`/`log=`, then calls `execute_flow`. At submit the run computes the same identity. `log=None` does not override the default (`"runs"`).
 - `diff_plans(a, b)` — plain-data changes for parameters, nodes, policy, params, edges, and options; no root comparison. Identical documents give `{"equal": True, "changes": []}`.
 
 ```python
@@ -1124,14 +1130,17 @@ import json
 from pathlib import Path
 
 from sequence_extensions.flow import (
-    RunOptions, apply_override, diff_plans, execute_plan, jsonable, plan_document,
-    plan_manifest,
+    NodeIdentity, RunOptions, apply_override, diff_plans, execute_plan, jsonable,
+    plan_document, plan_manifest,
 )
 
 document = plan_document(campaign, Path("cases"), options=RunOptions(max_workers=8))
 manifest = plan_manifest(document)
-edited = apply_override(document, {"nodes": [{"name": "evaluate",
-                                              "params": [{"name": "tolerance", "value": 0.7}]}]})
+edited = apply_override(document, {"nodes": [
+    {"name": "evaluate", "params": [{"name": "tolerance", "value": 0.7}]},
+    {"name": "evaluate", "path": ["campaign", "evaluate"], "instance": 2,
+     "params": [{"name": "tolerance", "value": 0.9}]},
+]})
 print(diff_plans(document, edited))
 Path("plan.json").write_text(json.dumps(jsonable(edited)))
 run = execute_plan(campaign, json.loads(Path("plan.json").read_text()), log="runs")

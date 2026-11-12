@@ -30,7 +30,7 @@ The use cases concretize the goal in `INFO-001`. Each is a capability leaf, cite
 - `CP-030` — compose nodes: a reusable node tree runs as a step in a larger tree — one run, one log, future-first fan-out, and composite policy for the subtree.
 - `CP-031` — see a flow before it runs: one plan document holds the complete task graph, fan-out width, and parameter values; nothing executed.
 - `CP-032` — extract what a flow can be tuned with: a stable input manifest — every settable input, required/optional, and default.
-- `CP-033` — override an input for a whole node kind: one edited plan document sets a value for every node of a kind; explicit code values keep winning.
+- `CP-033` — override an input for one node occurrence: one edited plan document targets one occurrence by its canonical identity (name, path, instance), or keeps the name-wide form for every node of a kind; explicit code values keep winning.
 - `CP-034` — see an override's effect before the run: a before/after view from re-planning and comparing plan documents.
 - `CP-035` — diff two flow plans: a plain-data diff of two plan documents; identical plans compare equal.
 

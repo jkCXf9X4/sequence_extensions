@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from sequence_extensions.flow import (
+    NodeIdentity,
     NodePolicy,
     NodeTimeoutError,
     Run,
@@ -112,7 +113,16 @@ def test_plan_document_returns_the_v2_document(tmp_path):
         "gather",
         "node",
     ]
-    assert all(n["path"] == [n["name"]] for n in doc["nodes"])
+    assert [n["path"] for n in doc["nodes"]] == [
+        ["campaign", "simulate"],
+        ["campaign", "evaluate"],
+        ["campaign", "simulate"],
+        ["campaign", "evaluate"],
+        ["campaign", "simulate"],
+        ["campaign", "evaluate"],
+        ["gather"],
+        ["campaign", "verdict"],
+    ]
     assert [n["instance"] for n in doc["nodes"]] == [1, 1, 2, 2, 3, 3, 1, 1]
     assert all(
         n["policy"] == {"retries": 0, "retry_delay_seconds": 0.0, "timeout": None}
@@ -623,3 +633,216 @@ def test_execute_plan_explicit_options_overlay_document_options():
 
     with pytest.raises(NodeTimeoutError):
         execute_plan(slow, document, options=RunOptions(log=None, timeout=0.05))
+
+
+# ---------------------------------------------------------------- #
+# Identity-addressed overrides
+# ---------------------------------------------------------------- #
+def test_apply_override_targets_one_occurrence_by_identity(tmp_path):
+    """A path+instance override edits one occurrence and leaves its twin alone."""
+    _write_cases(tmp_path, "a.csv", "b.csv")
+    campaign, _ran = _make_campaign()
+    doc = plan_document(campaign, tmp_path, 0.5, tmp_path / "out")
+    target = [n for n in doc["nodes"] if n["name"] == "evaluate"][1]
+
+    overridden = apply_override(
+        doc,
+        {
+            "nodes": [
+                {
+                    "name": "evaluate",
+                    "path": target["path"],
+                    "instance": target["instance"],
+                    "params": [{"name": "tolerance", "value": 0.7}],
+                }
+            ]
+        },
+    )
+
+    evaluates = [n for n in overridden["nodes"] if n["name"] == "evaluate"]
+    values = [{p["name"]: p["value"] for p in n["params"]}["tolerance"] for n in evaluates]
+    assert values == [0.5, 0.7]
+    # The input document is untouched.
+    original = [n for n in doc["nodes"] if n["name"] == "evaluate"]
+    assert [{p["name"]: p["value"] for p in n["params"]}["tolerance"] for n in original] == [
+        0.5,
+        0.5,
+    ]
+
+
+def test_apply_override_identity_requires_both_fields_and_rejects_unknown(tmp_path):
+    _write_cases(tmp_path, "a.csv")
+    campaign, _ran = _make_campaign()
+    doc = plan_document(campaign, tmp_path, 0.5, tmp_path / "out")
+    known_path = ["campaign", "evaluate"]
+
+    with pytest.raises(ValueError, match="both 'path' and 'instance'"):
+        apply_override(doc, {"nodes": [{"name": "evaluate", "path": known_path}]})
+    with pytest.raises(ValueError, match="both 'path' and 'instance'"):
+        apply_override(doc, {"nodes": [{"name": "evaluate", "instance": 1}]})
+    with pytest.raises(ValueError, match="unknown node identity"):
+        apply_override(
+            doc,
+            {"nodes": [{"name": "evaluate", "path": known_path, "instance": 9}]},
+        )
+    with pytest.raises(ValueError, match="positive integer"):
+        apply_override(
+            doc,
+            {"nodes": [{"name": "evaluate", "path": known_path, "instance": 0}]},
+        )
+    with pytest.raises(ValueError, match="list or tuple of strings"):
+        apply_override(
+            doc,
+            {"nodes": [{"name": "evaluate", "path": "campaign", "instance": 1}]},
+        )
+
+
+def test_execute_plan_applies_distinct_values_to_same_name_instances():
+    @node
+    def compute(x: int, scale: int = 1) -> int:
+        return x * scale
+
+    @node
+    def flow(x: int, y: int):
+        return gather([compute.submit(x), compute.submit(y)])
+
+    doc = plan_document(flow, 2, 3)
+    edited = apply_override(
+        doc,
+        {
+            "nodes": [
+                {
+                    "name": "compute",
+                    "path": ["flow", "compute"],
+                    "instance": 1,
+                    "params": [{"name": "scale", "value": 10}],
+                },
+                {
+                    "name": "compute",
+                    "path": ["flow", "compute"],
+                    "instance": 2,
+                    "params": [{"name": "scale", "value": 100}],
+                },
+            ]
+        },
+    )
+
+    run = execute_plan(flow, edited, options=RunOptions(log=None))
+
+    assert run.result == [20, 300]
+
+
+def test_identity_instances_follow_submission_order_not_postorder():
+    """Root returns gather([b, a]); identities still follow submit order a, b."""
+
+    @node
+    def leaf(tag: str, scale: int = 1) -> str:
+        return tag * scale
+
+    @node
+    def flow():
+        a = leaf.submit("a")
+        b = leaf.submit("b")
+        return gather([b, a])
+
+    doc = plan_document(flow)
+    leaves = [n for n in doc["nodes"] if n["name"] == "leaf"]
+    # Document order is post-order (b, a); instances come from submit order.
+    assert [{p["name"]: p["value"] for p in n["params"]}["tag"] for n in leaves] == ["b", "a"]
+    assert [n["instance"] for n in leaves] == [2, 1]
+
+    edited = apply_override(
+        doc,
+        {
+            "nodes": [
+                {
+                    "name": "leaf",
+                    "path": ["flow", "leaf"],
+                    "instance": 1,
+                    "params": [{"name": "scale", "value": 10}],
+                },
+                {
+                    "name": "leaf",
+                    "path": ["flow", "leaf"],
+                    "instance": 2,
+                    "params": [{"name": "scale", "value": 100}],
+                },
+            ]
+        },
+    )
+    run = execute_plan(flow, edited, options=RunOptions(log=None))
+
+    assert run.result == ["b" * 100, "a" * 10]
+
+
+def test_legacy_name_wide_override_reaches_every_occurrence_end_to_end():
+    @node
+    def compute(x: int, scale: int = 1) -> int:
+        return x * scale
+
+    @node
+    def flow():
+        return gather([compute.submit(1), compute.submit(2)])
+
+    doc = plan_document(flow)
+    edited = apply_override(
+        doc, {"nodes": [{"name": "compute", "params": [{"name": "scale", "value": 7}]}]}
+    )
+
+    run = execute_plan(flow, edited, options=RunOptions(log=None))
+
+    assert run.result == [7, 14]
+
+
+def test_identity_specific_policy_beats_name_wide_policy():
+    seen = {}
+
+    @node
+    def flaky(i: int) -> int:
+        seen[i] = seen.get(i, 0) + 1
+        if i == 1 and seen[1] == 1:
+            raise RuntimeError("first attempt")
+        return i
+
+    @node
+    def flow():
+        return gather([flaky.submit(1), flaky.submit(2)])
+
+    first = NodeIdentity("flaky", ("flow", "flaky"), 1)
+    run = execute_flow(
+        flow,
+        options=RunOptions(
+            log=None,
+            node_policies={
+                "flaky": NodePolicy(retries=0),
+                first: NodePolicy(retries=1),
+            },
+        ),
+    )
+
+    assert run.result == [1, 2]
+    assert seen[1] == 2
+
+
+def test_run_options_parameters_accepts_identity_keys_through_execute_flow():
+    @node
+    def compute(x: int, scale: int = 1) -> int:
+        return x * scale
+
+    @node
+    def flow():
+        return gather([compute.submit(1), compute.submit(2)])
+
+    second = NodeIdentity("compute", ("flow", "compute"), 2)
+    run = execute_flow(
+        flow,
+        options=RunOptions(
+            log=None,
+            parameters={
+                "compute": {"scale": 10},
+                second: {"scale": 100},
+            },
+        ),
+    )
+
+    assert run.result == [10, 200]

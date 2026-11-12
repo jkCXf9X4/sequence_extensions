@@ -23,7 +23,7 @@ from .._config.context import (
     in_process_worker,
     in_worker,
 )
-from .._config.options import UNSET, fill_parameters, validate_node_policy
+from .._config.options import UNSET, NodeIdentity, fill_parameters, validate_node_policy
 from .attempt import _AttemptRunner
 from .futures import FlowFuture, FlowOutcome, NodeTimeoutError
 from .gather import gather
@@ -43,6 +43,20 @@ __all__ = [
 #: parallel workers must not interleave (``GraphPool._visiting`` is
 #: pool-level DFS state).
 _BIND_LOCK = threading.Lock()
+
+#: Identity reservation: instance numbers must be unique even when several
+#: workers submit the same ``(name, path)`` concurrently.
+_IDENTITY_LOCK = threading.Lock()
+
+
+def _claim_identity(ctx: RunContext, name: str) -> NodeIdentity:
+    """Reserve the next submission-order identity for ``name`` in ``ctx``."""
+    path = current_node_path() + (name,)
+    key = (name, path)
+    with _IDENTITY_LOCK:
+        instance = ctx.node_instances.get(key, 0) + 1
+        ctx.node_instances[key] = instance
+    return NodeIdentity(name, path, instance)
 
 
 class NodeFunction:
@@ -89,18 +103,25 @@ class NodeFunction:
     # ------------------------------------------------------------ #
     # Policy
     # ------------------------------------------------------------ #
-    def _effective_policy(self):
+    def _effective_policy(self, identity: NodeIdentity | None = None):
         """Resolve this attempt's policy.
 
         Precedence: plan override (``RunOptions.node_policies``) > explicit
         ``@node`` keyword > ``RunOptions.node_defaults`` > built-in default.
+        An exact ``identity`` policy wins over a name-wide policy; callers
+        without an identity look up the name only.
         """
         ctx = current_run()
         options = ctx.options if ctx is not None else None
         policies = getattr(options, "node_policies", None) if options is not None else None
         if policies is UNSET:
             policies = None
-        plan_policy = policies.get(self.name) if policies else None
+        plan_policy = None
+        if policies:
+            if identity is not None:
+                plan_policy = policies.get(identity)
+            if plan_policy is None:
+                plan_policy = policies.get(self.name)
         if plan_policy is not None:
             return (
                 int(plan_policy.retries),
@@ -172,10 +193,16 @@ class NodeFunction:
         if ctx.cancelled.is_set():
             raise RuntimeError("node.submit() on a cancelled run")
 
-        # Override registry (UC-C): fill params this call omitted; a param
-        # already bound positionally or in kwargs is code and wins.
+        # Identity is claimed before filling: an exact-entry override targets
+        # this occurrence, not every node sharing the name.
+        identity = _claim_identity(ctx, self.name)
         args, kwargs = fill_parameters(
-            self.name, self.fn, args, kwargs, getattr(ctx.options, "parameters", None)
+            self.name,
+            self.fn,
+            args,
+            kwargs,
+            getattr(ctx.options, "parameters", None),
+            identity=identity,
         )
 
         parent_token = token
@@ -185,7 +212,7 @@ class NodeFunction:
             # runner is this module-level function carrying the node and a
             # plain-dict run header; the worker buffers run-log records and
             # the run replays them before run_end.
-            retries, delay, timeout = self._effective_policy()
+            retries, delay, timeout = self._effective_policy(identity)
             resolved = NodeFunction(
                 self.fn,
                 retries=retries,
@@ -224,11 +251,12 @@ class NodeFunction:
                         ctx,
                         parent_token=parent_token,
                         run_attempt_token=run_attempt_token,
+                        identity=identity,
                     )
 
             gf = FlowFuture(_runner, *args, **kwargs)
         gf.set_name(self.name)
-        gf.path = current_node_path() + (self.name,)
+        gf.path = identity.path
         gf.parent_attempt = current_node_attempt()
         ctx.nodes.append(gf)
 
@@ -261,9 +289,10 @@ class NodeFunction:
         *,
         parent_token: AttemptToken | None,
         run_attempt_token: AttemptToken | None,
+        identity: NodeIdentity | None = None,
     ) -> FlowOutcome:
         """Run the attempt loop; return a future settled at the final outcome."""
-        retries, delay, timeout = self._effective_policy()
+        retries, delay, timeout = self._effective_policy(identity)
         return _AttemptRunner(
             self,
             args,

@@ -39,7 +39,7 @@ What users need: the use-case catalog — needs stated in user-observable terms,
 - **CP-030** [UC-30 Compose nodes — a node inside a node](uc-30-compose-nodes-a-node-inside-a-node.md) — a reusable node tree runs as a step in a larger node tree — one run, one log, future-first fan-out, and composite policy for the subtree
 - **CP-031** [See a flow before it runs](see-a-flow-before-it-runs.md) — The complete pre-execution task graph, fan-out width, and parameter values, as one plan document; nothing executed, no log written
 - **CP-032** [Extract what a flow can be tuned with](extract-what-a-flow-can-be-tuned-with.md) — A stable input manifest — every settable input of the flow and its nodes, which are required, what each defaults to
-- **CP-033** [Override an input for a whole node kind](override-an-input-for-a-whole-node-kind.md) — One edited plan document sets a value for every node of a kind; explicit values written in code keep winning
+- **CP-033** [Override an input for one node occurrence](override-an-input-for-one-node-occurrence.md) — One edited plan document targets one occurrence by identity, or every node of a kind by name; explicit values written in code keep winning
 - **CP-034** [See an override's effect before the run](see-an-override-s-effect-before-the-run.md) — A before/after view — which nodes an override reaches and what each receives — from re-planning and comparing the plan documents
 - **CP-035** [Diff two flow plans](diff-two-flow-plans.md) — A plain-data diff of two plan documents — added, removed, or re-wired nodes and changed defaults; identical plans compare equal
 - **INFO-010** [Use cases](use-cases.md) — The use-case catalog — twenty capability leaves (CP-016 to CP-035) concretizing the INFO-001 goal

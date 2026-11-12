@@ -67,6 +67,7 @@ class RunContext:
         "runlog",
         "pool",
         "nodes",
+        "node_instances",
         "outcomes",
         "options",
         "cancelled",
@@ -78,6 +79,7 @@ class RunContext:
         self.runlog = runlog  # RunLog | record sink | None
         self.pool = pool
         self.nodes = []  # every GraphFuture submitted in this run (drain list)
+        self.node_instances = {}  # (name, path) -> submission count, for identities
         self.outcomes = []  # deferred node outcomes, so drain waits for their logs
         self.options = options
         self.cancelled = threading.Event()

@@ -82,9 +82,11 @@ def _in_plan_scope(node, args, kwargs, resolved, build):
         pool=pool,
         options=resolved,
     )
+    # Mirror a real root attempt: its body runs with the root name already on
+    # the path, so submitted-node paths and identities match a real run.
     with execution_scope(
         ctx=ctx,
-        path=(),
+        path=(resolved.name,),
         attempt=None,
         token=None,
         run_token=None,

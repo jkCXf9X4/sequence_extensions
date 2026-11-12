@@ -27,10 +27,12 @@ from typing import Any
 __all__ = [
     "DEFAULT_LOG_DIR",
     "DEFAULT_MAX_WORKERS",
+    "NodeIdentity",
     "NodePolicy",
     "RunOptions",
     "UNSET",
     "fill_parameters",
+    "node_key",
     "validate_node_policy",
 ]
 
@@ -104,6 +106,49 @@ def _check_str(value, name: str) -> None:
 
 
 # ---------------------------------------------------------------- #
+# Node identity
+# ---------------------------------------------------------------- #
+@dataclass(frozen=True)
+class NodeIdentity:
+    """Canonical identity of one submitted node occurrence.
+
+    ``name`` is the node name.  ``path`` is the node-name chain from the run
+    root (inclusive) to this occurrence.  ``instance`` is the 1-based
+    occurrence among submissions sharing the same ``(name, path)`` in
+    submission order.  Two occurrences of the same name at the same path are
+    told apart by ``instance``; the same name at different paths differs in
+    ``path``.
+    """
+
+    name: str
+    path: tuple[str, ...]
+    instance: int
+
+    def __post_init__(self) -> None:
+        _check_str(self.name, "NodeIdentity.name")
+        if isinstance(self.path, list):
+            object.__setattr__(self, "path", tuple(self.path))
+        if not isinstance(self.path, tuple) or not all(isinstance(part, str) for part in self.path):
+            raise ValueError(f"NodeIdentity.path must be a tuple of strings, got {self.path!r}")
+        _check_int(self.instance, "NodeIdentity.instance", minimum=1)
+
+
+def node_key(key) -> str | NodeIdentity:
+    """Normalize an override key to a node name or a :class:`NodeIdentity`.
+
+    ``RunOptions.parameters`` and ``RunOptions.node_policies`` accept either
+    a bare node name (legacy, every occurrence) or a ``NodeIdentity`` (one
+    occurrence).  Any other key is rejected.
+    """
+    if isinstance(key, str):
+        _check_str(key, "node key")
+        return key
+    if isinstance(key, NodeIdentity):
+        return key
+    raise ValueError(f"node key must be a node name or NodeIdentity, got {key!r}")
+
+
+# ---------------------------------------------------------------- #
 # Node policy defaults
 # ---------------------------------------------------------------- #
 @dataclass(frozen=True)
@@ -143,8 +188,8 @@ class RunOptions:
     retry_delay_seconds: float | int | _Unset = UNSET
     timeout: float | int | None | _Unset = UNSET
     node_defaults: NodePolicy | None | _Unset = UNSET
-    node_policies: dict[str, NodePolicy] | None | _Unset = UNSET
-    parameters: dict[str, dict[str, Any]] | None | _Unset = UNSET
+    node_policies: dict[str | NodeIdentity, NodePolicy] | None | _Unset = UNSET
+    parameters: dict[str | NodeIdentity, dict[str, Any]] | None | _Unset = UNSET
 
     def __post_init__(self) -> None:
         if self.name is not None:
@@ -178,21 +223,21 @@ class RunOptions:
                     "node_policies must be a dict of {node: NodePolicy}, "
                     f"got {self.node_policies!r}"
                 )
-            for name, policy in self.node_policies.items():
+            for key, policy in self.node_policies.items():
+                node_key(key)
                 if not isinstance(policy, NodePolicy):
-                    raise ValueError(
-                        f"node_policies[{name!r}] must be a NodePolicy, got {policy!r}"
-                    )
+                    raise ValueError(f"node_policies[{key!r}] must be a NodePolicy, got {policy!r}")
         if self.parameters is not UNSET and self.parameters is not None:
             if not isinstance(self.parameters, dict):
                 raise ValueError(
                     "parameters must be a dict of "
                     f"{{node: {{param: value}}}}, got {self.parameters!r}"
                 )
-            for name, entry in self.parameters.items():
+            for key, entry in self.parameters.items():
+                node_key(key)
                 if not isinstance(entry, dict):
                     raise ValueError(
-                        f"parameters[{name!r}] must be a dict of {{param: value}}, got {entry!r}"
+                        f"parameters[{key!r}] must be a dict of {{param: value}}, got {entry!r}"
                     )
 
     # ------------------------------------------------------------ #
@@ -245,18 +290,29 @@ def _signature_parameters(sig) -> list[tuple[str, inspect.Parameter, str]]:
     return out
 
 
-def fill_parameters(node_name: str, fn, args: tuple, kwargs: dict, registry) -> tuple:
-    """Fill MISSING kwargs for ``node_name`` from the override ``registry``.
+def fill_parameters(
+    node_name: str, fn, args: tuple, kwargs: dict, registry, identity: NodeIdentity | None = None
+) -> tuple:
+    """Fill MISSING kwargs for a node occurrence from the override ``registry``.
 
     A parameter already bound positionally (via ``fn``'s signature) or
-    explicitly in ``kwargs`` is code and wins; it is not overwritten.
-    A no-op when ``registry`` is None/empty or ``node_name`` is absent.
-    Returns ``(args, new_kwargs)``.
+    explicitly in ``kwargs`` is code and wins; it is not overwritten.  The
+    exact ``identity`` entry wins over the node-name entry for overlapping
+    parameters; the name entry still fills parameters the identity entry does
+    not mention.  A no-op when ``registry`` is None/empty or neither key is
+    present.  Returns ``(args, new_kwargs)``.
     """
     if not registry:
         return args, kwargs
-    entry = registry.get(node_name)
-    if not entry:
+    merged: dict = {}
+    name_entry = registry.get(node_name)
+    if name_entry:
+        merged.update(name_entry)
+    if identity is not None:
+        exact_entry = registry.get(identity)
+        if exact_entry:
+            merged.update(exact_entry)
+    if not merged:
         return args, kwargs
     try:
         bound = inspect.signature(fn).bind_partial(*args, **kwargs)
@@ -264,7 +320,7 @@ def fill_parameters(node_name: str, fn, args: tuple, kwargs: dict, registry) -> 
         bound_names = set(kwargs)
     else:
         bound_names = set(bound.arguments)
-    missing = {name: value for name, value in entry.items() if name not in bound_names}
+    missing = {name: value for name, value in merged.items() if name not in bound_names}
     if not missing:
         return args, kwargs
     return args, {**kwargs, **missing}

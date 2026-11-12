@@ -16,8 +16,10 @@ from pathlib import Path
 
 from sequence_extensions.graph.graph_future import GraphFuture, is_dependency
 
+from .._config.context import current_run
 from .._config.options import (
     UNSET,
+    NodeIdentity,
     NodePolicy,
     RunOptions,
     _signature_parameters,
@@ -140,6 +142,27 @@ def _default_document_options() -> dict:
     return _options_document(RunOptions().resolve("flow"))
 
 
+def _submission_identities() -> tuple[dict[int, NodeIdentity], dict[tuple[str, tuple], int]]:
+    """Map each submitted future to its identity, and count submissions per key.
+
+    ``ctx.nodes`` is submission order, so instance numbers follow the order
+    the root body submitted nodes — the same order a real run uses, not the
+    post-order the document is written in.
+    """
+    ctx = current_run()
+    submitted = list(ctx.nodes) if ctx is not None else []
+    counts: dict[tuple[str, tuple], int] = {}
+    by_id: dict[int, NodeIdentity] = {}
+    for gf in submitted:
+        name = gf.name
+        path = tuple(getattr(gf, "path", ()) or (name,))
+        key = (name, path)
+        instance = counts.get(key, 0) + 1
+        counts[key] = instance
+        by_id[id(gf)] = NodeIdentity(name, path, instance)
+    return by_id, counts
+
+
 def _build_document(node, result, parameters: list[dict], options: RunOptions) -> dict:
     """Assemble the flow-plan/2 document from the discovered DAG."""
     doc = {
@@ -154,10 +177,18 @@ def _build_document(node, result, parameters: list[dict], options: RunOptions) -
 
     nodes = _order_nodes(result)
     index = {id(gf): i for i, gf in enumerate(nodes)}
-    counts: dict[str, int] = {}
+    submitted, submitted_counts = _submission_identities()
+    fallback_counts: dict[tuple[str, tuple], int] = {}
     for i, gf in enumerate(nodes):
-        name = gf.name
-        counts[name] = counts.get(name, 0) + 1
+        identity = submitted.get(id(gf))
+        if identity is None:
+            # A gather future is built directly, not via submit(), so it is
+            # absent from ctx.nodes.  Number it after every submitted node
+            # sharing its key: deterministic and collision-free.
+            path = tuple(getattr(gf, "path", ()) or (gf.name,))
+            key = (gf.name, path)
+            fallback_counts[key] = fallback_counts.get(key, submitted_counts.get(key, 0)) + 1
+            identity = NodeIdentity(gf.name, path, fallback_counts[key])
         nf = _node_function(gf)
         if nf is None:
             kind = "gather"
@@ -165,7 +196,7 @@ def _build_document(node, result, parameters: list[dict], options: RunOptions) -
             params = []
         else:
             kind = "node"
-            retries, delay, timeout = nf._effective_policy()
+            retries, delay, timeout = nf._effective_policy(identity)
             policy = {
                 "retries": int(retries),
                 "retry_delay_seconds": float(delay),
@@ -175,10 +206,10 @@ def _build_document(node, result, parameters: list[dict], options: RunOptions) -
         doc["nodes"].append(
             {
                 "id": i,
-                "name": name,
+                "name": identity.name,
                 "kind": kind,
-                "path": list(getattr(gf, "path", ()) or (name,)),
-                "instance": counts[name],
+                "path": list(identity.path),
+                "instance": identity.instance,
                 "policy": policy,
                 "params": params,
             }
@@ -231,14 +262,54 @@ def plan_manifest(document: dict) -> dict:
     return manifest
 
 
+def _select_override_nodes(nodes: list[dict], entry: dict, name: str) -> list[dict]:
+    """Select the document nodes one override entry targets.
+
+    ``path`` and ``instance`` together target one occurrence; both absent
+    keeps the legacy name-wide behavior.  Exactly one of them is an error.
+    """
+    has_path = "path" in entry
+    has_instance = "instance" in entry
+    if has_path != has_instance:
+        raise ValueError(
+            f"node override for {name!r} must provide both 'path' and 'instance' or neither"
+        )
+    if not has_path:
+        return [node_entry for node_entry in nodes if node_entry["name"] == name]
+
+    path = entry["path"]
+    if not isinstance(path, (list, tuple)) or not all(isinstance(part, str) for part in path):
+        raise ValueError(f"path for node {name!r} must be a list or tuple of strings")
+    instance = entry["instance"]
+    if isinstance(instance, bool) or not isinstance(instance, int) or instance <= 0:
+        raise ValueError(f"instance for node {name!r} must be a positive integer")
+
+    selected = [
+        node_entry
+        for node_entry in nodes
+        if node_entry["name"] == name
+        and tuple(node_entry["path"]) == tuple(path)
+        and node_entry["instance"] == instance
+    ]
+    if not selected:
+        raise ValueError(
+            f"unknown node identity (name={name!r}, path={list(path)!r}, "
+            f"instance={instance}) in override"
+        )
+    return selected
+
+
 def apply_override(document: dict, override: dict) -> dict:
     """Merge ``override`` values into a deep copy of ``document``.
 
-    ``override`` is a partial document: root parameters match by name; node
-    params and policies match by node name and apply to every occurrence of
-    that name (UC-C); ``options`` is a partial merge.  An unknown root param,
-    node, node param, policy key, or option key raises ``ValueError`` before
-    any execution.  The input document is not mutated.
+    ``override`` is a partial document: root parameters match by name; a node
+    entry matches its ``name`` and, when it also carries ``path`` and
+    ``instance``, one occurrence identified by that canonical identity.
+    Omitting both keeps the legacy name-wide behavior (every occurrence);
+    providing only one is an error.  ``options`` is a partial merge.  An
+    unknown root param, node, node identity, node param, policy key, or
+    option key raises ``ValueError`` before any execution.  The input
+    document is not mutated.
     """
     result = copy.deepcopy(document)
 
@@ -254,12 +325,9 @@ def apply_override(document: dict, override: dict) -> dict:
         name = entry.get("name")
         if name is None or name not in node_names:
             raise ValueError(f"unknown node {name!r} in override")
-        # One target per occurrence: a node override reaches every node of
-        # that name (UC-C).
+        selected = _select_override_nodes(result["nodes"], entry, name)
         params_by_name: dict[str, list[dict]] = {}
-        for node_entry in result["nodes"]:
-            if node_entry["name"] != name:
-                continue
+        for node_entry in selected:
             for param in node_entry["params"]:
                 params_by_name.setdefault(param["name"], []).append(param)
         for spec in entry.get("params", ()):
@@ -279,9 +347,7 @@ def apply_override(document: dict, override: dict) -> dict:
                 raise ValueError(
                     f"unknown policy key(s) {sorted(unknown)} on node {name!r} in override"
                 )
-            for node_entry in result["nodes"]:
-                if node_entry["name"] != name:
-                    continue
+            for node_entry in selected:
                 merged = {**node_entry.get("policy", {}), **policy_override}
                 policy = NodePolicy(**merged)
                 node_entry["policy"] = {
@@ -322,18 +388,30 @@ def _decode_parameters(entries) -> dict:
     return values
 
 
+def _document_key(entry: dict) -> str | NodeIdentity:
+    """A document entry's overriding key: identity when it carries both fields."""
+    if "path" in entry and "instance" in entry:
+        return NodeIdentity(entry["name"], entry["path"], entry["instance"])
+    return entry["name"]
+
+
 def _node_registry(document: dict) -> dict:
-    """The injection registry ``{node_name: {param: value}}`` (later occurrence wins)."""
-    registry: dict[str, dict] = {}
+    """The injection registry ``{key: {param: value}}`` (later occurrence wins).
+
+    An entry carrying ``path`` and ``instance`` is keyed by its canonical
+    identity, targeting one occurrence; a legacy entry without them is keyed
+    by node name and reaches every occurrence of that name.
+    """
+    registry: dict = {}
     for entry in document.get("nodes", ()):
-        reg = registry.setdefault(entry["name"], {})
+        reg = registry.setdefault(_document_key(entry), {})
         for p in entry.get("params", ()):
             reg[p["name"]] = _decode_value(p.get("value"), p.get("type"))
     return registry
 
 
-def _node_policies(document: dict) -> dict[str, NodePolicy]:
-    """The document's per-node policies, keyed by node name."""
+def _node_policies(document: dict) -> dict:
+    """The document's per-node policies, keyed by identity when present, else name."""
     policies = {}
     for entry in document.get("nodes", ()):
         policy = entry.get("policy")
@@ -344,7 +422,7 @@ def _node_policies(document: dict) -> dict[str, NodePolicy]:
             raise ValueError(
                 f"unknown policy key(s) {sorted(unknown)} on node {entry['name']!r} in document"
             )
-        policies[entry["name"]] = NodePolicy(**policy)
+        policies[_document_key(entry)] = NodePolicy(**policy)
     return policies
 
 

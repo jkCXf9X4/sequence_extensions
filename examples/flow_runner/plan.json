@@ -35,6 +35,7 @@
       "name": "simulate",
       "kind": "node",
       "path": [
+        "campaign",
         "simulate"
       ],
       "instance": 1,
@@ -71,6 +72,7 @@
       "name": "evaluate",
       "kind": "node",
       "path": [
+        "campaign",
         "evaluate"
       ],
       "instance": 1,
@@ -94,6 +96,7 @@
       "name": "simulate",
       "kind": "node",
       "path": [
+        "campaign",
         "simulate"
       ],
       "instance": 2,
@@ -130,6 +133,7 @@
       "name": "evaluate",
       "kind": "node",
       "path": [
+        "campaign",
         "evaluate"
       ],
       "instance": 2,
@@ -153,6 +157,7 @@
       "name": "simulate",
       "kind": "node",
       "path": [
+        "campaign",
         "simulate"
       ],
       "instance": 3,
@@ -189,6 +194,7 @@
       "name": "evaluate",
       "kind": "node",
       "path": [
+        "campaign",
         "evaluate"
       ],
       "instance": 3,
@@ -212,6 +218,7 @@
       "name": "simulate",
       "kind": "node",
       "path": [
+        "campaign",
         "simulate"
       ],
       "instance": 4,
@@ -248,6 +255,7 @@
       "name": "evaluate",
       "kind": "node",
       "path": [
+        "campaign",
         "evaluate"
       ],
       "instance": 4,
@@ -286,6 +294,7 @@
       "name": "summarize",
       "kind": "node",
       "path": [
+        "campaign",
         "summarize"
       ],
       "instance": 1,
