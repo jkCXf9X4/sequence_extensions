@@ -15,6 +15,7 @@ plan can run any root the module exposes.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from sequence_extensions.flow import gather, node
@@ -32,8 +33,10 @@ def simulate(case_path: Path, out_dir: Path) -> Path:
     if not marker.exists():
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.touch()
+        time.sleep(0.5)
         raise RuntimeError(f"transient failure for {case_path.name}")
 
+    time.sleep(0.5)
     case = _load_case(case_path)
     out_path = out_dir / "sims" / f"{case_path.stem}.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
