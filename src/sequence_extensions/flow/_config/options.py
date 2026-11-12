@@ -6,6 +6,7 @@ for nodes whose decorator left a value unset.
 
 Resolution, from strongest to weakest:
 
+* a plan document's ``node_policies`` override (``RunOptions.node_policies``);
 * an explicit ``@node(...)`` keyword;
 * ``RunOptions.node_defaults`` of the active run;
 * the built-in default.
@@ -19,7 +20,7 @@ from __future__ import annotations
 import inspect
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -124,19 +125,12 @@ class NodePolicy:
 # ---------------------------------------------------------------- #
 # Per-run options
 # ---------------------------------------------------------------- #
-#: RunOptions fields that are run code concerns, never config-file options:
-#: ``name`` (the runner derives identity from module+flow), ``pool`` (a
-#: caller-owned pool built in code), ``node_defaults`` (the ``[node]``
-#: table), and ``parameters`` (the override registry).
-_RUN_OPTION_EXCLUDED = frozenset({"name", "pool", "node_defaults", "parameters"})
-
-
 @dataclass(frozen=True)
 class RunOptions:
     """Options for one ``execute_flow`` call.
 
     ``UNSET`` means "not given": the root run takes the built-in default.
-    ``log=None`` (or the TOML spelling ``""``) disables the file.
+    ``log=None`` (or ``""``) disables the file.
     """
 
     name: str | None = None
@@ -149,6 +143,7 @@ class RunOptions:
     retry_delay_seconds: float | int | _Unset = UNSET
     timeout: float | int | None | _Unset = UNSET
     node_defaults: NodePolicy | None | _Unset = UNSET
+    node_policies: dict[str, NodePolicy] | None | _Unset = UNSET
     parameters: dict[str, dict[str, Any]] | None | _Unset = UNSET
 
     def __post_init__(self) -> None:
@@ -157,7 +152,7 @@ class RunOptions:
         if self.max_workers is not UNSET:
             _check_int(self.max_workers, "max_workers", minimum=1)
         if self.log is not UNSET:
-            if self.log == "":  # TOML has no null
+            if self.log == "":  # an empty string means "disabled"
                 object.__setattr__(self, "log", None)
             elif self.log is not None and not isinstance(self.log, (str, Path)):
                 raise ValueError(f"log must be a directory path, None, or '', got {self.log!r}")
@@ -177,6 +172,17 @@ class RunOptions:
                 raise ValueError(
                     f"node_defaults must be a NodePolicy or None, got {self.node_defaults!r}"
                 )
+        if self.node_policies is not UNSET and self.node_policies is not None:
+            if not isinstance(self.node_policies, Mapping):
+                raise ValueError(
+                    "node_policies must be a dict of {node: NodePolicy}, "
+                    f"got {self.node_policies!r}"
+                )
+            for name, policy in self.node_policies.items():
+                if not isinstance(policy, NodePolicy):
+                    raise ValueError(
+                        f"node_policies[{name!r}] must be a NodePolicy, got {policy!r}"
+                    )
         if self.parameters is not UNSET and self.parameters is not None:
             if not isinstance(self.parameters, dict):
                 raise ValueError(
@@ -188,19 +194,6 @@ class RunOptions:
                     raise ValueError(
                         f"parameters[{name!r}] must be a dict of {{param: value}}, got {entry!r}"
                     )
-
-    # ------------------------------------------------------------ #
-    # Config-file surface
-    # ------------------------------------------------------------ #
-    @classmethod
-    def toml_keys(cls) -> frozenset[str]:
-        """The :class:`RunOptions` field names a config file may set.
-
-        Derived from the dataclass fields minus the code concerns in
-        ``_RUN_OPTION_EXCLUDED``; a field added to the dataclass appears
-        here unless it is deliberately excluded.
-        """
-        return frozenset(f.name for f in fields(cls) if f.name not in _RUN_OPTION_EXCLUDED)
 
     # ------------------------------------------------------------ #
     # Resolution
@@ -226,6 +219,7 @@ class RunOptions:
             retry_delay_seconds=default("retry_delay_seconds", 0.0),
             timeout=default("timeout", None),
             node_defaults=default("node_defaults", None),
+            node_policies=default("node_policies", None),
             parameters=default("parameters", None),
         )
 

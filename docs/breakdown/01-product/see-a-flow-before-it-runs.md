@@ -26,7 +26,7 @@ summary: The complete pre-execution task graph, fan-out width, and parameter val
 
 ## Evidence
 
-- `tests/flow/test_plan.py`, `tests/flow/test_plan_document.py`
+- `tests/flow/test_plan_document.py`
 
 ## Owns
 

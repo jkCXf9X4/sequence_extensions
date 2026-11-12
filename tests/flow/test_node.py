@@ -673,6 +673,32 @@ def test_node_defaults_reach_timeout_attempt_threads():
     assert state["n"] == 2
 
 
+def test_node_policies_beat_decorator_and_node_defaults():
+    calls = {"n": 0}
+
+    @node(retries=0)
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise ValueError("first")
+        return "ok"
+
+    @node
+    def campaign():
+        return flaky.submit()
+
+    run = execute_flow(
+        campaign,
+        options=RunOptions(
+            log=None,
+            node_defaults=NodePolicy(retries=5),
+            node_policies={"flaky": NodePolicy(retries=1)},
+        ),
+    )
+    assert run.result == "ok"
+    assert calls["n"] == 2
+
+
 def test_pickle_roundtrips_policy_values():
     strict = node(lambda: "ok", retries=2, retry_delay_seconds=0.25, timeout=12.0)
     clone = pickle.loads(pickle.dumps(strict))

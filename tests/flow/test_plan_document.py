@@ -1,31 +1,43 @@
-"""Tests for ``plan_document`` — the one-schema JSON interface of the plan pass.
+"""Tests for the flow-plan/2 document interface: plan, manifest, override, run, diff.
 
 One schema serves every plan use case (``IMP-023``): the plan document
 (UC-A), the manifest — a projection minus values (UC-B), the override — the
-same document with values set (UC-C), re-plan and compare (UC-D), and the
-diff (UC-E).
+same document with values set (UC-C), re-plan and compare (UC-D), the diff
+(UC-E), and execution of the document as the authoritative plan (UC-F).
 """
 
 from __future__ import annotations
 
+import json
+import time
 from pathlib import Path
 
 import pytest
 
 from sequence_extensions.flow import (
-    FlowPlan,
+    NodePolicy,
+    NodeTimeoutError,
     Run,
     RunOptions,
     apply_override,
     diff_plans,
     execute_flow,
+    execute_plan,
     gather,
+    jsonable,
     node,
-    parameters_from_document,
-    plan,
     plan_document,
     plan_manifest,
 )
+
+_DEFAULT_OPTIONS = {
+    "max_workers": 16,
+    "summary": False,
+    "fixed_clock": False,
+    "retries": 0,
+    "retry_delay_seconds": 0.0,
+    "timeout": None,
+}
 
 
 def _make_campaign():
@@ -63,8 +75,8 @@ def _write_cases(tmp_path, *names):
         (tmp_path / name).write_text("x")
 
 
-def test_plan_document_returns_the_one_schema_document(tmp_path):
-    """plan_document() returns the flow-plan/1 document without running anything."""
+def test_plan_document_returns_the_v2_document(tmp_path):
+    """plan_document() returns the flow-plan/2 document without running anything."""
     _write_cases(tmp_path, "a.csv", "b.csv", "c.csv")
     campaign, ran = _make_campaign()
     out_dir = tmp_path / "out"
@@ -72,8 +84,8 @@ def test_plan_document_returns_the_one_schema_document(tmp_path):
 
     doc = plan_document(campaign, tmp_path, 0.5, out_dir, options=RunOptions(log=logs_dir))
 
-    assert doc["schema"] == "flow-plan/1"
-    assert doc["root"] == "campaign"
+    assert doc["schema"] == "flow-plan/2"
+    assert "root" not in doc  # flow selection is external to the document
     assert doc["parameters"] == [
         {"name": "cases_dir", "type": "Path", "required": True, "default": None, "value": tmp_path},
         {"name": "tolerance", "type": "float", "required": True, "default": None, "value": 0.5},
@@ -115,9 +127,41 @@ def test_plan_document_returns_the_one_schema_document(tmp_path):
         {"from": 6, "to": 5},
         {"from": 7, "to": 6},
     ]
+    # Options are always concrete; run-only fields (log) never appear.
+    assert doc["options"] == _DEFAULT_OPTIONS
     # Nothing ran, and no run log was written.
     assert ran == {"simulate": 0, "evaluate": 0, "verdict": 0}
     assert not logs_dir.exists()
+
+
+def test_plan_document_options_reflect_run_options(tmp_path):
+    """The document carries the six concrete option fields, never run code concerns."""
+    _write_cases(tmp_path, "a.csv")
+    campaign, _ran = _make_campaign()
+
+    doc = plan_document(
+        campaign,
+        tmp_path,
+        0.5,
+        tmp_path / "out",
+        options=RunOptions(
+            max_workers=4,
+            summary=True,
+            retries=1,
+            retry_delay_seconds=0.25,
+            timeout=30.0,
+            log=None,
+        ),
+    )
+
+    assert doc["options"] == {
+        "max_workers": 4,
+        "summary": True,
+        "fixed_clock": False,
+        "retries": 1,
+        "retry_delay_seconds": 0.25,
+        "timeout": 30.0,
+    }
 
 
 def test_plan_document_node_params_exclude_dependency_edges(tmp_path):
@@ -185,9 +229,10 @@ def test_plan_manifest_strips_values_and_keeps_everything_else(tmp_path):
 
     manifest = plan_manifest(doc)
 
-    assert manifest["schema"] == "flow-plan/1"
-    assert manifest["root"] == "campaign"
+    assert manifest["schema"] == "flow-plan/2"
+    assert "root" not in manifest
     assert manifest["edges"] == doc["edges"]
+    assert manifest["options"] == doc["options"]
     assert manifest["nodes"][0]["policy"] == doc["nodes"][0]["policy"]
     assert manifest["parameters"] == [
         {"name": "cases_dir", "type": "Path", "required": True, "default": None},
@@ -245,7 +290,44 @@ def test_apply_override_node_reaches_every_occurrence_of_the_name(tmp_path):
     assert doc["nodes"][1]["params"][0]["value"] == 0.5
 
 
-def test_apply_override_unknown_node_or_parameter_raises_valueerror(tmp_path):
+def test_apply_override_merges_node_policy_before_validating(tmp_path):
+    _write_cases(tmp_path, "a.csv")
+    campaign, _ran = _make_campaign()
+    doc = plan_document(
+        campaign,
+        tmp_path,
+        0.5,
+        tmp_path / "out",
+        options=RunOptions(node_defaults=NodePolicy(retries=1, retry_delay_seconds=0.5)),
+    )
+
+    overridden = apply_override(
+        doc, {"nodes": [{"name": "evaluate", "policy": {"retries": 2}}]}
+    )
+
+    evaluates = [n for n in overridden["nodes"] if n["name"] == "evaluate"]
+    for n in evaluates:
+        assert n["policy"] == {
+            "retries": 2,
+            "retry_delay_seconds": 0.5,
+            "timeout": None,
+        }
+    # The partial merge does not touch the input document.
+    assert doc["nodes"][1]["policy"]["retries"] == 1
+
+
+def test_apply_override_merges_options_partially(tmp_path):
+    _write_cases(tmp_path, "a.csv")
+    campaign, _ran = _make_campaign()
+    doc = plan_document(campaign, tmp_path, 0.5, tmp_path / "out")
+
+    overridden = apply_override(doc, {"options": {"max_workers": 4}})
+
+    assert overridden["options"] == {**_DEFAULT_OPTIONS, "max_workers": 4}
+    assert doc["options"] == _DEFAULT_OPTIONS
+
+
+def test_apply_override_unknown_names_and_keys_raise_valueerror(tmp_path):
     _write_cases(tmp_path, "a.csv")
     campaign, _ran = _make_campaign()
     doc = plan_document(campaign, tmp_path, 0.5, tmp_path / "out")
@@ -258,23 +340,19 @@ def test_apply_override_unknown_node_or_parameter_raises_valueerror(tmp_path):
         )
     with pytest.raises(ValueError, match="unknown root parameter"):
         apply_override(doc, {"parameters": [{"name": "nope", "value": 1}]})
+    with pytest.raises(ValueError, match="unknown policy key"):
+        apply_override(doc, {"nodes": [{"name": "evaluate", "policy": {"nope": 1}}]})
+    with pytest.raises(ValueError, match="unknown option key"):
+        apply_override(doc, {"options": {"nope": 1}})
 
 
-def test_parameters_from_document_builds_the_registry(tmp_path):
-    _write_cases(tmp_path, "a.csv", "b.csv")
+def test_apply_override_validates_the_merged_policy(tmp_path):
+    _write_cases(tmp_path, "a.csv")
     campaign, _ran = _make_campaign()
-    out_dir = tmp_path / "out"
-    doc = plan_document(campaign, tmp_path, 0.5, out_dir)
+    doc = plan_document(campaign, tmp_path, 0.5, tmp_path / "out")
 
-    registry = parameters_from_document(doc)
-
-    assert registry["campaign"] == {"cases_dir": tmp_path, "tolerance": 0.5, "out_dir": out_dir}
-    # Occurrences of a node merge into one entry; a later one wins.
-    assert registry["evaluate"]["tolerance"] == 0.5
-    assert registry["evaluate"]["out_dir"] == out_dir
-    assert registry["simulate"]["case"] == tmp_path / "b.csv"
-    assert registry["verdict"] == {"out_dir": out_dir}
-    assert registry["gather"] == {}
+    with pytest.raises(ValueError, match="retries"):
+        apply_override(doc, {"nodes": [{"name": "evaluate", "policy": {"retries": -1}}]})
 
 
 def test_injection_fills_missing_defaults_and_code_wins():
@@ -335,6 +413,27 @@ def test_plan_document_root_override_reaches_the_document():
     assert {p["name"]: p["value"] for p in doc["nodes"][0]["params"]}["scale"] == 9.0
 
 
+def test_plan_document_policy_prefers_node_policies_over_node_defaults(tmp_path):
+    _write_cases(tmp_path, "a.csv")
+    campaign, _ran = _make_campaign()
+
+    doc = plan_document(
+        campaign,
+        tmp_path,
+        0.5,
+        tmp_path / "out",
+        options=RunOptions(
+            node_defaults=NodePolicy(retries=2, timeout=10.0),
+            node_policies={"verdict": NodePolicy(retries=5, retry_delay_seconds=1.0)},
+        ),
+    )
+
+    by_name = {n["name"]: n["policy"] for n in doc["nodes"]}
+    assert by_name["simulate"] == {"retries": 2, "retry_delay_seconds": 0.0, "timeout": 10.0}
+    assert by_name["evaluate"] == {"retries": 2, "retry_delay_seconds": 0.0, "timeout": 10.0}
+    assert by_name["verdict"] == {"retries": 5, "retry_delay_seconds": 1.0, "timeout": None}
+
+
 def test_diff_plans_identical_documents_compare_equal(tmp_path):
     _write_cases(tmp_path, "a.csv")
     campaign, _ran = _make_campaign()
@@ -358,6 +457,19 @@ def test_diff_plans_reports_root_parameter_changes():
     assert not diff["equal"]
     assert diff["changes"] == [
         {"kind": "parameter_changed", "name": "x", "field": "value", "old": 1, "new": 5}
+    ]
+
+
+def test_diff_plans_reports_option_changes(tmp_path):
+    _write_cases(tmp_path, "a.csv")
+    campaign, _ran = _make_campaign()
+    old = plan_document(campaign, tmp_path, 0.5, tmp_path / "out")
+    new = apply_override(old, {"options": {"max_workers": 4}})
+
+    diff = diff_plans(old, new)
+
+    assert diff["changes"] == [
+        {"kind": "option_changed", "name": "max_workers", "old": 16, "new": 4}
     ]
 
 
@@ -389,13 +501,125 @@ def test_diff_plans_reports_node_and_edge_changes(tmp_path):
     assert {c["node"]["name"] for c in removed_nodes} == {"simulate", "evaluate"}
 
 
-def test_plan_still_returns_a_flow_plan(tmp_path):
-    """Regression: the refactor keeps plan() returning a FlowPlan."""
-    _write_cases(tmp_path, "a.csv")
-    campaign, _ran = _make_campaign()
+# ---------------------------------------------------------------- #
+# execute_plan: the document is the runnable plan
+# ---------------------------------------------------------------- #
+def test_execute_plan_round_trips_through_json(tmp_path):
+    """jsonable -> json -> execute_plan runs the document as imported."""
+    _write_cases(tmp_path, "a.csv", "b.csv")
+    campaign, ran = _make_campaign()
+    out_dir = tmp_path / "out"
+    document = json.loads(json.dumps(jsonable(plan_document(campaign, tmp_path, 0.5, out_dir))))
 
-    fplan = plan(campaign, tmp_path, 0.5, tmp_path / "out")
+    run = execute_plan(campaign, document, options=RunOptions(log=None))
 
-    assert isinstance(fplan, FlowPlan)
-    assert fplan.root == "campaign"
-    assert fplan.names() == ("simulate", "evaluate", "gather", "verdict")
+    assert isinstance(run, Run)
+    assert run.result == out_dir / "verdict.txt"
+    assert ran == {"simulate": 2, "evaluate": 2, "verdict": 1}
+
+
+def test_execute_plan_decodes_paths_from_json(tmp_path):
+    seen = {}
+
+    @node
+    def leaf(p: Path) -> str:
+        seen["is_path"] = isinstance(p, Path)
+        return p.name
+
+    @node
+    def flow(root: Path):
+        return leaf.submit(root)
+
+    document = json.loads(json.dumps(jsonable(plan_document(flow, tmp_path))))
+    run = execute_plan(flow, document, options=RunOptions(log=None))
+
+    assert seen["is_path"] is True
+    assert run.result == tmp_path.name
+
+
+def test_execute_plan_binds_a_root_parameter_named_options():
+    """The reserved keyword travels positionally so a root input named options works."""
+
+    @node
+    def flow(options: int):
+        return options * 2
+
+    document = json.loads(json.dumps(jsonable(plan_document(flow, 21))))
+
+    assert execute_plan(flow, document, options=RunOptions(log=None)).result == 42
+
+
+def test_execute_plan_rejects_wrong_or_missing_schema():
+    @node
+    def flow():
+        return None
+
+    with pytest.raises(ValueError, match="schema"):
+        execute_plan(flow, {"schema": "flow-plan/1"}, options=RunOptions(log=None))
+    with pytest.raises(ValueError, match="schema"):
+        execute_plan(flow, {}, options=RunOptions(log=None))
+
+
+def test_execute_plan_missing_required_root_parameter_raises():
+    @node
+    def flow(a: int, b: int):
+        return a + b
+
+    document = plan_document(flow, 1, 2)
+    document["parameters"][0]["value"] = None
+    document["parameters"][1]["value"] = None
+
+    with pytest.raises(ValueError, match=r"missing required root parameter\(s\): a, b"):
+        execute_plan(flow, document, options=RunOptions(log=None))
+
+
+def test_execute_plan_applies_the_documents_node_policy():
+    calls = {"n": 0}
+
+    @node(retries=0)
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise ValueError("first")
+        return "ok"
+
+    @node
+    def flow():
+        return flaky.submit()
+
+    document = plan_document(
+        flow, options=RunOptions(node_policies={"flaky": NodePolicy(retries=1)})
+    )
+    assert {n["name"]: n["policy"] for n in document["nodes"]}["flaky"]["retries"] == 1
+
+    decoded = json.loads(json.dumps(jsonable(document)))
+    run = execute_plan(flow, decoded, options=RunOptions(log=None))
+
+    assert run.result == "ok"
+    assert calls["n"] == 2
+
+
+@pytest.mark.flaky_timing
+def test_execute_plan_applies_document_options():
+    @node
+    def slow():
+        time.sleep(0.2)
+
+    document = plan_document(slow)
+    document["options"]["timeout"] = 0.05
+
+    with pytest.raises(NodeTimeoutError):
+        execute_plan(slow, document, options=RunOptions(log=None))
+
+
+@pytest.mark.flaky_timing
+def test_execute_plan_explicit_options_overlay_document_options():
+    @node
+    def slow():
+        time.sleep(0.2)
+
+    document = plan_document(slow)
+    assert document["options"]["timeout"] is None
+
+    with pytest.raises(NodeTimeoutError):
+        execute_plan(slow, document, options=RunOptions(log=None, timeout=0.05))

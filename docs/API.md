@@ -16,25 +16,15 @@ sequence_extensions/
 ├── graph/      # the execution substrate
 │   └── graph_future.py # GraphFuture / GraphPool
 ├── flow/       # the mini flow engine
-│   ├── node.py       # @node, NodeFunction (policy, submit)
-│   ├── _futures.py   # FlowOutcome, FlowFuture, NodeTimeoutError
-│   ├── _gather.py    # gather template planning/filling
-│   ├── _attempt.py   # _AttemptRunner: retry/backoff/timeout loop + attempt log
-│   ├── _identity.py  # UTC clock, safe names, run-id shape
-│   ├── _records.py   # run-log record construction (schema 2)
-│   ├── _settle.py    # drain, pool settle, worker replay, skip records
-│   ├── _pickle.py    # process-pool function alias
-│   ├── run.py        # execute_flow, Run, pool ownership
-│   ├── _options.py   # NodePolicy, RunOptions, UNSET, validation
-│   ├── runlog.py     # RunLog writer/reader, reference mode
-│   ├── _serialize.py # jsonable, strict JSON bytes, deterministic keys
-│   ├── _diff.py      # diff identity and occurrence multiset
-│   ├── process_pool.py # ProcessGraphPool, ProcessDispatchError
-│   └── _context.py   # RunContext + path/attempt/worker ContextVars
-└── flow_runner/    # the TOML-driven CLI
-    ├── __init__.py     # main(): parse, import, execute, exit codes
-    ├── _config.py      # RunnerConfig / RunnerConfigError (strict TOML)
-    └── _discovery.py   # find_nodes, list_nodes, input binding
+│   ├── __init__.py    # public surface
+│   ├── _config/       # RunOptions, NodePolicy, context
+│   ├── _planning/     # DAG plan pass + flow-plan/2 document
+│   ├── _execution/    # node, attempt loop, gather, run, settle, process pool
+│   └── _recording/    # run log, records, serialization, diff
+└── flow_runner/    # the plan-file CLI
+    ├── __init__.py     # main(): parse plan.json, import, execute_plan, exit codes
+    ├── _discovery.py   # find_nodes (node scan)
+    └── __main__.py     # python -m entry point
 ```
 
 `ext` and `graph` names are re-exported from the package root; `flow` is imported as its own package (`from sequence_extensions.flow import node, execute_flow`).
@@ -75,6 +65,11 @@ from sequence_extensions.flow import (
     jsonable,
     validate_node_policy,
     current_run,
+    apply_override,
+    plan_document,
+    plan_manifest,
+    execute_plan,
+    diff_plans,
 )
 
 __version__ = "3.0.1"
@@ -92,8 +87,13 @@ __version__ = "3.0.1"
 | `node` | Decorator: retry, backoff, and timeout policy around a function; `.submit()` |
 | `gather` | One future for a value with every future replaced by its result; container shape preserved |
 | `execute_flow` | Open a top-level run around a root node and return a `Run` |
+| `plan_document` | Emit the `flow-plan/2` JSON document for a call — nothing executes |
+| `apply_override` | Merge parameter, node-policy, and option overrides into a document |
+| `execute_plan` | Decode a `flow-plan/2` document and run it — the import path |
+| `plan_manifest` | The same document with every `value` stripped |
+| `diff_plans` | Plain-data diff of two documents; identical plans compare equal |
 | `Run` | One run's account: result, identity, status, log, duration, error, failed nodes |
-| `RunOptions` | Per-run options (pool, log, summary, fixed clock, retries, node defaults) |
+| `RunOptions` | Per-run options (pool, log, summary, fixed clock, retries, node defaults, per-node policies) |
 | `NodePolicy` | Default retry/backoff/timeout for nodes that left a value unset |
 | `NodeFunction` | The object `@node` returns: callable inline, plus `.submit()` |
 | `FlowFuture` | A submitted node's future (`.result()` is rejected on an incomplete future inside a node body) |
@@ -1031,7 +1031,7 @@ def simulate(case): ...
 - `gather(value)` returns one future for `value` with its futures replaced by their results. Containers keep their shape at any depth — `{"a": submit(1)}` resolves to `{"a": 1}`; lists, tuples, dicts, sets and namedtuples included, and dict keys are kept as-is. Any other `Mapping` resolves to a plain dict; orderable tuple subclasses keep their type. A bare future resolves to a one-element list, any other iterable to a list, and `[]` is accepted. `gather` needs an active run (it raises `RuntimeError` outside one). Return it from a node or pass it as a dependency (`merge.submit(gather(evals))`). A node should not return a list/dict containing futures; wrap it with `gather`.
 - A node body that calls/submits other nodes is a composite; there is no separate decorator and no separate run. Nested nodes share the run's pool and log; `path` and `parent_attempt` record the tree, and the composite's `retries`/`timeout` apply to the returned future as a whole — a retry re-runs the body (hence its subtree) with a new `parent_attempt`.
 - A `BaseException` (`SystemExit`, `KeyboardInterrupt`) from a node body is recorded and re-raised wrapped in `RuntimeError`.
-- Unset keywords resolve from the active run's `RunOptions.node_defaults`, then the built-in default; an explicit keyword always wins.
+- Unset keywords resolve from the active run's `RunOptions.node_policies` for that node name, then `node_defaults`, then the built-in default; a plan per-node policy wins over an explicit keyword.
 
 ### `execute_flow` — the run boundary
 
@@ -1051,11 +1051,12 @@ run = execute_flow(node, *args, options=RunOptions(...), **kwargs)
 | `retry_delay_seconds` | `0.0` | backoff between run attempts. |
 | `timeout` | `None` | wall budget for the whole attempt; on expiry the pool is cancelled and `run_end` records `timeout`. |
 | `node_defaults` | `None` | `NodePolicy` for nodes whose decorator left a value unset. |
+| `node_policies` | `None` | `{node: NodePolicy}` from a plan document; wins over an explicit `@node` keyword. |
 
 - Returns a `Run`: `result`, `run_id`, `node`, `status` (`ok` / `error` / `timeout`), `log`, `duration_ms`, `attempt`, `started`, `ended`, `error`, `failed_nodes`.
 - `failed_nodes` is a tuple of node paths whose settled future carries an exception, including fire-and-forget children; `status` stays the root verdict.
 - On failure `execute_flow` raises the node's exception with `.run` attached (the last attempt's account).
-- `options` is a reserved keyword; pass a node parameter with that name positionally. `flow-runner` does this automatically for `[inputs] options`.
+- `options` is a reserved keyword; pass a node parameter with that name positionally. `execute_plan` binds root parameters from the plan, so a root parameter named `options` travels positionally there too.
 - `execute_flow` is a top-level entry point. Calling it inside an active run raises `RuntimeError`; a node composes nodes directly or by returning their futures. Its first argument must be a `@node` (`NodeFunction`).
 - A thread a node body starts does not inherit the run `ContextVar`; `execute_flow` there opens a second run. Use the same thread or propagate the context.
 - `execute_flow` inside a process worker is rejected in 3.0.
@@ -1072,7 +1073,7 @@ run = execute_flow(node, *args, options=RunOptions(...), **kwargs)
 
 ### Configuration
 
-There is no global configuration. Run-level knobs travel with `execute_flow` (`RunOptions`); node-level defaults come from `RunOptions.node_defaults` (`NodePolicy`) or the decorator. Precedence: **explicit decorator keyword > `node_defaults` > built-in default**. `RunOptions` fields left unset take the built-in default; nothing is inherited from an enclosing run (there is none).
+There is no global configuration. Run-level knobs travel with `execute_flow` (`RunOptions`); node-level defaults come from `RunOptions.node_defaults` (`NodePolicy`) or the decorator, and a plan document supplies per-node policy through `RunOptions.node_policies`. Precedence: **plan per-node policy > explicit decorator keyword > `node_defaults` > built-in default**. `RunOptions` fields left unset take the built-in default; nothing is inherited from an enclosing run (there is none).
 
 ```python
 RunOptions(
@@ -1081,40 +1082,72 @@ RunOptions(
     summary=True,
     fixed_clock=False,
     node_defaults=NodePolicy(retries=2, retry_delay_seconds=0.5, timeout=30.0),
+    node_policies={"simulate": NodePolicy(timeout=60.0)},
 )
 ```
 
-### `flow-runner` — run a node from the command line
+### Plan document — `flow-plan/2`
+
+One JSON document is the whole run configuration: root parameters with bound values, every node, the edges, and the six run options. Flow selection is not part of it.
+
+```json
+{
+  "schema": "flow-plan/2",
+  "parameters": [
+    {"name": "cases_dir", "type": "Path", "required": true, "default": null,
+     "value": {"path": "cases", "sha256": null}}
+  ],
+  "nodes": [
+    {"id": 0, "name": "score", "kind": "node", "path": ["score"], "instance": 1,
+     "policy": {"retries": 0, "retry_delay_seconds": 0.0, "timeout": null},
+     "params": [
+       {"name": "scale", "type": "float", "required": false,
+        "default": 1.0, "value": 1.0}
+     ]}
+  ],
+  "edges": [{"from": 0, "to": 1}],
+  "options": {
+    "max_workers": 16, "summary": false, "fixed_clock": false,
+    "retries": 0, "retry_delay_seconds": 0.0, "timeout": null
+  }
+}
+```
+
+- `plan_document(node, *args, options=None, **kwargs)` — the plan pass only. `options` is always concrete (`max_workers=16`, `summary=false`, `fixed_clock=false`, run-level retries/backoff, `timeout=null`); `log`, `name`, `pool`, `node_defaults`, and `parameters` are runtime-only. Values stay raw Python until `jsonable`.
+- `plan_manifest(document)` — the same shape with every root and node `value` stripped; the stable "what runs" projection.
+- `apply_override(document, override)` — merges root `parameters`, node `params`, partial node `policy`, and partial `options` into a deep copy. Node edits reach every occurrence of a name. An unknown root param, node, node param, policy key, or option key raises `ValueError` before execution.
+- `execute_plan(node, document, *, options=None, log=None)` — validates `schema`, decodes `{path, sha256}` back to `Path` when the type ends in `Path`, rejects missing required root values, binds root parameters, builds the node registry and `RunOptions.node_policies`, overlays `options=`/`log=`, then calls `execute_flow`. `log=None` does not override the default (`"runs"`).
+- `diff_plans(a, b)` — plain-data changes for parameters, nodes, policy, params, edges, and options; no root comparison. Identical documents give `{"equal": True, "changes": []}`.
+
+```python
+import json
+from pathlib import Path
+
+from sequence_extensions.flow import (
+    RunOptions, apply_override, diff_plans, execute_plan, jsonable, plan_document,
+    plan_manifest,
+)
+
+document = plan_document(campaign, Path("cases"), options=RunOptions(max_workers=8))
+manifest = plan_manifest(document)
+edited = apply_override(document, {"nodes": [{"name": "evaluate",
+                                              "params": [{"name": "tolerance", "value": 0.7}]}]})
+print(diff_plans(document, edited))
+Path("plan.json").write_text(json.dumps(jsonable(edited)))
+run = execute_plan(campaign, json.loads(Path("plan.json").read_text()), log="runs")
+```
+
+### `flow-runner` — run a plan from the command line
 
 ```text
-flow-runner config.toml                # run the configured node
-flow-runner config.toml --flow report  # override the selection
-flow-runner config.toml --list         # nodes in the module, with docstrings
-python -m sequence_extensions.flow_runner config.toml   # same thing
+flow-runner PLAN.json --module MODULE [--flow NAME] [--log DIR]
+flow-runner --module MODULE --list
+python -m sequence_extensions.flow_runner plan.json --module mypackage.flows
 ```
 
-```toml
-[run]
-module = "mypackage.flows"
-flow = "campaign"
-max_workers = 8
-log = "runs"
-summary = false
-fixed_clock = false
-retries = 0
-timeout = 60.0
+`PLAN` is optional so `--list` works without one; `-` reads the plan from stdin. `--module` is a dotted module name, imported like any other. `--flow` selects the root; if it is omitted and the module defines exactly one node, that node is used, otherwise it is a usage error. `--log DIR` overrides the plan's log location (the document never stores it).
 
-[node]                 # -> RunOptions.node_defaults
-retries = 2
-retry_delay_seconds = 0.5
-timeout = 30.0
-
-[inputs]               # keyword arguments for the root node
-cases_dir = "cases"
-tolerance = 0.25
-```
-
-The runner loads and validates the whole file first (unknown keys and sections fail with the file, section, and key named; `[flow]`/`[task]` are rejected with a 3.0 migration message), imports `[run] module`, scans it for the `__node__` marker, validates `[inputs]` against the node's signature, calls `execute_flow`, and reports status, duration, log path, and result. A root parameter named `options` is passed positionally; a keyword-only `options` is a usage error. A module that raises at import is a usage error. Exit codes: `0` ok, `1` the run raised, `2` usage/config error. Process pools are constructed in code; the runner drives thread-mode runs.
+The runner loads the JSON document and checks `schema == "flow-plan/2"` (invalid JSON, a non-object, or the wrong schema exits 2), imports the module, scans it for the `__node__` marker, and calls `execute_plan`, which builds the root kwargs, node registry, per-node policies, and `RunOptions` from the document. Status, duration, log path, and result go to stdout. Flow selection is never read from the plan, and process pools are constructed in code (the runner drives thread-mode runs). Exit codes: `0` ok, `1` the run raised, `2` usage/config error.
 
 ### The run log — the executed truth
 

@@ -1,43 +1,30 @@
-"""``flow-runner`` — launch a configured run from the command line.
+"""``flow-runner`` — launch a plan file's run from the command line.
 
-    flow-runner config.toml
-    python -m sequence_extensions.flow_runner config.toml
+    flow-runner PLAN.json --module MODULE [--flow NAME] [--log DIR]
+    flow-runner --module MODULE --list
 
-One TOML file drives everything: which module to import, which node to
-run, what to pass it, and the run options::
+One ``flow-plan/2`` JSON document carries everything the run needs: the root
+callable's bound parameters, every node's parameters and effective policy,
+the edges, and the run options.  The module is named on the command line and
+imported like any other; the root node is external state, selected with
+``--flow`` (or auto-selected when the module defines exactly one node).
 
-    [run]
-    module = "mypackage.flows"   # module scanned for @node functions
-    flow = "campaign"            # node to run as a flow (or --flow NAME)
-    max_workers = 8
-    log = "runs"
-    fixed_clock = false
-
-    [node]                       # defaults for nodes that left a value unset
-    retries = 2
-    retry_delay_seconds = 0.5
-    timeout = 30.0
-
-    [inputs]                     # keyword arguments for the root node
-    cases_dir = "cases"
-
-The file is loaded and validated first; there is no global configuration.
-Nodes are discovered by scanning the module for the ``__node__`` marker
-``@node`` stamps on its wrapper — no registry, no registration call.
+``PLAN`` is ``-`` for stdin.  ``--log DIR`` overrides the plan's log
+location (the plan itself never stores it).  ``--list`` prints the module's
+nodes and exits without reading a plan.
 
 Exit codes: ``0`` the run succeeded; ``1`` the run raised; ``2`` usage or
-configuration error (bad file, unknown key, missing selection, inputs that
-do not match the node's signature).
+configuration error (bad plan JSON/schema, missing or unknown flow, an
+import-time failure, or a plan that does not fit the flow).
 
-Nodes needing non-TOML inputs (open connections, custom objects) belong in
-a small ``main.py`` that calls ``execute_flow`` directly — the runner is a
-convenience, not a requirement.  A config file names a module to import,
-so treat it as trusted code.  Process pools are constructed in code; the
-runner drives thread-mode runs.
+Nodes needing non-JSON inputs (open connections, custom objects) belong in a
+small ``main.py`` that calls ``execute_flow`` directly — the runner is a
+convenience, not a requirement.  A plan file names a module to import, so
+treat it as trusted code.  Process pools are constructed in code; the runner
+drives thread-mode runs.
 
-Implementation modules: :mod:`._config` (strict TOML contract),
-:mod:`._discovery` (node scan and input binding), and this module (the
-argument parser, imports, and exit-code mapping).
+Implementation modules: :mod:`._discovery` (the node scan) and this module
+(the argument parser, plan loading, imports, and exit-code mapping).
 """
 
 from __future__ import annotations
@@ -49,26 +36,18 @@ import sys
 import traceback
 from pathlib import Path
 
-from sequence_extensions.flow import Run, execute_flow, jsonable
-from sequence_extensions.flow_runner._config import RunnerConfig, RunnerConfigError
-from sequence_extensions.flow_runner._discovery import (
-    _bind_flow_inputs,
-    find_nodes,
-    list_nodes,
-)
+from sequence_extensions.flow import Run, execute_plan, jsonable
+from sequence_extensions.flow_runner._discovery import find_nodes, list_nodes
 
-__all__ = [
-    "RunnerConfig",
-    "RunnerConfigError",
-    "find_nodes",
-    "list_nodes",
-    "main",
-]
+__all__ = ["find_nodes", "main"]
 
 #: Exit codes: 0 ok, 1 run failure, 2 usage/config error.
 EXIT_OK = 0
 EXIT_RUN_ERROR = 1
 EXIT_USAGE = 2
+
+#: The one plan schema this runner accepts.
+PLAN_SCHEMA = "flow-plan/2"
 
 
 # ---------------------------------------------------------------- #
@@ -79,38 +58,78 @@ def _fail(message: str) -> int:
     return EXIT_USAGE
 
 
+def _read_plan(source: Path) -> dict:
+    """Load and shape-check a plan JSON document (``-`` reads stdin)."""
+    if str(source) == "-":
+        text = sys.stdin.read()
+        where = "stdin"
+    else:
+        try:
+            text = source.read_text(encoding="utf-8")
+        except OSError as e:
+            raise ValueError(f"cannot read plan file {source}: {e}") from None
+        where = str(source)
+
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{where}: invalid JSON: {e}") from None
+
+    if not isinstance(document, dict):
+        raise ValueError(f"{where}: plan must be a JSON object, got {type(document).__name__}")
+    schema = document.get("schema")
+    if schema != PLAN_SCHEMA:
+        raise ValueError(f"{where}: expected schema {PLAN_SCHEMA!r}, got {schema!r}")
+    return document
+
+
 def main(argv: list[str] | None = None) -> int:
-    """Run the node a TOML config selects.  Returns the process exit code."""
+    """Run the flow a plan document describes.  Returns the process exit code."""
     parser = argparse.ArgumentParser(
         prog="flow-runner",
-        description="Run a flow selected, parameterized, and configured by a TOML file.",
+        description="Run a flow from a flow-plan/2 JSON document.",
     )
-    parser.add_argument("config", type=Path, help="path to the TOML config file")
-    parser.add_argument("--flow", metavar="NAME", help="override the config's [run].flow")
+    parser.add_argument(
+        "plan",
+        nargs="?",
+        type=Path,
+        help="path to the plan JSON file ('-' for stdin); not needed with --list",
+    )
+    parser.add_argument(
+        "--module",
+        required=True,
+        metavar="MODULE",
+        help="dotted module name scanned for @node functions",
+    )
+    parser.add_argument(
+        "--flow",
+        metavar="NAME",
+        help="root node to run (defaults to the module's only node)",
+    )
+    parser.add_argument(
+        "--log",
+        type=Path,
+        metavar="DIR",
+        help="override the plan's log directory",
+    )
     parser.add_argument(
         "--list",
         action="store_true",
-        help="list the nodes in the configured module and exit",
+        help="list the module's nodes and exit",
     )
     args = parser.parse_args(argv)
 
     try:
-        cfg = RunnerConfig.from_toml(args.config)
-    except RunnerConfigError as e:
-        return _fail(str(e))
-
-    if not cfg.module:
-        return _fail(f"{args.config}: no module configured — set [run].module")
-
-    try:
-        module = importlib.import_module(cfg.module)
+        module = importlib.import_module(args.module)
     except ImportError as e:
-        return _fail(f"cannot import module {cfg.module!r}: {e}")
+        return _fail(f"cannot import module {args.module!r}: {e}")
     except Exception as e:
-        return _fail(f"module {cfg.module!r} raised while importing: {type(e).__name__}: {e}")
+        return _fail(
+            f"module {args.module!r} raised while importing: {type(e).__name__}: {e}"
+        )
 
     if args.list:
-        print(f"flows in {cfg.module}:")
+        print(f"flows in {args.module}:")
         entries = list_nodes(module)
         for node_name, summary in entries:
             print(f"  {node_name}" + (f"  — {summary}" if summary else ""))
@@ -118,29 +137,43 @@ def main(argv: list[str] | None = None) -> int:
             print("  (none found)")
         return EXIT_OK
 
-    flow_name = args.flow or cfg.flow
-    if not flow_name:
-        return _fail(f"{args.config}: no flow selected — set [run].flow or pass --flow")
+    if args.plan is None:
+        return _fail("no plan given — pass PLAN.json (or - for stdin)")
+
+    try:
+        document = _read_plan(args.plan)
+    except ValueError as e:
+        return _fail(str(e))
 
     try:
         nodes = find_nodes(module)
-    except RunnerConfigError as e:
+    except ValueError as e:
         return _fail(str(e))
-    fn = nodes.get(flow_name)
-    if fn is None:
+
+    if args.flow is not None:
+        flow_name = args.flow
+        fn = nodes.get(flow_name)
+        if fn is None:
+            available = ", ".join(sorted(nodes)) or "(none found)"
+            return _fail(
+                f"no flow {flow_name!r} in module {args.module!r}; available: {available}"
+            )
+    elif len(nodes) == 1:
+        flow_name, fn = next(iter(nodes.items()))
+    else:
         available = ", ".join(sorted(nodes)) or "(none found)"
-        return _fail(f"no flow {flow_name!r} in module {cfg.module!r}; available: {available}")
-
-    inputs = dict(cfg.inputs)
-    # Validate against the decorated function's real signature —
-    # functools.wraps exposes it through __wrapped__.
-    try:
-        call_args, call_kwargs = _bind_flow_inputs(fn, inputs)
-    except (TypeError, RunnerConfigError) as e:
-        return _fail(f"[inputs] do not match flow {flow_name!r}: {e}")
+        return _fail(f"no flow selected — pass --flow (available: {available})")
 
     try:
-        run = execute_flow(fn, *call_args, options=cfg.options, **call_kwargs)
+        run = execute_plan(fn, document, log=args.log)
+    except ValueError as exc:
+        # A document/config violation raises before anything runs; an
+        # executed failure carries the run account (``.run``).
+        if getattr(exc, "run", None) is None:
+            return _fail(str(exc))
+        traceback.print_exc()
+        _report_run(exc.run, flow_name)
+        return EXIT_RUN_ERROR
     except Exception as exc:
         traceback.print_exc()
         _report_run(getattr(exc, "run", None), flow_name)

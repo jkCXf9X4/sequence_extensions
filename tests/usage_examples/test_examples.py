@@ -150,15 +150,16 @@ def test_plan_workflow_example(tmp_path, capsys):
     run = result["run"]
 
     assert run.status == "ok"
-    # three cases (2 + 4 + 6), scale overridden 1.0 -> 2.0 via the registry
+    # three cases (2 + 4 + 6), scale overridden 1.0 -> 2.0 via the plan
     assert run.result == {"count": 3, "total": 24.0}
     # fixed_clock pins the run id
     assert run.run_id == "campaign-fixed"
     assert run.log.exists()
 
     doc = result["document"]
-    assert doc["schema"] == "flow-plan/1"
-    assert doc["root"] == "campaign"
+    assert doc["schema"] == "flow-plan/2"
+    assert "root" not in doc
+    assert doc["options"]["fixed_clock"] is True
     assert {entry["name"] for entry in doc["nodes"]} == {"score", "gather", "total"}
 
     # the override and its diff were written as artifacts
@@ -170,13 +171,13 @@ def test_plan_workflow_example(tmp_path, capsys):
 
     # the manifest keeps the shape but strips every value
     manifest = json.loads((out / "plan.manifest.json").read_text(encoding="utf-8"))
-    assert manifest["schema"] == "flow-plan/1"
+    assert manifest["schema"] == "flow-plan/2"
     assert "value" not in manifest["parameters"][0]
     for entry in manifest["nodes"]:
         for p in entry["params"]:
             assert "value" not in p
 
-    # the override reached the node through the registry
+    # the override reached the node through the plan's node parameters
     assert result["overridden"]["nodes"][0]["params"][1]["value"] == 2.0
 
     records = RunLog.records(run.log)
@@ -185,7 +186,7 @@ def test_plan_workflow_example(tmp_path, capsys):
     assert records[-1]["status"] == "ok"
 
     out = capsys.readouterr().out
-    assert "plan:      ('score', 'score', 'score', 'gather', 'total')" in out
+    assert "nodes:     ['score', 'score', 'score', 'gather', 'total']" in out
     assert "status:  ok" in out
 
 
@@ -213,7 +214,16 @@ def test_flow_runner_example(tmp_path):
         **os.environ,
         "PYTHONPATH": os.pathsep.join([str(REPO_ROOT / "src"), str(run_dir)]),
     }
-    command = [sys.executable, "-m", "sequence_extensions.flow_runner", "campaign.toml"]
+    command = [
+        sys.executable,
+        "-m",
+        "sequence_extensions.flow_runner",
+        "plan.json",
+        "--module",
+        "flows",
+        "--flow",
+        "campaign",
+    ]
 
     listed = subprocess.run(
         [*command, "--list"], cwd=run_dir, env=env, capture_output=True, text=True, timeout=60
@@ -224,7 +234,12 @@ def test_flow_runner_example(tmp_path):
     assert "Run every case through simulate and evaluate" in listed.stdout
 
     result = subprocess.run(
-        command, cwd=run_dir, env=env, capture_output=True, text=True, timeout=60
+        [*command, "--log", "_out/runs"],
+        cwd=run_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     assert result.returncode == 0, result.stderr
     assert "flow campaign: ok" in result.stdout

@@ -1,22 +1,31 @@
-"""The one-schema plan document (IMP-023): plan, manifest, override, diff.
+"""The one-schema plan document (IMP-023): plan, manifest, override, diff, run.
 
 ONE schema serves the plan document (UC-A), the manifest — a projection
 minus values (UC-B), the override — the same document with values set
 (UC-C), re-plan and compare (UC-D), and the diff (UC-E).  Values stay raw
 Python in the document (Path objects etc.); serialization is the caller's
-job via the exported ``jsonable``, so ``parameters_from_document`` can
-inject real values back into a run.
+job via the exported ``jsonable``, so ``execute_plan`` can decode real
+values back into a run.
 """
 
 from __future__ import annotations
 
 import copy
 import inspect
+from pathlib import Path
 
 from sequence_extensions.graph.graph_future import GraphFuture, is_dependency
 
-from .._config.options import RunOptions, _signature_parameters, fill_parameters
+from .._config.options import (
+    UNSET,
+    NodePolicy,
+    RunOptions,
+    _signature_parameters,
+    bind_flow_inputs,
+    fill_parameters,
+)
 from .._execution.node import NodeFunction
+from .._execution.run import Run, execute_flow
 from .dag import (
     _argument_name_map,
     _in_plan_scope,
@@ -26,7 +35,21 @@ from .dag import (
 
 #: The document schema marker: every artifact (plan document, manifest,
 #: override, diff input) of the plan JSON interface shares this one schema.
-PLAN_SCHEMA = "flow-plan/1"
+PLAN_SCHEMA = "flow-plan/2"
+
+#: The option fields a plan document carries; runtime-only options (``log``,
+#: ``name``, ``pool``, ``node_defaults``, ``parameters``) stay in code.
+_DOCUMENT_OPTION_FIELDS = (
+    "max_workers",
+    "summary",
+    "fixed_clock",
+    "retries",
+    "retry_delay_seconds",
+    "timeout",
+)
+
+#: The per-node policy fields a plan document carries.
+_POLICY_FIELDS = ("retries", "retry_delay_seconds", "timeout")
 
 
 def _order_nodes(result) -> list[GraphFuture]:
@@ -107,14 +130,24 @@ def _node_parameters(gf, nf: NodeFunction) -> list[dict]:
     return out
 
 
-def _build_document(node, result, parameters: list[dict]) -> dict:
-    """Assemble the flow-plan/1 document from the discovered DAG."""
+def _options_document(resolved: RunOptions) -> dict:
+    """The six document-visible option fields, concrete."""
+    return {name: getattr(resolved, name) for name in _DOCUMENT_OPTION_FIELDS}
+
+
+def _default_document_options() -> dict:
+    """Concrete built-in defaults for the document's ``options`` block."""
+    return _options_document(RunOptions().resolve("flow"))
+
+
+def _build_document(node, result, parameters: list[dict], options: RunOptions) -> dict:
+    """Assemble the flow-plan/2 document from the discovered DAG."""
     doc = {
         "schema": PLAN_SCHEMA,
-        "root": node.name,
         "parameters": parameters,
         "nodes": [],
         "edges": [],
+        "options": _options_document(options),
     }
     if not isinstance(result, GraphFuture):
         return doc
@@ -160,15 +193,15 @@ def _build_document(node, result, parameters: list[dict]) -> dict:
 
 
 def plan_document(node: NodeFunction, *args, options: RunOptions | None = None, **kwargs) -> dict:
-    """The one-schema JSON document of the DAG ``node`` would execute.
+    """The flow-plan/2 JSON document of the DAG ``node`` would execute.
 
-    Same guard and pass as :func:`plan`, but returns the flow-plan/1
-    document: schema marker, root, root ``parameters`` with bound values,
-    per-node ``nodes`` (id/name/kind/path/instance/policy/params), and
-    ``edges`` as node-id pairs.  Overrides (``RunOptions.parameters``)
-    reach the plan exactly as they reach a run (UC-D): the root body
-    receives filled values and the document reports them.  Values stay raw
-    Python; call ``jsonable`` to serialize.
+    Same guard and pass as the plan document interface: schema marker, root
+    ``parameters`` with bound values, per-node ``nodes`` (id/name/kind/path/
+    instance/policy/params), ``edges`` as node-id pairs, and concrete
+    ``options``.  Overrides (``RunOptions.parameters``) reach the plan exactly
+    as they reach a run (UC-D): the root body receives filled values and the
+    document reports them.  Values stay raw Python; call ``jsonable`` to
+    serialize.
     """
     resolved = _plan_entry_guards(node, options)
     args, kwargs = fill_parameters(node.name, node.fn, args, kwargs, resolved.parameters)
@@ -177,7 +210,9 @@ def plan_document(node: NodeFunction, *args, options: RunOptions | None = None, 
         args,
         kwargs,
         resolved,
-        lambda result: _build_document(node, result, _root_parameter_values(node, args, kwargs)),
+        lambda result: _build_document(
+            node, result, _root_parameter_values(node, args, kwargs), resolved
+        ),
     )
 
 
@@ -185,7 +220,7 @@ def plan_manifest(document: dict) -> dict:
     """Projection: the same document with every ``value`` field stripped.
 
     Only ``parameters`` and ``nodes[].params[]`` lose their ``value`` field;
-    schema, root, nodes, edges, and policy are unchanged.
+    schema, nodes, edges, options, and policy are unchanged.
     """
     manifest = copy.deepcopy(document)
     for p in manifest["parameters"]:
@@ -200,8 +235,9 @@ def apply_override(document: dict, override: dict) -> dict:
     """Merge ``override`` values into a deep copy of ``document``.
 
     ``override`` is a partial document: root parameters match by name; node
-    overrides match by node name and apply to every occurrence of that name
-    (UC-C).  An unknown node or parameter name raises ``ValueError`` before
+    params and policies match by node name and apply to every occurrence of
+    that name (UC-C); ``options`` is a partial merge.  An unknown root param,
+    node, node param, policy key, or option key raises ``ValueError`` before
     any execution.  The input document is not mutated.
     """
     result = copy.deepcopy(document)
@@ -234,22 +270,144 @@ def apply_override(document: dict, override: dict) -> dict:
             for target in targets:
                 target["value"] = spec["value"]
 
+        if "policy" in entry:
+            policy_override = entry["policy"]
+            if not isinstance(policy_override, dict):
+                raise ValueError(f"policy override for node {name!r} must be a dict")
+            unknown = set(policy_override) - set(_POLICY_FIELDS)
+            if unknown:
+                raise ValueError(
+                    f"unknown policy key(s) {sorted(unknown)} on node {name!r} in override"
+                )
+            for node_entry in result["nodes"]:
+                if node_entry["name"] != name:
+                    continue
+                merged = {**node_entry.get("policy", {}), **policy_override}
+                policy = NodePolicy(**merged)
+                node_entry["policy"] = {
+                    "retries": policy.retries,
+                    "retry_delay_seconds": policy.retry_delay_seconds,
+                    "timeout": policy.timeout,
+                }
+
+    if "options" in override:
+        options_override = override["options"]
+        if not isinstance(options_override, dict):
+            raise ValueError("options override must be a dict")
+        unknown = set(options_override) - set(_DOCUMENT_OPTION_FIELDS)
+        if unknown:
+            raise ValueError(f"unknown option key(s) {sorted(unknown)} in override")
+        merged_options = {**_default_document_options(), **result.get("options", {})}
+        merged_options.update(options_override)
+        RunOptions(**merged_options)  # validate the merged values
+        result["options"] = {name: merged_options[name] for name in _DOCUMENT_OPTION_FIELDS}
+
     return result
 
 
-def parameters_from_document(document: dict) -> dict:
-    """The injection registry ``{node_name: {param: value}}`` for a document.
+def _decode_value(value, type_name):
+    """Decode a ``jsonable`` Path payload back to :class:`Path` when the type says so."""
+    type_name = type_name if isinstance(type_name, str) else ""
+    if isinstance(value, dict) and "path" in value and "sha256" in value:
+        if type_name.endswith("Path") or not type_name:
+            return Path(value["path"])
+    return value
 
-    Root parameters sit under ``document["root"]``; each node's parameters
-    sit under its name.  When several occurrences of a node share a name,
-    their parameter maps merge (a later occurrence wins).
-    """
-    registry = {document["root"]: {p["name"]: p["value"] for p in document["parameters"]}}
-    for entry in document["nodes"]:
+
+def _decode_parameters(entries) -> dict:
+    """``{param_name: decoded value}`` for one parameter list."""
+    values = {}
+    for entry in entries:
+        values[entry["name"]] = _decode_value(entry.get("value"), entry.get("type"))
+    return values
+
+
+def _node_registry(document: dict) -> dict:
+    """The injection registry ``{node_name: {param: value}}`` (later occurrence wins)."""
+    registry: dict[str, dict] = {}
+    for entry in document.get("nodes", ()):
         reg = registry.setdefault(entry["name"], {})
-        for p in entry["params"]:
-            reg[p["name"]] = p["value"]
+        for p in entry.get("params", ()):
+            reg[p["name"]] = _decode_value(p.get("value"), p.get("type"))
     return registry
+
+
+def _node_policies(document: dict) -> dict[str, NodePolicy]:
+    """The document's per-node policies, keyed by node name."""
+    policies = {}
+    for entry in document.get("nodes", ()):
+        policy = entry.get("policy")
+        if not policy:
+            continue
+        unknown = set(policy) - set(_POLICY_FIELDS)
+        if unknown:
+            raise ValueError(
+                f"unknown policy key(s) {sorted(unknown)} on node {entry['name']!r} in document"
+            )
+        policies[entry["name"]] = NodePolicy(**policy)
+    return policies
+
+
+def execute_plan(
+    node: NodeFunction,
+    document: dict,
+    *,
+    options: RunOptions | None = None,
+    log=None,
+) -> Run:
+    """Execute a flow-plan/2 ``document`` against ``node`` and return its :class:`Run`.
+
+    Decodes ``{"path": ..., "sha256": ...}`` values back to :class:`Path`,
+    binds the root parameters (so a root parameter named ``options`` travels
+    positionally), applies the document's per-node policies, and builds
+    ``RunOptions`` from the document's ``options`` block.  ``options=``
+    overlays its non-``UNSET`` fields; ``log=`` overrides the log directory.
+    ``log=None`` means "do not override" (``RunOptions`` resolves ``"runs"``).
+    """
+    if not isinstance(node, NodeFunction):
+        raise TypeError(f"execute_plan() expects a @node function, got {node!r}")
+    if not isinstance(document, dict):
+        raise TypeError(f"document must be a plan dict, got {document!r}")
+    if document.get("schema") != PLAN_SCHEMA:
+        raise ValueError(
+            f"plan document schema must be {PLAN_SCHEMA!r}, got {document.get('schema')!r}"
+        )
+    if options is not None and not isinstance(options, RunOptions):
+        raise TypeError(f"options must be RunOptions or None, got {options!r}")
+
+    root_entries = document.get("parameters", ())
+    root_values = _decode_parameters(root_entries)
+    missing = [
+        entry["name"]
+        for entry in root_entries
+        if entry.get("required") and root_values.get(entry["name"]) is None
+    ]
+    if missing:
+        raise ValueError(f"missing required root parameter(s): {', '.join(missing)}")
+
+    merged = _default_document_options()
+    for name in _DOCUMENT_OPTION_FIELDS:
+        if name in document.get("options", {}):
+            merged[name] = document["options"][name]
+    if options is not None:
+        for field in (*_DOCUMENT_OPTION_FIELDS, "log"):
+            value = getattr(options, field)
+            if value is not UNSET:
+                merged[field] = value
+        for field in ("name", "pool", "node_defaults"):
+            value = getattr(options, field)
+            if value is not UNSET:
+                merged[field] = value
+    if log is not None:
+        merged["log"] = log
+
+    run_options = RunOptions(
+        **merged,
+        parameters=_node_registry(document),
+        node_policies=_node_policies(document),
+    )
+    args, kwargs = bind_flow_inputs(node.fn, root_values)
+    return execute_flow(node, *args, options=run_options, **kwargs)
 
 
 def _node_key(entry: dict) -> tuple:
@@ -265,14 +423,12 @@ def _node_ref(entry: dict) -> dict:
 def diff_plans(a: dict, b: dict) -> dict:
     """Plain-data diff of two plan documents.
 
-    ``changes`` lists records in deterministic order: root, root parameters,
-    nodes (removed, added, then per-node policy and params), then edges.
+    ``changes`` lists records in deterministic order: root parameters, nodes
+    (removed, added, then per-node policy and params), edges, then options.
+    There is no root comparison: flow selection is external to the document.
     Identical documents give ``{"equal": True, "changes": []}``.
     """
     changes = []
-
-    if a["root"] != b["root"]:
-        changes.append({"kind": "root_changed", "old": a["root"], "new": b["root"]})
 
     a_params = {p["name"]: p for p in a["parameters"]}
     b_params = {p["name"]: p for p in b["parameters"]}
@@ -368,5 +524,18 @@ def diff_plans(a: dict, b: dict) -> dict:
         key = (edge["from"], edge["to"])
         if key not in a_edges:
             changes.append({"kind": "edge_added", "from": edge["from"], "to": edge["to"]})
+
+    a_options = a.get("options", {})
+    b_options = b.get("options", {})
+    for name in _DOCUMENT_OPTION_FIELDS:
+        if a_options.get(name) != b_options.get(name):
+            changes.append(
+                {
+                    "kind": "option_changed",
+                    "name": name,
+                    "old": a_options.get(name),
+                    "new": b_options.get(name),
+                }
+            )
 
     return {"equal": not changes, "changes": changes}

@@ -23,11 +23,12 @@ The product is a library plus one CLI (`INFO-002`): no service to deploy. Day-to
 - Use the Python API: `from sequence_extensions.flow import execute_flow, gather, node, RunOptions` — embedding a host application (`CP-027`)
 - `execute_flow` writes its run log to `runs/<run_id>.jsonl` under the working directory (default); pass `RunOptions(log=...)` to choose the directory
 - CPU-bound campaigns run on `ProcessGraphPool` (`CP-022`); build the fan-out in the root/parent body, because a process worker cannot submit or return a live future. Running at an HPC cluster follows the recipe pattern: `INFO-012`
-- Run from a config file, no driver script (`CP-026`): `flow-runner config.toml` (or `python -m sequence_extensions.flow_runner config.toml`)
-  - The file selects the module and node (`[run]`), sets inputs (`[inputs]`), tunes run options (`[run]`) and node defaults (`[node]`)
-  - `--flow NAME` overrides the selection; `--list` shows the nodes in the module
-  - Exit codes: 0 ok, 1 flow failure, 2 usage or config error — cron, CI, SLURM can branch on them (`CP-028`)
-  - The config file names a module to import; treat it as trusted code
+- Run from a plan document, no driver script (`CP-026`): `flow-runner PLAN.json --module MODULE` (or `python -m sequence_extensions.flow_runner PLAN.json --module MODULE`)
+  - The document carries root inputs, per-node parameters and policy, the edges, and run options; the module is named on the command line
+  - Flow selection is external: `--flow NAME` picks the root (or the module's only node); the document never stores it
+  - `--log DIR` chooses the log directory (also not stored); `--list` shows the nodes in the module without reading a plan
+  - Exit codes: 0 ok, 1 flow failure, 2 usage or config error (bad JSON/schema, missing or unknown flow) — cron, CI, SLURM can branch on them (`CP-028`)
+  - The plan names a module to import; treat it as trusted code
 
 ## Test and lint
 

@@ -1,17 +1,13 @@
-"""Node discovery and input binding for the runner.
+"""Node discovery for the runner: one module scan, no registry.
 
 Nodes are found by scanning a module for the ``__node__`` marker ``@node``
-stamps on its wrapper — no registry, no registration call.  ``[inputs]``
-are then bound against the decorated function's real signature.
+stamps on its wrapper — no registry, no registration call.
 """
 
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable, Mapping
-
-from sequence_extensions.flow._config.options import bind_flow_inputs
-from sequence_extensions.flow_runner._config import RunnerConfigError
+from collections.abc import Callable
 
 __all__ = ["find_nodes", "list_nodes"]
 
@@ -30,7 +26,7 @@ def find_nodes(module) -> dict[str, Callable]:
         if isinstance(node_name, str):
             existing = nodes.get(node_name)
             if existing is not None and existing is not obj:
-                raise RunnerConfigError(
+                raise ValueError(
                     f"node name {node_name!r} is defined twice in module {module.__name__!r}"
                 )
             nodes[node_name] = obj
@@ -44,19 +40,3 @@ def list_nodes(module) -> list[tuple[str, str]]:
         doc = (inspect.getdoc(fn) or "").strip()
         entries.append((node_name, doc.splitlines()[0] if doc else ""))
     return entries
-
-
-def _bind_flow_inputs(fn, inputs: Mapping) -> tuple[tuple, dict]:
-    """Split ``[inputs]`` into positional args and keyword args.
-
-    The reserved-``options`` rule (``execute_flow`` takes ``options`` as its
-    own keyword; a node parameter of that name must be passed positionally)
-    lives in :func:`sequence_extensions.flow._config.options.bind_flow_inputs`.
-    Its ``ValueError`` violations surface as config errors so the CLI keeps
-    its exit-code contract; a ``TypeError`` from the final signature bind
-    (inputs that do not match at all) passes through unchanged.
-    """
-    try:
-        return bind_flow_inputs(fn, inputs)
-    except ValueError as e:
-        raise RunnerConfigError(str(e)) from None

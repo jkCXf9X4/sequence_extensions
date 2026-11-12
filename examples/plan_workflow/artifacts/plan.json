@@ -30,7 +30,7 @@
           "required": true,
           "type": "Path",
           "value": {
-            "path": "/home/eriro/pwa/2_work/seq_ext_graph/sequence_extensions/examples/plan_workflow/artifacts/cases/alpha.txt",
+            "path": "/home/eriro/pwa/2_work/seq_ext_gui/sequence_extensions/examples/plan_workflow/artifacts/cases/alpha.txt",
             "sha256": "fb8e20fc2e4c3f248c60c39bd652f3c1347298bb977b8b4d5903b85055620603"
           }
         },
@@ -63,7 +63,7 @@
           "required": true,
           "type": "Path",
           "value": {
-            "path": "/home/eriro/pwa/2_work/seq_ext_graph/sequence_extensions/examples/plan_workflow/artifacts/cases/beta.txt",
+            "path": "/home/eriro/pwa/2_work/seq_ext_gui/sequence_extensions/examples/plan_workflow/artifacts/cases/beta.txt",
             "sha256": "88d4266fd4e6338d13b845fcf289579d209c897823b9217da3e161936f031589"
           }
         },
@@ -96,7 +96,7 @@
           "required": true,
           "type": "Path",
           "value": {
-            "path": "/home/eriro/pwa/2_work/seq_ext_graph/sequence_extensions/examples/plan_workflow/artifacts/cases/gamma.txt",
+            "path": "/home/eriro/pwa/2_work/seq_ext_gui/sequence_extensions/examples/plan_workflow/artifacts/cases/gamma.txt",
             "sha256": "bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721"
           }
         },
@@ -148,6 +148,14 @@
       }
     }
   ],
+  "options": {
+    "fixed_clock": true,
+    "max_workers": 16,
+    "retries": 0,
+    "retry_delay_seconds": 0.0,
+    "summary": false,
+    "timeout": null
+  },
   "parameters": [
     {
       "default": null,
@@ -155,11 +163,10 @@
       "required": true,
       "type": "Path",
       "value": {
-        "path": "/home/eriro/pwa/2_work/seq_ext_graph/sequence_extensions/examples/plan_workflow/artifacts/cases",
+        "path": "/home/eriro/pwa/2_work/seq_ext_gui/sequence_extensions/examples/plan_workflow/artifacts/cases",
         "sha256": null
       }
     }
   ],
-  "root": "campaign",
-  "schema": "flow-plan/1"
+  "schema": "flow-plan/2"
 }

@@ -19,7 +19,7 @@ sequence_extensions/
 - `ext.gen_ext` — static helpers for generators (`to_list`, `recursive_gen`)
 - `graph.graph_future` — dependency-graph futures (`GraphFuture`, `GraphPool`)
 - `flow` — the flow engine: `@node` (retry, backoff, timeout policy, `.submit()`) and `execute_flow` (run identity, pool, audit log)
-- `flow_runner` — the `flow-runner` command: run a node selected by a TOML file
+- `flow_runner` — the `flow-runner` command: run a `flow-plan/2` JSON plan against a module
 
 `ext` and `graph` names are re-exported from the package root; `flow` is imported as its own package (`from sequence_extensions.flow import node, execute_flow`). See [docs/API.md](docs/API.md) for the full API reference.
 
@@ -336,46 +336,71 @@ run = execute_flow(
             retry_delay_seconds=0.5,
             timeout=30.0,
         ),
+        node_policies={"simulate": NodePolicy(timeout=60.0)},  # plan overrides
     ),
 )
 ```
 
-Resolution is **explicit `@node` keyword > `RunOptions.node_defaults` > built-in default**.
+Resolution is **plan per-node policy > explicit `@node` keyword > `RunOptions.node_defaults` > built-in default**.
 
 `fixed_clock = true` opts a run into **reference mode**: the run executes as if on a frozen clock, so an identical run produces a byte-identical log. The run id pins to `<node>-fixed` (a sequential run overwrites the same file instead of accumulating), every engine-written timestamp becomes `1970-01-01T00:00:00+00:00`, `duration_ms` becomes `0`, the `worker` field becomes constant, and records are written in canonical order — `run_start`, nodes by path/parent attempt/attempt/inputs, `run_end` — with nested mapping keys sorted and strict JSON. Root-level run retries are rejected with `fixed_clock` (one reference execution per file), and a fixed path is exclusive: a second concurrent writer raises (POSIX adds a process-level lock). Built for storing run logs as reference files (golden files in git) without timestamp churn; the trade is that the file holds nothing until the run returns.
 
+## Plan document
+
+A `flow-plan/2` JSON document is the whole run configuration: the root parameters with bound values, every node (id, name, kind, path, instance, effective policy, parameters), the edges, and the run `options`. It never selects the flow — that stays outside the document (GUI dropdown, `flow-runner --flow`).
+
+```python
+import json
+from pathlib import Path
+
+from sequence_extensions.flow import (
+    RunOptions,
+    apply_override,
+    diff_plans,
+    execute_plan,
+    jsonable,
+    plan_document,
+    plan_manifest,
+)
+
+document = plan_document(campaign, Path("cases"), options=RunOptions(max_workers=8))
+manifest = plan_manifest(document)  # same shape, every value stripped
+edited = apply_override(
+    document,
+    {"nodes": [{"name": "evaluate", "params": [{"name": "tolerance", "value": 0.7}]}]},
+)
+diff_plans(document, edited)  # {"equal": False, "changes": [...]}
+
+Path("plan.json").write_text(json.dumps(jsonable(edited)))
+run = execute_plan(campaign, json.loads(Path("plan.json").read_text()), log="runs")
+```
+
+- `plan_document(node, *args, options=..., **kwargs)` runs the plan pass only; nothing executes. `options` is always emitted with concrete defaults (`max_workers=16`, `summary=false`, `fixed_clock=false`, run-level `retries=0`, `retry_delay_seconds=0.0`, `timeout=null`).
+- Values stay raw Python in the document (`Path` etc.); `jsonable` serializes them, `execute_plan` decodes `{path, sha256}` back to `Path`.
+- `apply_override` edits root values, node params (every occurrence of a name), partial node `policy`, and partial `options`; unknown names or keys raise `ValueError` before execution, and the input document is not mutated.
+- `execute_plan` is the import path: it rebuilds the root kwargs, the node parameter registry, per-node `RunOptions.node_policies`, and `RunOptions` from the document, then calls `execute_flow`.
+- `diff_plans` compares two documents as plain data (parameters, nodes, policy, params, edges, options); there is no root comparison.
+
 ## flow-runner
 
-The `flow-runner` command starts a run from a TOML file — one file selects the module and root node, passes inputs, and tunes the engine:
+The `flow-runner` command runs a `flow-plan/2` JSON document against a workflow module. The module is named on the command line; the plan carries the root inputs, every node's parameters and effective policy, the edges, and the run options.
 
-```toml
-# campaign.toml
-[run]
-module = "mypackage.flows"  # module scanned for @node functions
-flow = "campaign"            # which node to run
-log = "runs"
-max_workers = 8
-
-[node]                       # defaults for nodes that left a value unset
-retries = 2
-timeout = 60.0
-
-[inputs]                     # keyword arguments for the root node
-cases_dir = "cases"
-tolerance = 0.25
+```
+flow-runner PLAN.json --module MODULE [--flow NAME] [--log DIR]
+flow-runner --module MODULE --list
 ```
 
 ```
-$ flow-runner campaign.toml
+$ flow-runner plan.json --module mypackage.flows --flow campaign
 flow campaign: ok (1843 ms)
 log: runs/campaign-20261016T110258-b0e4a12e.jsonl
 result: {"count": 6, "mean_score": 0.71, "passed": 6, "all_passed": true}
 
-$ flow-runner campaign.toml --list   # nodes in the module, with docstrings
-$ flow-runner campaign.toml --flow report   # override the selection
+$ flow-runner --module mypackage.flows --list   # nodes in the module, with docstrings
+$ flow-runner - --module mypackage.flows --flow report < plan.json   # plan from stdin
 ```
 
-Same entry point as a module: `python -m sequence_extensions.flow_runner campaign.toml`. Exit codes: `0` the run succeeded, `1` the run raised, `2` usage or config error — cron/CI/SLURM friendly. The TOML is strict (unknown keys fail early with the file, section, and key named); `[flow]`/`[task]` are rejected with a 3.0 migration message, and process pools are constructed in code. A config file names a module to import, so treat it as trusted code.
+`--flow` selects the root; when the module defines exactly one node it is used without a choice. Flow selection is never stored in the plan. `--log DIR` overrides the plan's log location, which is also not stored. Same entry point as a module: `python -m sequence_extensions.flow_runner plan.json --module mypackage.flows`. Exit codes: `0` the run succeeded, `1` the run raised, `2` usage or config error (bad plan JSON or schema, missing or unknown flow, import failure, plan that does not fit the flow) — cron/CI/SLURM friendly. Process pools are constructed in code, and the runner drives thread-mode runs. A plan names a module to import, so treat it as trusted code.
 
 ## Larger workflows
 
@@ -386,40 +411,41 @@ Two ways to drive the engine from outside its own code — a shell or pipeline o
 `flow-runner` fits make, CI, cron, and batch scripts: one command, no driver script per run, and the outcome lands in the exit code.
 
 ```make
-# Makefile — one target per config
+# Makefile — one target per plan
 campaign:
-	flow-runner configs/nightly.toml
+	flow-runner plans/nightly.json --module mypackage.flows --flow campaign
 
 report:
-	flow-runner configs/report.toml
+	flow-runner plans/report.json --module mypackage.flows --flow report
 ```
 
 ```yaml
 # .github/workflows/campaign.yml — run, gate on the exit code, keep the log
 - run: pip install .
-- run: flow-runner configs/ci.toml
+- run: flow-runner plans/ci.json --module mypackage.flows --flow campaign --log artifacts/runs
 - uses: actions/upload-artifact@v4
   if: always()                    # archive the log even when the run fails
   with:
     name: run-log
-    path: artifacts/runs/         # = [run] log in ci.toml
+    path: artifacts/runs/
 ```
 
-The pipeline picks the config file, so one file per environment keeps runs apart:
+The pipeline picks the plan file, so one plan per environment keeps runs apart:
 
 ```
-configs/
-├── ci.toml        # small pools, log into artifacts/
-├── nightly.toml   # more retries, longer timeouts
-└── report.toml    # another root node, other inputs
+plans/
+├── ci.json        # small pools, log into artifacts/
+├── nightly.json   # more retries, longer timeouts
+└── report.json    # other options and inputs
 ```
 
 - **Branch on the exit code**: `0` success, `1` the run raised, `2` usage or config error — cron, CI, and SLURM see the same codes.
-- **Fail before the first node**: a bad config fails at load with the file, section, and key named; nothing has run yet.
-- **The log is the artifact**: `[run] log` puts the JSON-lines file where the pipeline collects it; the account line (status, duration, log path) names it.
-- **Look before you run**: `--list` shows the nodes in the module with their docstrings; `--flow NAME` overrides the selection.
-- **Varying inputs per invocation** means one TOML per variant — inputs come from the file, there is no `--set` flag.
-- **Store logs as golden files**: `fixed_clock = true` in `[run]` makes an identical run produce a byte-identical log (pinned run id, pinned timing, canonical record and nested-key order, strict JSON) — commit it, and re-running the pipeline leaves git clean. Fixed runs are exclusive, so generate reference files sequentially.
+- **Fail before the first node**: a bad plan (invalid JSON, wrong schema, a plan that does not fit the module) fails with exit 2; nothing has run yet.
+- **The log is the artifact**: `--log DIR` puts the JSON-lines file where the pipeline collects it; the account line (status, duration, log path) names it.
+- **Look before you run**: `--list` shows the nodes in the module with their docstrings; `--flow NAME` selects the root.
+- **Varying inputs per invocation** means one plan per variant — values come from the document, there is no `--set` flag. Edit the plan, re-export, or run it with a different file.
+- **Flow selection stays external**: the same plan can run a module's root through `--flow`, because the document does not store it.
+- **Store logs as golden files**: `fixed_clock: true` in the plan's `options` makes an identical run produce a byte-identical log (pinned run id, pinned timing, canonical record and nested-key order, strict JSON) — commit it, and re-running the pipeline leaves git clean. Fixed runs are exclusive, so generate reference files sequentially.
 
 ### Embedded in an application
 
@@ -442,12 +468,12 @@ archive(run.log)  # keep the JSONL beside app data
 - **Quiet when unwanted**: `log=None` disables run logging — tests and short-lived jobs keep the disk clean.
 - **Determinism holds**: option values never enter run-log records, so identical code and inputs still diff identical.
 - **Failures carry the account**: `execute_flow` raises with `.run` attached, so a host can log the status, duration, and log path while still propagating the exception.
-- Nodes needing open connections or custom objects are called directly like this; the runner is the convenience for TOML-shaped inputs.
+- Nodes needing open connections or custom objects are called directly like this; the runner is the convenience for JSON-shaped inputs.
 
 ## Runnable examples
 
 [`examples/`](examples/) is a hands-on tour of the library: one small,
-self-contained program per aspect, plus a TOML-driven `flow-runner` setup.
+self-contained program per aspect, plus a plan-file `flow-runner` setup.
 They are part of the test suite (`tests/usage_examples/`), so they cannot
 drift from the code.
 
@@ -459,12 +485,12 @@ drift from the code.
 | [`examples/policies.py`](examples/policies.py) | retries/backoff, `node_defaults`, node/run timeouts, skipped dependencies |
 | [`examples/run_log.py`](examples/run_log.py) | `RunLog.records` / `filter` / `summarize` / `diff`, reference mode |
 | [`examples/process_pool.py`](examples/process_pool.py) | `ProcessGraphPool` for CPU-bound fan-out |
-| [`examples/flow_runner/`](examples/flow_runner) | the TOML-driven `flow-runner` command |
+| [`examples/flow_runner/`](examples/flow_runner) | the plan-file `flow-runner` command |
 
 ```bash
 python examples/campaign.py --out /tmp/campaign
 python examples/policies.py --out /tmp/policies
-cd examples/flow_runner && flow-runner campaign.toml
+cd examples/flow_runner && flow-runner plan.json --module flows --flow campaign
 ```
 
 The file-writing scripts take `--out` (default `examples/_out/<name>`,

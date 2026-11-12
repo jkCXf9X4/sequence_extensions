@@ -23,7 +23,7 @@ The use cases concretize the goal in `INFO-001`. Each is a capability leaf, cite
 - `CP-023` — run flows concurrently in one process: several campaigns at the same time in one process, without interference.
 - `CP-024` — see what a run did: one compact account of a completed run — attempts, statuses, and time per task, plus the verdict — and selection of the records of interest.
 - `CP-025` — verify two runs executed identically: same code and inputs, same execution — completion order, clock readings, and worker identity never count.
-- `CP-026` — set a run's parameters outside the code: one TOML file tunes the engine, picks the flow, sets its inputs; explicit keywords keep winning; `flow-runner` launches it.
+- `CP-026` — set a run's parameters outside the code: one `flow-plan/2` JSON document tunes the run options, per-node policy, and root inputs; explicit parameter values keep winning while plan policy overrides decorator policy; `flow-runner` launches it against a named module.
 - `CP-027` — embed the engine in a host application: `execute_flow` with per-call `RunOptions`, verdict read from the returned `Run`.
 - `CP-028` — start runs from a shell or pipeline: `flow-runner` in make, CI, cron, and batch scripts; exit codes branch, the run log is the artifact.
 - `CP-029` — keep a run log byte-stable for reference storage: `fixed_clock` pins run id, timing, worker, and record order; identical runs, identical bytes.

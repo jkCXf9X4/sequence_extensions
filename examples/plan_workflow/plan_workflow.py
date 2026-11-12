@@ -1,15 +1,14 @@
-"""Plan a flow before running it — documents, overrides, and diff.
+"""Plan a flow before running it — documents, overrides, diff, and execute.
 
-Shows the planning half of the flow engine and its artifacts:
+Shows the plan half of the flow engine and its artifacts:
 
-* ``plan()`` builds the DAG without executing anything;
-* ``plan_document()`` emits the ``flow-plan/1`` JSON document;
+* ``plan_document()`` builds the DAG without executing anything and emits
+  the ``flow-plan/2`` JSON document;
 * ``plan_manifest()`` projects the document without values;
-* ``apply_override()`` sets parameters per node, ``diff_plans()`` shows
-  exactly what changed;
-* ``parameters_from_document()`` turns the edited document back into a
-  parameter registry, and ``execute_flow(..., options=RunOptions(
-  parameters=...))`` runs the flow with those values.
+* ``apply_override()`` edits parameters per node while ``diff_plans()``
+  shows exactly what changed;
+* ``execute_plan()`` runs the edited document — the plan *is* the run
+  configuration, so no separate parameter registry is needed.
 
 The generated artifacts live next to the example, in ``artifacts/``, so you
 can open them and see the documents the flow produced:
@@ -37,12 +36,10 @@ from sequence_extensions.flow import (
     RunOptions,
     apply_override,
     diff_plans,
-    execute_flow,
+    execute_plan,
     gather,
     jsonable,
     node,
-    parameters_from_document,
-    plan,
     plan_document,
     plan_manifest,
 )
@@ -72,7 +69,7 @@ def _write_json(path: Path, payload: dict) -> Path:
 def score(case: Path, scale: float = 1.0) -> dict:
     """One case, one number: ``len(text) * scale``.
 
-    ``scale`` is injected from the parameter registry, so the node body
+    ``scale`` is injected from the plan's node parameters, so the node body
     never hard-codes it — the caller tunes the flow without editing code.
     """
     text = case.read_text(encoding="utf-8")
@@ -87,7 +84,7 @@ def total(scores: list) -> dict:
 
 @node
 def campaign(cases_dir: Path) -> dict:
-    """Discover cases and fan out; ``scale`` is left to the registry."""
+    """Discover cases and fan out; ``scale`` is left to the plan."""
     cases = sorted(cases_dir.glob("*.txt"))
     scores = [score.submit(case) for case in cases]
     return total.submit(gather(scores))
@@ -104,13 +101,25 @@ def main(argv: list[str] | None = None) -> dict:
     cases_dir = args.out / "cases"
     _write_cases(cases_dir)
 
-    # 1. Plan pass: the DAG is built, nothing executes.
-    flow_plan = plan(campaign, cases_dir)
-    print(f"plan:      {flow_plan.names()}")
-    print(f"edges:     {flow_plan.edges}")
+    # 1. Plan pass: the DAG is built, nothing executes.  The document is
+    #    the complete run configuration, options included.
+    document = plan_document(
+        campaign,
+        cases_dir,
+        # Fixed clock pins run id and timing: rerunning the example
+        # regenerates the same log bytes, so the committed artifact
+        # stays a clean reference.
+        options=RunOptions(fixed_clock=True),
+    )
+    print(f"nodes:     {[entry['name'] for entry in document['nodes']]}")
+    plan_path = args.out / "plan.json"
+    try:
+        plan_path = plan_path.relative_to(Path.cwd())
+    except ValueError:
+        pass
+    print(f"plan:      {plan_path}")
 
     # 2. Full JSON document; Path values become {path, sha256} via jsonable.
-    document = plan_document(campaign, cases_dir)
     _write_json(args.out / "plan.json", jsonable(document))
 
     # 3. Manifest: same shape, every value stripped.
@@ -127,20 +136,8 @@ def main(argv: list[str] | None = None) -> dict:
     changed = [f"{c['name']}: {c['old']} -> {c['new']}" for c in changes["changes"]]
     print(f"diff:      {changed}")
 
-    # 5. The edited document becomes the parameter registry for the run.
-    registry = parameters_from_document(overridden)
-    run = execute_flow(
-        campaign,
-        cases_dir,
-        options=RunOptions(
-            log=args.out / "logs",
-            parameters=registry,
-            # Fixed clock pins run id and timing: rerunning the example
-            # regenerates the same log bytes, so the committed artifact
-            # stays a clean reference.
-            fixed_clock=True,
-        ),
-    )
+    # 5. The edited document is the run configuration.
+    run = execute_plan(campaign, overridden, log=args.out / "logs")
 
     print(f"status:  {run.status}")
     print(f"result:  {run.result}")
@@ -148,7 +145,6 @@ def main(argv: list[str] | None = None) -> dict:
     print("records: ", len(list(RunLog.records(run.log))))
 
     return {
-        "plan": flow_plan,
         "document": document,
         "overridden": overridden,
         "diff": changes,

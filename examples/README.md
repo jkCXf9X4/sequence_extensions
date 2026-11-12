@@ -16,7 +16,7 @@ python examples/plan_workflow/plan_workflow.py
 python examples/process_pool.py --out /tmp/process-pool
 
 cd examples/flow_runner
-flow-runner campaign.toml
+flow-runner plan.json --module flows --flow campaign --log _out/runs
 ```
 
 The file-writing scripts accept `--out` (default `examples/_out/<name>`).
@@ -33,9 +33,9 @@ install, or a service.
 | [`campaign.py`](campaign.py) | `@node`, `.submit()`, dependency edges, `gather`, retries, `RunOptions`, run log |
 | [`policies.py`](policies.py) | retries/backoff, `node_defaults`, node and run timeouts, skipped dependencies |
 | [`run_log.py`](run_log.py) | `RunLog.records` / `filter` / `summarize` / `diff`, reference mode, `summary`, `log=None` |
-| [`plan_workflow.py`](plan_workflow/plan_workflow.py) | `plan`, `plan_document`, `plan_manifest`, `apply_override`, `diff_plans`, `parameters_from_document` → run |
+| [`plan_workflow.py`](plan_workflow/plan_workflow.py) | `plan_document`, `plan_manifest`, `apply_override`, `diff_plans`, `execute_plan` → run |
 | [`process_pool.py`](process_pool.py) | `ProcessGraphPool` for CPU-bound fan-out |
-| [`flow_runner/`](flow_runner) | the TOML-driven `flow-runner` command |
+| [`flow_runner/`](flow_runner) | the plan-file `flow-runner` command |
 
 ## `sequences.py` — sequence helpers
 
@@ -207,16 +207,16 @@ Worth noticing:
 
 ## `plan_workflow.py` — plan, document, and diff
 
-Plan the flow first, inspect and edit the JSON document, then run with the
-edited parameters.
+Plan the flow first, inspect and edit the JSON document, then execute that
+document.
 
 ```bash
 python examples/plan_workflow/plan_workflow.py
 ```
 
 ```text
-plan:      ('score', 'score', 'score', 'gather', 'total')
-edges:     ((3, 0), (3, 1), (3, 2), (4, 3))
+nodes:     ['score', 'score', 'score', 'gather', 'total']
+plan:      examples/plan_workflow/artifacts/plan.json
 diff:      ['scale: 1.0 -> 2.0', 'scale: 1.0 -> 2.0', 'scale: 1.0 -> 2.0']
 status:  ok
 result:  {'count': 3, 'total': 24.0}
@@ -234,18 +234,18 @@ the log is byte-identical on every rerun.  `--out` overrides the location.
 
 Worth noticing:
 
-- `plan()` executes nothing — the DAG and resolved policy are available
-  before any node body runs.
-- `plan_document()` is the `flow-plan/1` JSON; `Path` values serialize via
-  `jsonable` to `{path, sha256}`.
+- `plan_document()` executes nothing — the DAG, root parameters, node
+  policies, and run options are all available before any node body runs.
+- It emits the `flow-plan/2` JSON; `Path` values serialize via `jsonable`
+  to `{path, sha256}`.
 - `plan_manifest()` keeps the shape but strips every `value`, so a manifest
   is the stable "what runs" projection for review or commit.
 - `apply_override` sets node parameters by name; `diff_plans` reports the
-  exact changed fields (`param_changed`, policy, edges, ...). One entry per
-  node occurrence — here one `scale` change for each of the three `score`
-  instances (UC-C).
-- `parameters_from_document` turns the edited document back into the
-  `RunOptions(parameters=...)` registry, so the override reaches the run.
+  exact changed fields (`param_changed`, policy, options, edges, ...). One
+  entry per node occurrence — here one `scale` change for each of the three
+  `score` instances (UC-C).
+- `execute_plan` runs the edited document directly: the plan is the run
+  configuration, so no separate parameter registry is needed.
 
 ## `process_pool.py` — CPU-bound fan-out
 
@@ -274,14 +274,14 @@ Worth noticing:
 - The log is still complete on return: worker records are buffered and
   replayed by the parent.
 
-## `flow_runner/` — run from a TOML file
+## `flow_runner/` — run from a plan file
 
-One module of nodes plus a config file; no driver script.
+One module of nodes plus a `flow-plan/2` JSON document; no driver script.
 
 ```bash
 cd examples/flow_runner
-flow-runner campaign.toml --list
-flow-runner campaign.toml
+flow-runner plan.json --module flows --list
+flow-runner plan.json --module flows --flow campaign --log _out/runs
 ```
 
 ```text
@@ -297,14 +297,15 @@ result: {"cases": 4, "passed": 2, "mean": 1.565}
 
 Worth noticing:
 
-- `[run]` selects the module and root node and sets run options. `[inputs]`
-  are keyword arguments for that node; `[node]` supplies policy defaults.
-- Inputs come from the file, so one TOML per variant; check a node's
-  signature before running — a mismatch is a config error (exit code 2)
-  before anything starts.
-- `--list` discovers `@node` functions by the marker the decorator stamps;
-  `--flow NAME` overrides the selection.
+- `plan.json` carries the root inputs, every node's effective policy, the
+  edges, and the run options. `--module` names the code; `--flow` selects
+  the root when the module has more than one node (it is not stored in the
+  plan).
+- `--log DIR` overrides the log location; `-` reads the plan from stdin.
+  Check a node's signature before running — a mismatch is a config error
+  (exit code 2) before anything starts.
+- `--list` discovers `@node` functions by the marker the decorator stamps.
 - Exit codes are cron/CI/SLURM friendly: `0` ok, `1` the run raised, `2`
   usage or config error.
-- `fixed_clock = true` in `[run]` makes an identical run produce a
-  byte-identical log, so a committed log stays clean in git.
+- Set `fixed_clock` in the plan's `options` to make an identical run produce
+  a byte-identical log, so a committed log stays clean in git.

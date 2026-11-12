@@ -90,9 +90,24 @@ class NodeFunction:
     # Policy
     # ------------------------------------------------------------ #
     def _effective_policy(self):
-        """Resolve this attempt's policy: explicit keyword > run defaults > built-in."""
+        """Resolve this attempt's policy.
+
+        Precedence: plan override (``RunOptions.node_policies``) > explicit
+        ``@node`` keyword > ``RunOptions.node_defaults`` > built-in default.
+        """
         ctx = current_run()
-        defaults = getattr(ctx.options, "node_defaults", None) if ctx is not None else None
+        options = ctx.options if ctx is not None else None
+        policies = getattr(options, "node_policies", None) if options is not None else None
+        if policies is UNSET:
+            policies = None
+        plan_policy = policies.get(self.name) if policies else None
+        if plan_policy is not None:
+            return (
+                int(plan_policy.retries),
+                float(plan_policy.retry_delay_seconds),
+                None if plan_policy.timeout is None else float(plan_policy.timeout),
+            )
+        defaults = getattr(options, "node_defaults", None) if options is not None else None
         if defaults is UNSET:
             defaults = None
         retries = self.retries if self.retries is not UNSET else getattr(defaults, "retries", 0)

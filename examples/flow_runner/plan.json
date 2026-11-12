@@ -1,0 +1,346 @@
+{
+  "schema": "flow-plan/2",
+  "parameters": [
+    {
+      "name": "cases_dir",
+      "type": "Path",
+      "required": true,
+      "default": null,
+      "value": {
+        "path": "cases",
+        "sha256": null
+      }
+    },
+    {
+      "name": "out_dir",
+      "type": "Path",
+      "required": true,
+      "default": null,
+      "value": {
+        "path": "_out",
+        "sha256": null
+      }
+    },
+    {
+      "name": "tolerance",
+      "type": "float",
+      "required": false,
+      "default": 1.5,
+      "value": 1.5
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "name": "simulate",
+      "kind": "node",
+      "path": [
+        "simulate"
+      ],
+      "instance": 1,
+      "policy": {
+        "retries": 1,
+        "retry_delay_seconds": 0.01,
+        "timeout": 5.0
+      },
+      "params": [
+        {
+          "name": "case_path",
+          "type": "Path",
+          "required": true,
+          "default": null,
+          "value": {
+            "path": "cases/c1.csv",
+            "sha256": "f0d3a18dfb5a29ac9dad5218e79dfaa5a63f47cca6847a8e9a9e19982c484ed3"
+          }
+        },
+        {
+          "name": "out_dir",
+          "type": "Path",
+          "required": true,
+          "default": null,
+          "value": {
+            "path": "_out",
+            "sha256": null
+          }
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "name": "evaluate",
+      "kind": "node",
+      "path": [
+        "evaluate"
+      ],
+      "instance": 1,
+      "policy": {
+        "retries": 1,
+        "retry_delay_seconds": 0.01,
+        "timeout": 5.0
+      },
+      "params": [
+        {
+          "name": "tolerance",
+          "type": "float",
+          "required": true,
+          "default": null,
+          "value": 1.5
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "simulate",
+      "kind": "node",
+      "path": [
+        "simulate"
+      ],
+      "instance": 2,
+      "policy": {
+        "retries": 1,
+        "retry_delay_seconds": 0.01,
+        "timeout": 5.0
+      },
+      "params": [
+        {
+          "name": "case_path",
+          "type": "Path",
+          "required": true,
+          "default": null,
+          "value": {
+            "path": "cases/c2.csv",
+            "sha256": "36529cca5cf59f24c21ab0dd7921f36b076e10c84b7eb853ea2a760fe6b67879"
+          }
+        },
+        {
+          "name": "out_dir",
+          "type": "Path",
+          "required": true,
+          "default": null,
+          "value": {
+            "path": "_out",
+            "sha256": null
+          }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "evaluate",
+      "kind": "node",
+      "path": [
+        "evaluate"
+      ],
+      "instance": 2,
+      "policy": {
+        "retries": 1,
+        "retry_delay_seconds": 0.01,
+        "timeout": 5.0
+      },
+      "params": [
+        {
+          "name": "tolerance",
+          "type": "float",
+          "required": true,
+          "default": null,
+          "value": 1.5
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "simulate",
+      "kind": "node",
+      "path": [
+        "simulate"
+      ],
+      "instance": 3,
+      "policy": {
+        "retries": 1,
+        "retry_delay_seconds": 0.01,
+        "timeout": 5.0
+      },
+      "params": [
+        {
+          "name": "case_path",
+          "type": "Path",
+          "required": true,
+          "default": null,
+          "value": {
+            "path": "cases/c3.csv",
+            "sha256": "e8d6596a2e32f4615b4048f2be4dc2eaa6fe7cd5424d5d3ffc36746319f6ab7f"
+          }
+        },
+        {
+          "name": "out_dir",
+          "type": "Path",
+          "required": true,
+          "default": null,
+          "value": {
+            "path": "_out",
+            "sha256": null
+          }
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "evaluate",
+      "kind": "node",
+      "path": [
+        "evaluate"
+      ],
+      "instance": 3,
+      "policy": {
+        "retries": 1,
+        "retry_delay_seconds": 0.01,
+        "timeout": 5.0
+      },
+      "params": [
+        {
+          "name": "tolerance",
+          "type": "float",
+          "required": true,
+          "default": null,
+          "value": 1.5
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "name": "simulate",
+      "kind": "node",
+      "path": [
+        "simulate"
+      ],
+      "instance": 4,
+      "policy": {
+        "retries": 1,
+        "retry_delay_seconds": 0.01,
+        "timeout": 5.0
+      },
+      "params": [
+        {
+          "name": "case_path",
+          "type": "Path",
+          "required": true,
+          "default": null,
+          "value": {
+            "path": "cases/c4.csv",
+            "sha256": "b295da447615aa6d58b9150a454187cd2a7a109a5577759cea925e7a65e111d7"
+          }
+        },
+        {
+          "name": "out_dir",
+          "type": "Path",
+          "required": true,
+          "default": null,
+          "value": {
+            "path": "_out",
+            "sha256": null
+          }
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "name": "evaluate",
+      "kind": "node",
+      "path": [
+        "evaluate"
+      ],
+      "instance": 4,
+      "policy": {
+        "retries": 1,
+        "retry_delay_seconds": 0.01,
+        "timeout": 5.0
+      },
+      "params": [
+        {
+          "name": "tolerance",
+          "type": "float",
+          "required": true,
+          "default": null,
+          "value": 1.5
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "name": "gather",
+      "kind": "gather",
+      "path": [
+        "gather"
+      ],
+      "instance": 1,
+      "policy": {
+        "retries": 0,
+        "retry_delay_seconds": 0.0,
+        "timeout": null
+      },
+      "params": []
+    },
+    {
+      "id": 9,
+      "name": "summarize",
+      "kind": "node",
+      "path": [
+        "summarize"
+      ],
+      "instance": 1,
+      "policy": {
+        "retries": 1,
+        "retry_delay_seconds": 0.01,
+        "timeout": 5.0
+      },
+      "params": []
+    }
+  ],
+  "edges": [
+    {
+      "from": 1,
+      "to": 0
+    },
+    {
+      "from": 3,
+      "to": 2
+    },
+    {
+      "from": 5,
+      "to": 4
+    },
+    {
+      "from": 7,
+      "to": 6
+    },
+    {
+      "from": 8,
+      "to": 1
+    },
+    {
+      "from": 8,
+      "to": 3
+    },
+    {
+      "from": 8,
+      "to": 5
+    },
+    {
+      "from": 8,
+      "to": 7
+    },
+    {
+      "from": 9,
+      "to": 8
+    }
+  ],
+  "options": {
+    "max_workers": 4,
+    "summary": false,
+    "fixed_clock": false,
+    "retries": 0,
+    "retry_delay_seconds": 0.0,
+    "timeout": null
+  }
+}

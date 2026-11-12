@@ -20,29 +20,33 @@ The suite is pytest (>= 8, < 9) with pytest-cov. `pytest` runs it as-is: `pyproj
 
 ## Areas
 
-The suite collects 428 tests. Every test carries exactly one level marker
+The suite collects 474 tests. Every test carries exactly one level marker
 (`level_unit`, `level_component`, `level_integration`, `level_system`); the
 timing-sensitive set carries `flaky_timing` and is excluded from the default
 gate.
 
-- `tests/test_package.py` — package-level smoke tests: root re-exports, ext methods, `GraphFuture`/`GraphPool` basics (30)
+- `tests/test_package.py` — package-level smoke tests: root re-exports, ext methods, `GraphFuture`/`GraphPool` basics (32)
 - `tests/ext/` — `list_ext` (51), `dict_ext` (44), `gen_ext` (6)
 - `tests/graph/test_graph_future.py` — DAG execution, pool lifecycle, bind, pool-scoped exit, timeouts, cycle detection, concurrent binds, cancellation before execution (33)
-- `tests/flow/test_node.py` — decoration, inline execution, retry, backoff, timeout, submit semantics, worker fan-out, root-and-worker blocking guard, plain-future return/dependency, exports, policy type validation, argument-name collisions, node defaults (43)
-- `tests/flow/test_run.py` — run identity, drain, failure handling, skipped records, caller-owned pool, concurrent runs, run-level retries, run timeout, fixed ids (29)
+- `tests/flow/test_node.py` — decoration, inline execution, retry, backoff, timeout, submit semantics, worker fan-out, root-and-worker blocking guard, plain-future return/dependency, exports, policy type validation, argument-name collisions, node defaults (47)
+- `tests/flow/test_run.py` — run identity, drain, failure handling, skipped records, caller-owned pool, concurrent runs, run-level retries, run timeout, fixed ids (33)
 - `tests/flow/test_nested.py` — three-level node nesting, future-first fan-out at one worker, inline fan-out, gather forms, shape-preserving gather (dict/nested/tuple/set/namedtuple) + dependency, composite retry/timeout/failure, drain of a pending subtree, fixed-clock determinism (16)
-- `tests/flow/test_options.py` — `RunOptions`/`NodePolicy` validation and resolution (7)
+- `tests/flow/test_options.py` — `RunOptions`/`NodePolicy` validation and resolution, `node_policies` precedence (9)
 - `tests/flow/test_runlog.py` — serialization policy, writer thread safety, schema 2, abandon, reference mode, reserved fields (25)
 - `tests/flow/test_runlog_tools.py` — reading toolkit: selection, compact account, two-run determinism, synthetic and real logs (25)
-- `tests/flow/test_process_pool.py` — process dispatch, record replay, skip and dispatch-failure records, timeout transport, exit cancellation, execute_flow/submit/future rejection in workers, node defaults on direct calls, gather template pickling, CPU-bound wall gain (17)
+- `tests/flow/test_process_pool.py` — process dispatch, record replay, skip and dispatch-failure records, timeout transport, exit cancellation, execute_flow/submit/future rejection in workers, node defaults on direct calls, gather template pickling, CPU-bound wall gain (22)
 - `tests/flow/test_acceptance.py` — the benchmark campaign end to end (1)
-- `tests/flow/test_hardening.py` — stress regressions: hang-free settlement, iterative retries, unique process aliases, BaseException settlement, hash-seed-stable fixed logs, fixed-log locking, diff occurrence counting, strict JSON, `failed_nodes`, cross-pool rejection, runner `options`, ordered `intersect`/`union`, log key collisions, mapping gather (40)
+- `tests/flow/test_hardening.py` — stress regressions: hang-free settlement, iterative retries, unique process aliases, BaseException settlement, hash-seed-stable fixed logs, fixed-log locking, diff occurrence counting, strict JSON, `failed_nodes`, cross-pool rejection, runner `options`, ordered `intersect`/`union`, log key collisions, mapping gather (42)
 - `tests/flow/test_settle.py` — outcome drain: deferred outcome keeps the run open, fast/slow/late nodes all recorded, deferred retry attempts preserved (3)
 - `tests/flow/test_process_failure.py` — worker exit, unpicklable payload, submit failure, cancelled worker future, timeout-vs-process behaviour (5)
 - `tests/flow/test_cancellation.py` — submit after abandon, cancel before attempt, abandoned parent settlement, cancelled-run submit (4)
-- `tests/flow/test_position.py` — root-vs-wrapped position independence, moved out of e2e (1)
-- `tests/runner/test_runner.py` — TOML selection, strict validation, node discovery, exit codes (20)
+- `tests/flow/test_position.py` — root-vs-wrapped position independence, moved out of e2e (2)
+- `tests/flow/test_plan_document.py` — `flow-plan/2` shape (no root, concrete options), parameter/policy/option overrides, `execute_plan` JSON round-trip, Path decoding, missing required root, policy precedence, `plan_manifest`, `diff_plans` (28)
+- `tests/runner/test_runner.py` — plan-file loading and schema errors, module import, `--flow` selection, `--list`, `--log`, exit codes (18)
 - `tests/e2e/test_flows.py` — version comparison: two mock runs against the committed reference (`tests/e2e/ref`), validated by a hand-written oracle that imports nothing from the package; artifacts byte-for-byte; regeneration is a separate phase (9)
+- `tests/test_fixture_policy.py` — markers and fixtures stay policy-compliant (6)
+- `tests/test_markers.py` — every test carries exactly one level marker (3)
+- `tests/usage_examples/test_examples.py` — every runnable example executes (8)
 
 ## Fixtures and claim verification
 

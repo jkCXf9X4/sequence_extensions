@@ -1,14 +1,15 @@
-"""Nodes driven by ``campaign.toml`` — the flow-runner example.
+"""Nodes driven by ``plan.json`` — the plan-file flow-runner example.
 
 Run from this directory::
 
-    flow-runner campaign.toml
-    python -m sequence_extensions.flow_runner campaign.toml --list
+    flow-runner plan.json --module flows --flow campaign
+    python -m sequence_extensions.flow_runner --module flows --list
 
 The runner imports this module, discovers the ``@node`` functions, and runs
-the one selected by ``[run].flow``.  Inputs come from ``[inputs]``; the
-``[node]`` table supplies retry/timeout defaults for decorators that left a
-value unset.
+the root named by ``--flow`` (``campaign`` here).  The committed ``plan.json``
+is a ``flow-plan/2`` document: it carries the root inputs, every node's
+effective policy, and the run options.  Selection is external, so the same
+plan can run any root the module exposes.
 """
 
 from __future__ import annotations
@@ -63,7 +64,7 @@ def summarize(evaluations: list[dict]) -> dict:
 @node
 def campaign(cases_dir: Path, out_dir: Path, tolerance: float = 1.5) -> dict:
     """Run every case through simulate and evaluate; return one verdict."""
-    # TOML values arrive as strings; normalize paths at the run boundary.
+    # The plan loader decodes typed paths; normalize defensively for callers.
     cases_dir = Path(cases_dir)
     out_dir = Path(out_dir)
     cases = sorted(cases_dir.glob("*.csv"))
@@ -73,4 +74,6 @@ def campaign(cases_dir: Path, out_dir: Path, tolerance: float = 1.5) -> dict:
 
 
 if __name__ == "__main__":  # pragma: no cover - the runner is the entry point
-    raise SystemExit("run this module through the runner: flow-runner campaign.toml")
+    raise SystemExit(
+        "run this module through the runner: flow-runner plan.json --module flows --flow campaign"
+    )

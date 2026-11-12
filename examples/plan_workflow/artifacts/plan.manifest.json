@@ -133,6 +133,14 @@
       }
     }
   ],
+  "options": {
+    "fixed_clock": true,
+    "max_workers": 16,
+    "retries": 0,
+    "retry_delay_seconds": 0.0,
+    "summary": false,
+    "timeout": null
+  },
   "parameters": [
     {
       "default": null,
@@ -141,6 +149,5 @@
       "type": "Path"
     }
   ],
-  "root": "campaign",
-  "schema": "flow-plan/1"
+  "schema": "flow-plan/2"
 }

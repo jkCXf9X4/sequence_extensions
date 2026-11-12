@@ -42,18 +42,19 @@ The package decomposes into three subpackages plus one standalone CLI with a str
 - **`_diff`** — diff identity, occurrence multiset, and record comparison.
 - **`_context`** — `RunContext` plus `ContextVar` plumbing: run, node path, parent attempt, attempt token, worker markers. Workers and attempt threads restore the context.
 - **`process_pool`** — `ProcessGraphPool`: a `GraphPool` subclass on a `ProcessPoolExecutor` (`CP-022`); workers buffer records, the parent replays them at settle time; process workers cannot submit or return live futures.
+- **`_planning/dag`** — the construct-only plan pass: `_PlanPool`, scope guards, and node lookup; builds the DAG without running a node body (`CP-031`).
+- **`_planning/document`** — the `flow-plan/2` document interface: `plan_document`, `plan_manifest`, `apply_override`, `execute_plan`, `diff_plans` (`CP-026`, `CP-032`–`CP-035`).
 
 ## `flow_runner` — the CLI
 
-- `_config` — the strict TOML contract: `RunnerConfig`, `RunnerConfigError`, section/key validation, legacy-section migration messages.
-- `_discovery` — node discovery via the `__node__` marker, listing, and `[inputs]` binding against the node signature.
-- `__init__` — the `flow-runner` console script and `python -m` entry: argument parsing, module import, `execute_flow` call, and exit-code mapping (`CP-026`).
-- `[run]` carries selection and run options; `[node]` becomes `RunOptions.node_defaults`; `[inputs]` are the root node's keyword arguments.
+- `_discovery` — node discovery via the `__node__` marker and `find_nodes` (list is internal).
+- `__init__` — the `flow-runner` console script and `python -m` entry: plan JSON loading and schema check, module import, `--flow` selection, `--log` override, `execute_plan` call, and exit-code mapping (`CP-026`).
+- `--module` names the workflow module; the plan document carries root values, node params/policy, edges, and run `options`; the root node is external state, never in the document.
 - Exit codes: 0 ok, 1 run failure, 2 usage or config error.
 
 ## Data flow
 
-- Input: a decorated Python function (the root node) calling nodes directly or via `.submit()`; `execute_flow` opens the run.
+- Input: a decorated Python function (the root node) calling nodes directly or via `.submit()`; `execute_flow` opens the run. A `flow-plan/2` JSON document supplies root values, node parameters and policy, and run options; the root node is selected outside it.
 - `submit()` creates a `GraphFuture` whose runner carries the attempt loop; the pool binds the reachable graph.
 - Results flow along edges; the run gathers and returns a `Run`.
 - A node body composes nodes by calling or submitting them; a returned future is awaited by the attempt, so the worker is freed and one run/log covers the tree.
@@ -63,7 +64,7 @@ The package decomposes into three subpackages plus one standalone CLI with a str
 
 - `ext`: the three classes; methods return extended types or plain values.
 - `graph`: `GraphFuture(function, *args, **kwargs)`, `result()`, `done()`; `GraphPool(max_workers)`, `result(gf)`, `bind(gf)`.
-- `flow`: `@node(retries, retry_delay_seconds, timeout, name)`, `node.submit(...)`, `execute_flow(node, *args, options=RunOptions(...), **kwargs)`, `RunOptions` / `NodePolicy`.
-- `flow_runner`: `flow-runner config.toml [--flow NAME] [--list]`.
+- `flow`: `@node(retries, retry_delay_seconds, timeout, name)`, `node.submit(...)`, `execute_flow(node, *args, options=RunOptions(...), **kwargs)`, `plan_document(node, *args, options=..., **kwargs)`, `apply_override(document, override)`, `execute_plan(node, document, *, options=..., log=...)`, `plan_manifest(document)`, `diff_plans(a, b)`, `RunOptions` / `NodePolicy`.
+- `flow_runner`: `flow-runner PLAN.json --module MODULE [--flow NAME] [--log DIR]`, `flow-runner --module MODULE --list`.
 
 Engine semantics: `INFO-011`. Scope: `INFO-001`.

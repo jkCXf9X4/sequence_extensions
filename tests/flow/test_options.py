@@ -19,6 +19,7 @@ def test_run_options_defaults_are_unset():
     assert options.retries is UNSET
     assert options.timeout is UNSET
     assert options.node_defaults is UNSET
+    assert options.node_policies is UNSET
 
 
 def test_node_policy_validates():
@@ -59,6 +60,16 @@ def test_run_options_validate_explicit_values():
         RunOptions(timeout=float("nan"))
     with pytest.raises(ValueError, match="node_defaults"):
         RunOptions(node_defaults={"retries": 1})
+    with pytest.raises(ValueError, match="node_policies"):
+        RunOptions(node_policies={"n": {"retries": 1}})
+    with pytest.raises(ValueError, match="node_policies"):
+        RunOptions(node_policies=[NodePolicy()])
+
+
+def test_node_policies_carry_through_resolve():
+    policy = NodePolicy(retries=2, retry_delay_seconds=0.5)
+    resolved = RunOptions(node_policies={"flaky": policy}).resolve("campaign")
+    assert resolved.node_policies == {"flaky": policy}
 
 
 def test_empty_log_string_means_disabled():
@@ -102,3 +113,8 @@ def test_resolve_keeps_a_caller_pool():
     pool = GraphPool(max_workers=1)
     resolved = RunOptions(pool=pool).resolve("inner")
     assert resolved.pool is pool
+
+
+def test_run_options_has_no_config_file_surface():
+    # The TOML runner config is gone; RunOptions no longer derives file keys.
+    assert not hasattr(RunOptions, "toml_keys")

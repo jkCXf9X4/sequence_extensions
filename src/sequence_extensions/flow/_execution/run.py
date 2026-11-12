@@ -56,7 +56,6 @@ from .._config.context import (
 )
 from .._config.options import RunOptions, fill_parameters
 from .._execution.node import NodeFunction
-from .._planning.dag import plan
 from .._recording.records import new_run_id, run_end_record, run_start_record, utcnow
 from .._recording.runlog import RunLog
 from ._timeout import _run_with_timeout
@@ -73,7 +72,7 @@ try:  # package version stamped into run_start; import is cycle-free
 except ImportError:  # pragma: no cover - packaging safety net
     _PACKAGE_VERSION = "unknown"
 
-__all__ = ["Run", "execute_flow", "plan"]
+__all__ = ["Run", "execute_flow"]
 
 RunStatus = Literal["ok", "error", "timeout"]
 

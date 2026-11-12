@@ -43,16 +43,11 @@ from ._execution.futures import FlowFuture, FlowOutcome, NodeTimeoutError
 from ._execution.gather import gather
 from ._execution.node import NodeFunction, node
 from ._execution.process_pool import ProcessDispatchError, ProcessGraphPool
-from ._execution.run import Run, execute_flow, plan
-from ._planning.dag import (
-    FlowNodeInfo,
-    FlowParameter,
-    FlowPlan,
-)
+from ._execution.run import Run, execute_flow
 from ._planning.document import (
     apply_override,
     diff_plans,
-    parameters_from_document,
+    execute_plan,
     plan_document,
     plan_manifest,
 )
@@ -64,9 +59,6 @@ __all__ = [
     "DIFF_EXCLUDE",
     "FlowFuture",
     "FlowOutcome",
-    "FlowNodeInfo",
-    "FlowParameter",
-    "FlowPlan",
     "NodeFunction",
     "NodePolicy",
     "NodeTimeoutError",
@@ -82,11 +74,10 @@ __all__ = [
     "current_run",
     "diff_plans",
     "execute_flow",
+    "execute_plan",
     "gather",
     "jsonable",
     "node",
-    "parameters_from_document",
-    "plan",
     "plan_document",
     "plan_manifest",
     "validate_node_policy",
