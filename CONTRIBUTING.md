@@ -7,7 +7,7 @@ pull request.
 ## Development setup
 
 1. Clone the repository and enter the project directory.
-2. Create a virtual environment (Python 3.9+):
+2. Create a virtual environment (Python 3.11+):
 
    ```bash
    python -m venv .venv
@@ -33,10 +33,17 @@ pull request.
 pytest
 ```
 
+Bare `pytest` works because `pythonpath` is configured in `pyproject.toml`.
 Run tests with coverage (the project enforces a 90% coverage floor):
 
 ```bash
 pytest --cov=sequence_extensions --cov-report=term-missing
+```
+
+For an HTML coverage report:
+
+```bash
+pytest --cov --cov-report html
 ```
 
 ## Running lint and format
