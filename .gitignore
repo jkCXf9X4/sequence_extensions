@@ -177,3 +177,6 @@ examples/**/_out/
 
 # Scratch output of the e2e golden runs: rewritten by every run, never committed
 tests/e2e/out/
+
+
+.seq_ext_gui/
