@@ -204,6 +204,7 @@ def test_plan_document_node_params_exclude_dependency_edges(tmp_path):
 
 def test_plan_document_root_parameters_carry_bound_values_and_defaults(tmp_path):
     """Root parameters report the bound value, or the default when omitted."""
+
     @node
     def flow(cases_dir: Path, tolerance: float = 0.5, *, label: str = "run"):
         return None
@@ -311,9 +312,7 @@ def test_apply_override_merges_node_policy_before_validating(tmp_path):
         options=RunOptions(node_defaults=NodePolicy(retries=1, retry_delay_seconds=0.5)),
     )
 
-    overridden = apply_override(
-        doc, {"nodes": [{"name": "evaluate", "policy": {"retries": 2}}]}
-    )
+    overridden = apply_override(doc, {"nodes": [{"name": "evaluate", "policy": {"retries": 2}}]})
 
     evaluates = [n for n in overridden["nodes"] if n["name"] == "evaluate"]
     for n in evaluates:
@@ -367,6 +366,7 @@ def test_apply_override_validates_the_merged_policy(tmp_path):
 
 def test_injection_fills_missing_defaults_and_code_wins():
     """RunOptions.parameters fills omitted node params; explicit code keeps its value."""
+
     @node
     def compute(x: int, scale: float = 1.0) -> float:
         return x * scale
@@ -383,6 +383,7 @@ def test_injection_fills_missing_defaults_and_code_wins():
 
 def test_plan_document_reflects_overrides_and_diff_reports_them():
     """UC-D: plan -> override -> re-plan -> diff shows what the override reaches."""
+
     @node
     def compute(x: int, scale: float = 1.0) -> int:
         return x * scale
@@ -409,6 +410,7 @@ def test_plan_document_reflects_overrides_and_diff_reports_them():
 
 def test_plan_document_root_override_reaches_the_document():
     """A root override fills the root call and shows up in the document."""
+
     @node
     def compute(x: int, scale: float = 1.0) -> int:
         return x * scale

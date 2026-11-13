@@ -324,13 +324,19 @@ document = plan_document(campaign, Path("cases"), options=RunOptions(max_workers
 manifest = plan_manifest(document)  # same shape, every value stripped
 edited = apply_override(
     document,
-    {"nodes": [
-        # Name-wide: every evaluate occurrence.
-        {"name": "evaluate", "params": [{"name": "tolerance", "value": 0.7}]},
-        # Exact identity: only the second evaluate occurrence.
-        {"name": "evaluate", "path": ["campaign", "evaluate"], "instance": 2,
-         "params": [{"name": "tolerance", "value": 0.9}]},
-    ]},
+    {
+        "nodes": [
+            # Name-wide: every evaluate occurrence.
+            {"name": "evaluate", "params": [{"name": "tolerance", "value": 0.7}]},
+            # Exact identity: only the second evaluate occurrence.
+            {
+                "name": "evaluate",
+                "path": ["campaign", "evaluate"],
+                "instance": 2,
+                "params": [{"name": "tolerance", "value": 0.9}],
+            },
+        ]
+    },
 )
 diff_plans(document, edited)  # {"equal": False, "changes": [...]}
 

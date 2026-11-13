@@ -124,9 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     except ImportError as e:
         return _fail(f"cannot import module {args.module!r}: {e}")
     except Exception as e:
-        return _fail(
-            f"module {args.module!r} raised while importing: {type(e).__name__}: {e}"
-        )
+        return _fail(f"module {args.module!r} raised while importing: {type(e).__name__}: {e}")
 
     if args.list:
         print(f"flows in {args.module}:")
@@ -155,9 +153,7 @@ def main(argv: list[str] | None = None) -> int:
         fn = nodes.get(flow_name)
         if fn is None:
             available = ", ".join(sorted(nodes)) or "(none found)"
-            return _fail(
-                f"no flow {flow_name!r} in module {args.module!r}; available: {available}"
-            )
+            return _fail(f"no flow {flow_name!r} in module {args.module!r}; available: {available}")
     elif len(nodes) == 1:
         flow_name, fn = next(iter(nodes.items()))
     else:

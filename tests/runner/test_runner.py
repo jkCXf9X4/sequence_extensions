@@ -134,10 +134,7 @@ def test_runs_the_selected_flow(tmp_path, capsys):
 
 def test_auto_selects_the_only_node(tmp_path, capsys):
     (tmp_path / "singleflow.py").write_text(
-        "from sequence_extensions.flow import node\n"
-        "@node\n"
-        "def solo():\n"
-        "    return 7\n",
+        "from sequence_extensions.flow import node\n@node\ndef solo():\n    return 7\n",
         encoding="utf-8",
     )
     plan = write_plan(tmp_path, plan_document())
@@ -175,6 +172,7 @@ def test_options_come_from_the_plan(tmp_path, capsys):
     plan = echo_plan(tmp_path, options={"max_workers": 3, "fixed_clock": True})
     assert run_plan(plan, "echo", log=tmp_path) == 0
     assert "flow echo: ok" in capsys.readouterr().out
+
 
 def test_list_flag_prints_flows(capsys):
     assert main(["--module", "runner.flows", "--list"]) == 0

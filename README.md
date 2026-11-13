@@ -75,7 +75,7 @@ def simulate(case: int) -> dict:
 @node
 def campaign(cases: list[int]) -> list:
     sims = [simulate.submit(c) for c in cases]  # .submit(): concurrent
-    return gather(sims)                         # one future, awaited by the node
+    return gather(sims)  # one future, awaited by the node
 
 
 run = execute_flow(campaign, [1, 2, 3], options=RunOptions(max_workers=8, log="runs"))

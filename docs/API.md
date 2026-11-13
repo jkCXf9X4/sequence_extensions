@@ -1132,17 +1132,32 @@ import json
 from pathlib import Path
 
 from sequence_extensions.flow import (
-    NodeIdentity, RunOptions, apply_override, diff_plans, execute_plan, jsonable,
-    plan_document, plan_manifest,
+    NodeIdentity,
+    RunOptions,
+    apply_override,
+    diff_plans,
+    execute_plan,
+    jsonable,
+    plan_document,
+    plan_manifest,
 )
 
 document = plan_document(campaign, Path("cases"), options=RunOptions(max_workers=8))
 manifest = plan_manifest(document)
-edited = apply_override(document, {"nodes": [
-    {"name": "evaluate", "params": [{"name": "tolerance", "value": 0.7}]},
-    {"name": "evaluate", "path": ["campaign", "evaluate"], "instance": 2,
-     "params": [{"name": "tolerance", "value": 0.9}]},
-]})
+edited = apply_override(
+    document,
+    {
+        "nodes": [
+            {"name": "evaluate", "params": [{"name": "tolerance", "value": 0.7}]},
+            {
+                "name": "evaluate",
+                "path": ["campaign", "evaluate"],
+                "instance": 2,
+                "params": [{"name": "tolerance", "value": 0.9}],
+            },
+        ]
+    },
+)
 print(diff_plans(document, edited))
 Path("plan.json").write_text(json.dumps(jsonable(edited)))
 run = execute_plan(campaign, json.loads(Path("plan.json").read_text()), log="runs")

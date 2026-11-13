@@ -148,9 +148,7 @@ class ProcessGraphPool(GraphPool):
         try:
             pfuture = executor.submit(node.function, *args, **kwargs)
         except Exception as exc:
-            node.set_exception_if_pending(
-                ProcessDispatchError(f"{type(exc).__name__}: {exc}")
-            )
+            node.set_exception_if_pending(ProcessDispatchError(f"{type(exc).__name__}: {exc}"))
             return
 
         def _settle(pfuture, node=node):
