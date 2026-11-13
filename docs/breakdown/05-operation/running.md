@@ -3,7 +3,7 @@ id: INFO-007
 type: info
 title: Install, run, and maintain
 summary: Install, run, test, lint, and release steps for sequence_extensions, as present in the repo
-date: 2026-10-13
+date: 2026-11-13
 status: current
 ---
 
@@ -41,6 +41,7 @@ The product is a library plus one CLI (`INFO-002`): no service to deploy. Day-to
 ## CI and release
 
 - CI (`.github/workflows/ci.yml`) runs on push to `main` and on PRs: matrix Python 3.11 to 3.13, install dev extras, pytest with coverage, ruff check, ruff format check, `python -m build`
-- No Makefile and no release automation
+- No Makefile; release automation is the `wheels.yml` build/attach workflow
+- The release workflow builds wheel and sdist, smoke-tests the wheel, stages the plan-schema artifact into `dist/`, and attaches all three to the GitHub release for a `v*` tag
 - Release is manual: bump `__version__` in `src/sequence_extensions/__init__.py`, record the change in `CHANGELOG.md` (Keep a Changelog, SemVer), merge after CI passes
 - `CONTRIBUTING.md` defines the PR process: branch from `main`, tests and lint pass, CHANGELOG updated under Unreleased

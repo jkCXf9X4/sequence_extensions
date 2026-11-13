@@ -1,4 +1,4 @@
-<!-- GENERATED FILE — do not edit. Regenerate with pb-registers. -->
+<!-- GENERATED FILE — do not edit. Regenerate with `pb registers`. -->
 
 # Decision Log
 
@@ -7,6 +7,8 @@ stream.
 
 | Date | ID | Decision | Layers | Status | Record |
 |---|---|---|---|---|---|
+| 2026-11-11 | DR-021 | Engine-core size budget with guardrail | intent | accepted | `DR-021` |
+| 2026-11-11 | DR-020 | Plan-before-execution via construct-only plan pass | intent, product | accepted | `DR-020` |
 | 2026-10-22 | DR-019 | Stress-hardening pass — fail-safe settlement, iterative retries, canonical logs | architecture, implementation, verification | accepted | `DR-019` |
 | 2026-10-21 | DR-018 | Compose with nodes, not nested runs | product, architecture, implementation, verification | accepted | `DR-018` |
 | 2026-10-21 | DR-017 | One node primitive and explicit runs | product, architecture, implementation, verification | accepted | `DR-017` |

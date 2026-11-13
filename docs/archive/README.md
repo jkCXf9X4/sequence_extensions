@@ -1,4 +1,4 @@
-<!-- GENERATED FILE — do not edit. Regenerate with pb-registers. -->
+<!-- GENERATED FILE — do not edit. Regenerate with `pb registers`. -->
 
 # Decision Stream
 
@@ -15,6 +15,10 @@ Records live in the cold-storage archive; extract one with `pb archive read <ID>
   The declarative workflow layer (XML schema, node tree, adaptation, artifact store, replay) is superseded by @task/@flow decorators over graph_future with a JSON-lines run log as the product
 - **DR-009** — Re-author intent and product layers around the shipped direction · accepted · 2026-10-14 · `DR-009`
   Vision and use-case catalog still carried consolidation-era framing and supersession narrative; re-authored to lead with parallel, deterministic, audited execution — local or at HPC — with audit as the trust mechanism; CP-023 (concurrent flows) added to the catalog
+- **DR-020** — Plan-before-execution via construct-only plan pass · accepted · 2026-11-11 · `DR-020`
+  A construct-only submit pass yields the pre-execution DAG and parameter surface; plan stays a read-only pre-pass, not a second execution model
+- **DR-021** — Engine-core size budget with guardrail · accepted · 2026-11-11 · `DR-021`
+  Engine core (flow + graph) budget raised to 5,000 lines and enforced by a guardrail test; growth must be justified, not silent
 
 ### Product
 

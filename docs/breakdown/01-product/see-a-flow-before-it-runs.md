@@ -2,7 +2,7 @@
 id: CP-031
 type: capability
 title: See a flow before it runs
-date: 2026-11-11
+date: 2026-11-13
 status: current
 summary: The complete pre-execution task graph, fan-out width, and parameter values, as one plan document; nothing executed, no log written
 ---
@@ -22,11 +22,12 @@ summary: The complete pre-execution task graph, fan-out width, and parameter val
 - One plan document lists every node in bind order, its kind, its policy, and
   its incoming dependencies as explicit edges.
 - The document is deterministic: the same flow and inputs give the same plan.
+- The document validates against the published `flow-plan/2` JSON Schema, which the GUI consumes (`INFO-002`).
 - The run's body executes nothing beyond pure orchestration during planning.
 
 ## Evidence
 
-- `tests/flow/test_plan_document.py`
+- `tests/flow/test_plan_document.py`, `tests/flow/test_plan_schema.py`
 
 ## Owns
 

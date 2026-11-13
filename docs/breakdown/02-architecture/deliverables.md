@@ -3,7 +3,7 @@ id: INFO-002
 type: info
 title: Deliverables
 summary: What sequence_extensions delivers — three subpackages, the public API surface, and explicit out-of-scope items
-date: 2026-10-13
+date: 2026-11-13
 status: current
 ---
 
@@ -27,6 +27,7 @@ status: current
   - `RunLog` — writer and reader for the run log: `records`, plus the reading toolkit — `filter`, `summarize` (the compact account, `CP-024`), `diff` (the determinism check, `CP-025`); `jsonable` serialization policy.
   - `ProcessGraphPool` — a `GraphPool` subclass running tasks in worker processes (`CP-022`); `ProcessDispatchError` — a payload could not reach a worker.
   - `NodeTimeoutError` — a `TimeoutError` naming the node.
+  - `plan_schema` — the JSON Schema for the strict emitted plan document; the checked-in artifact is its normative machine-readable form.
 
 ## API surface at a glance
 
@@ -35,7 +36,7 @@ Root re-exports (`sequence_extensions.__all__`):
 - `ext`: `list_ext`, `dict_ext`, `gen_ext`, `KeyValueTuple`.
 - `graph`: `GraphFuture`, `GraphPool`, `graph_future`.
 
-The `flow` package: `from sequence_extensions.flow import node, execute_flow, gather, Run, RunOptions, NodePolicy, FlowFuture, FlowOutcome, RunLog, NodeTimeoutError, ProcessGraphPool, ProcessDispatchError, DIFF_EXCLUDE`.
+The `flow` package: `from sequence_extensions.flow import node, execute_flow, gather, Run, RunOptions, NodePolicy, FlowFuture, FlowOutcome, RunLog, NodeTimeoutError, ProcessGraphPool, ProcessDispatchError, DIFF_EXCLUDE, plan_schema`.
 
 ## Out of scope
 
@@ -43,6 +44,6 @@ The `flow` package: `from sequence_extensions.flow import node, execute_flow, ga
 - STMD/SRMD traceability metadata beyond the run-log record.
 - FMI/SSP model packaging.
 - Distributed (HPC) execution: parallelism is local (threads or processes); HPC is recipes.
-- Plan-before-execution and replay: out of scope.
+- Replay by re-execution: out of scope.
 
 Scope boundaries: `INFO-001`. Flow engine internals: `INFO-011`.

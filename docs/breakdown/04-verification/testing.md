@@ -3,7 +3,7 @@ id: INFO-006
 type: info
 title: Test strategy
 summary: How the pytest suite verifies the package — run commands, per-area coverage, and claim verification
-date: 2026-10-13
+date: 2026-11-13
 status: current
 ---
 
@@ -42,6 +42,7 @@ gate.
 - `tests/flow/test_cancellation.py` — submit after abandon, cancel before attempt, abandoned parent settlement, cancelled-run submit (4)
 - `tests/flow/test_position.py` — root-vs-wrapped position independence, moved out of e2e (2)
 - `tests/flow/test_plan_document.py` — `flow-plan/2` shape (no root, concrete options), parameter/policy/option overrides, `execute_plan` JSON round-trip, Path decoding, missing required root, policy precedence, `plan_manifest`, `diff_plans` (28)
+- `tests/flow/test_plan_schema.py` — draft 2020-12 validation of simple, gather, and jsonable plans, five rejection cases, and drift of the checked-in artifact against `plan_schema()` (9)
 - `tests/runner/test_runner.py` — plan-file loading and schema errors, module import, `--flow` selection, `--list`, `--log`, exit codes (18)
 - `tests/e2e/test_flows.py` — version comparison: two mock runs against the committed reference (`tests/e2e/ref`), validated by a hand-written oracle that imports nothing from the package; artifacts byte-for-byte; regeneration is a separate phase (9)
 - `tests/test_fixture_policy.py` — markers and fixtures stay policy-compliant (6)

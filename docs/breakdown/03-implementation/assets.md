@@ -3,17 +3,17 @@ id: INFO-005
 type: info
 title: Implementation asset map
 summary: File-by-file map of the sequence_extensions package, its key config, and its entry points
-date: 2026-10-13
+date: 2026-11-13
 status: current
 ---
 
 # Implementation asset map
 
-The package `sequence-extensions` (v3.0.0) is a pure Python library plus one console script: src layout, Python >= 3.11, MIT, zero runtime dependencies. About 4,000 source lines. Component design lives in `INFO-003`; the flow engine design in `INFO-011`.
+The package `sequence-extensions` (v3.1.0) is a pure Python library plus one console script: src layout, Python >= 3.11, MIT, zero runtime dependencies. About 4,000 source lines. Component design lives in `INFO-003`; the flow engine design in `INFO-011`.
 
 ## Layout
 
-- `pyproject.toml` — build (setuptools >= 61), version read from `__version__` in `src/sequence_extensions/__init__.py`, dev extras (pytest, pytest-cov, ruff), pytest/coverage/ruff config, `[project.scripts] flow-runner`
+- `pyproject.toml` — build (setuptools >= 61), version read from `__version__` in `src/sequence_extensions/__init__.py`, dev extras (pytest, pytest-cov, ruff, jsonschema — test-time only), package data `schemas/*.json`, pytest/coverage/ruff config, `[project.scripts] flow-runner`
 - `src/sequence_extensions/__init__.py` — re-exports `ext` and `graph` from the package root
 - `ext/list_ext.py` — `list_ext(list)`: map, filter, reduce, window, conversions, predicates
 - `ext/dict_ext.py` — `dict_ext(dict)` and `KeyValueTuple` over (key, value) pairs
@@ -24,6 +24,8 @@ The package `sequence-extensions` (v3.0.0) is a pure Python library plus one con
 - `flow/_config/context.py` — `RunContext`, one ContextVar holding node path/attempt/worker state, attempt tokens
 - `flow/_planning/dag.py` — DAG plan pass internals: `_PlanPool`, scope guards, node lookup, argument-name map
 - `flow/_planning/document.py` — `flow-plan/2` document interface: `plan_document`, `plan_manifest`, `apply_override`, `execute_plan`, `diff_plans`
+- `flow/_planning/schema.py` — `plan_schema()`: the draft 2020-12 schema built from plain Python data
+- `schemas/flow-plan-2.schema.json` — the checked-in normative plan schema; packaged in the wheel and sdist
 - `flow/_execution/node.py` — `@node`, `NodeFunction` (policy resolution, `submit()`)
 - `flow/_execution/attempt.py` — `_AttemptRunner` (iterative retry/backoff/timeout loop, settlement, attempt logging, future fan-out)
 - `flow/_execution/futures.py` — `FlowOutcome`, `FlowFuture`, `NodeTimeoutError` (deferred results, blocking guard)
@@ -44,7 +46,7 @@ The package `sequence-extensions` (v3.0.0) is a pure Python library plus one con
 ## Entry points
 
 - CLI: `flow-runner PLAN.json --module MODULE [--flow NAME] [--log DIR]` (console script) and `python -m sequence_extensions.flow_runner`
-- Public surface: root re-exports (`ext`, `graph`) plus `from sequence_extensions.flow import node, execute_flow, gather, Run, RunOptions, NodePolicy, FlowFuture, FlowOutcome, RunLog, plan_document, apply_override, execute_plan, plan_manifest, diff_plans`
+- Public surface: root re-exports (`ext`, `graph`) plus `from sequence_extensions.flow import node, execute_flow, gather, Run, RunOptions, NodePolicy, FlowFuture, FlowOutcome, RunLog, plan_document, apply_override, execute_plan, plan_manifest, diff_plans, plan_schema`
 - Run input: a root `@node` plus `RunOptions`; a `flow-plan/2` JSON document supplies inputs, node parameters/policy, and options, with the module and root selected on the command line (`CP-026`)
 - Run output: `Run.result` plus `runs/<run_id>.jsonl` (default directory)
 - Key config: `pyproject.toml` (pytest `pythonpath = ["src"]`, coverage `fail_under = 90`, ruff line-length 100); run-time config: one `flow-plan/2` JSON document per runner invocation

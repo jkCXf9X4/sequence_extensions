@@ -3,7 +3,7 @@ id: INFO-003
 type: info
 title: Components
 summary: Component decomposition of ext/, graph/, flow/ — responsibilities, data flow, and interface contracts
-date: 2026-10-13
+date: 2026-11-13
 status: current
 ---
 
@@ -44,6 +44,7 @@ The package decomposes into three subpackages plus one standalone CLI with a str
 - **`process_pool`** — `ProcessGraphPool`: a `GraphPool` subclass on a `ProcessPoolExecutor` (`CP-022`); workers buffer records, the parent replays them at settle time; process workers cannot submit or return live futures.
 - **`_planning/dag`** — the construct-only plan pass: `_PlanPool`, scope guards, and node lookup; builds the DAG without running a node body (`CP-031`).
 - **`_planning/document`** — the `flow-plan/2` document interface: `plan_document`, `plan_manifest`, `apply_override`, `execute_plan`, `diff_plans` (`CP-026`, `CP-032`–`CP-035`).
+- **`_planning/schema`** — `plan_schema()`: the schema built from plain data, so the engine keeps zero runtime dependencies; the checked-in artifact is generated from it.
 
 ## `flow_runner` — the CLI
 
@@ -64,7 +65,8 @@ The package decomposes into three subpackages plus one standalone CLI with a str
 
 - `ext`: the three classes; methods return extended types or plain values.
 - `graph`: `GraphFuture(function, *args, **kwargs)`, `result()`, `done()`; `GraphPool(max_workers)`, `result(gf)`, `bind(gf)`.
-- `flow`: `@node(retries, retry_delay_seconds, timeout, name)`, `node.submit(...)`, `execute_flow(node, *args, options=RunOptions(...), **kwargs)`, `plan_document(node, *args, options=..., **kwargs)`, `apply_override(document, override)`, `execute_plan(node, document, *, options=..., log=...)`, `plan_manifest(document)`, `diff_plans(a, b)`, `RunOptions` / `NodePolicy`.
+- `flow`: `@node(retries, retry_delay_seconds, timeout, name)`, `node.submit(...)`, `execute_flow(node, *args, options=RunOptions(...), **kwargs)`, `plan_document(node, *args, options=..., **kwargs)`, `apply_override(document, override)`, `execute_plan(node, document, *, options=..., log=...)`, `plan_manifest(document)`, `diff_plans(a, b)`, `plan_schema()`, `RunOptions` / `NodePolicy`.
+- `plan_schema()` returns the strict emitted-document profile: every block required, unknown keys rejected. `execute_plan` accepts a looser input: only the `flow-plan/2` marker is required; missing blocks take empty or built-in defaults, unknown top-level, node, and option keys are ignored, unknown policy keys are rejected.
 - `flow_runner`: `flow-runner PLAN.json --module MODULE [--flow NAME] [--log DIR]`, `flow-runner --module MODULE --list`.
 
 Engine semantics: `INFO-011`. Scope: `INFO-001`.
