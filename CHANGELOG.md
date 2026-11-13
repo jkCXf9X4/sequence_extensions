@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-11-13
+
 ### Added
+
+- **`flow-plan/2` JSON Schema.** `sequence_extensions.flow.plan_schema()`
+  returns a JSON Schema (draft 2020-12) for the strict, fully-emitted plan
+  document, and the same schema ships as
+  `sequence_extensions/schemas/flow-plan-2.schema.json` in the wheel, sdist,
+  and GitHub release. Host applications can validate plans against the
+  published contract instead of hand-mirroring the document shape. The
+  checked-in artifact is guarded by a drift test asserting it equals
+  `plan_schema()`, and `execute_plan` still accepts looser input without a
+  `value` per parameter.
 
 - **Identity-addressed node overrides.** `NodeIdentity(name, path, instance)`
   identifies one submitted occurrence: `instance` counts submissions sharing
