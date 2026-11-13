@@ -7,17 +7,17 @@
       "required": true,
       "default": null,
       "value": {
-        "path": "cases",
+        "path": "cases2",
         "sha256": null
       }
     },
     {
       "name": "out_dir",
       "type": "Path",
-      "required": true,
-      "default": null,
+      "required": false,
+      "default": "out",
       "value": {
-        "path": "_out",
+        "path": "out",
         "sha256": null
       }
     },
@@ -41,8 +41,8 @@
       "instance": 1,
       "policy": {
         "retries": 1,
-        "retry_delay_seconds": 0.01,
-        "timeout": 5.0
+        "retry_delay_seconds": 0,
+        "timeout": null
       },
       "params": [
         {
@@ -61,7 +61,7 @@
           "required": true,
           "default": null,
           "value": {
-            "path": "_out",
+            "path": "out",
             "sha256": null
           }
         }
@@ -77,9 +77,9 @@
       ],
       "instance": 1,
       "policy": {
-        "retries": 1,
-        "retry_delay_seconds": 0.01,
-        "timeout": 5.0
+        "retries": 0,
+        "retry_delay_seconds": 0,
+        "timeout": null
       },
       "params": [
         {
@@ -102,8 +102,8 @@
       "instance": 2,
       "policy": {
         "retries": 1,
-        "retry_delay_seconds": 0.01,
-        "timeout": 5.0
+        "retry_delay_seconds": 0,
+        "timeout": null
       },
       "params": [
         {
@@ -122,7 +122,7 @@
           "required": true,
           "default": null,
           "value": {
-            "path": "_out",
+            "path": "out",
             "sha256": null
           }
         }
@@ -138,9 +138,9 @@
       ],
       "instance": 2,
       "policy": {
-        "retries": 1,
-        "retry_delay_seconds": 0.01,
-        "timeout": 5.0
+        "retries": 0,
+        "retry_delay_seconds": 0,
+        "timeout": null
       },
       "params": [
         {
@@ -154,128 +154,6 @@
     },
     {
       "id": 4,
-      "name": "simulate",
-      "kind": "node",
-      "path": [
-        "campaign",
-        "simulate"
-      ],
-      "instance": 3,
-      "policy": {
-        "retries": 1,
-        "retry_delay_seconds": 0.01,
-        "timeout": 5.0
-      },
-      "params": [
-        {
-          "name": "case_path",
-          "type": "Path",
-          "required": true,
-          "default": null,
-          "value": {
-            "path": "cases/c3.csv",
-            "sha256": "e8d6596a2e32f4615b4048f2be4dc2eaa6fe7cd5424d5d3ffc36746319f6ab7f"
-          }
-        },
-        {
-          "name": "out_dir",
-          "type": "Path",
-          "required": true,
-          "default": null,
-          "value": {
-            "path": "_out",
-            "sha256": null
-          }
-        }
-      ]
-    },
-    {
-      "id": 5,
-      "name": "evaluate",
-      "kind": "node",
-      "path": [
-        "campaign",
-        "evaluate"
-      ],
-      "instance": 3,
-      "policy": {
-        "retries": 1,
-        "retry_delay_seconds": 0.01,
-        "timeout": 5.0
-      },
-      "params": [
-        {
-          "name": "tolerance",
-          "type": "float",
-          "required": true,
-          "default": null,
-          "value": 1.5
-        }
-      ]
-    },
-    {
-      "id": 6,
-      "name": "simulate",
-      "kind": "node",
-      "path": [
-        "campaign",
-        "simulate"
-      ],
-      "instance": 4,
-      "policy": {
-        "retries": 1,
-        "retry_delay_seconds": 0.01,
-        "timeout": 5.0
-      },
-      "params": [
-        {
-          "name": "case_path",
-          "type": "Path",
-          "required": true,
-          "default": null,
-          "value": {
-            "path": "cases/c4.csv",
-            "sha256": "b295da447615aa6d58b9150a454187cd2a7a109a5577759cea925e7a65e111d7"
-          }
-        },
-        {
-          "name": "out_dir",
-          "type": "Path",
-          "required": true,
-          "default": null,
-          "value": {
-            "path": "_out",
-            "sha256": null
-          }
-        }
-      ]
-    },
-    {
-      "id": 7,
-      "name": "evaluate",
-      "kind": "node",
-      "path": [
-        "campaign",
-        "evaluate"
-      ],
-      "instance": 4,
-      "policy": {
-        "retries": 1,
-        "retry_delay_seconds": 0.01,
-        "timeout": 5.0
-      },
-      "params": [
-        {
-          "name": "tolerance",
-          "type": "float",
-          "required": true,
-          "default": null,
-          "value": 1.5
-        }
-      ]
-    },
-    {
-      "id": 8,
       "name": "gather",
       "kind": "gather",
       "path": [
@@ -284,13 +162,13 @@
       "instance": 1,
       "policy": {
         "retries": 0,
-        "retry_delay_seconds": 0.0,
+        "retry_delay_seconds": 0,
         "timeout": null
       },
       "params": []
     },
     {
-      "id": 9,
+      "id": 5,
       "name": "summarize",
       "kind": "node",
       "path": [
@@ -299,9 +177,9 @@
       ],
       "instance": 1,
       "policy": {
-        "retries": 1,
-        "retry_delay_seconds": 0.01,
-        "timeout": 5.0
+        "retries": 0,
+        "retry_delay_seconds": 0,
+        "timeout": null
       },
       "params": []
     }
@@ -316,40 +194,24 @@
       "to": 2
     },
     {
-      "from": 5,
-      "to": 4
-    },
-    {
-      "from": 7,
-      "to": 6
-    },
-    {
-      "from": 8,
+      "from": 4,
       "to": 1
     },
     {
-      "from": 8,
+      "from": 4,
       "to": 3
     },
     {
-      "from": 8,
-      "to": 5
-    },
-    {
-      "from": 8,
-      "to": 7
-    },
-    {
-      "from": 9,
-      "to": 8
+      "from": 5,
+      "to": 4
     }
   ],
   "options": {
-    "max_workers": 4,
+    "max_workers": 16,
     "summary": false,
     "fixed_clock": false,
     "retries": 0,
-    "retry_delay_seconds": 0.0,
+    "retry_delay_seconds": 0,
     "timeout": null
   }
 }
