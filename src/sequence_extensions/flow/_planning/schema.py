@@ -1,0 +1,230 @@
+"""Machine-readable JSON Schema for the fully-emitted ``flow-plan/2`` document.
+
+The schema is the normative description of the strict document that
+:func:`sequence_extensions.flow.plan_document` produces.  It is built from
+plain Python data so the engine keeps its zero-runtime-dependency promise; the
+checked-in artifact under ``sequence_extensions/schemas`` is generated from
+this function.
+"""
+
+from __future__ import annotations
+
+__all__ = ["plan_schema"]
+
+_SCHEMA_ID = "https://github.com/pyssporg/sequence_extensions/schemas/flow-plan-2.schema.json"
+
+
+def _param_schema() -> dict:
+    return {
+        "type": "object",
+        "description": (
+            "One root or node parameter: its annotation, whether a caller must "
+            "supply it, its signature default, and (in the plan document) the "
+            "bound value.  The manifest projection omits 'value'."
+        ),
+        "required": ["name", "type", "required", "default"],
+        "additionalProperties": False,
+        "properties": {
+            "name": {"type": "string", "description": "Parameter name."},
+            "type": {
+                "type": "string",
+                "description": "Annotation name, empty when unannotated.",
+            },
+            "required": {
+                "type": "boolean",
+                "description": "True when the signature has no default.",
+            },
+            "default": {
+                "description": (
+                    "Signature default, or null when the parameter is required. "
+                    "Unconstrained because jsonable may emit marker objects."
+                )
+            },
+            "value": {
+                "description": (
+                    "Bound value; absent in the manifest projection. "
+                    "Unconstrained because jsonable may emit marker objects."
+                )
+            },
+        },
+    }
+
+
+def _policy_schema() -> dict:
+    return {
+        "type": "object",
+        "description": "Concrete retry/backoff/timeout policy for one node.",
+        "required": ["retries", "retry_delay_seconds", "timeout"],
+        "additionalProperties": False,
+        "properties": {
+            "retries": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Additional attempts after a failed one.",
+            },
+            "retry_delay_seconds": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Backoff delay between attempts, in seconds.",
+            },
+            "timeout": {
+                "type": ["number", "null"],
+                "exclusiveMinimum": 0,
+                "description": "Per-attempt wall budget in seconds, or null.",
+            },
+        },
+    }
+
+
+def _node_schema() -> dict:
+    return {
+        "type": "object",
+        "description": (
+            "One emitted node: a submitted node or a gather hub, with its "
+            "canonical identity, policy, and settable parameters."
+        ),
+        "required": ["id", "name", "kind", "path", "instance", "policy", "params"],
+        "additionalProperties": False,
+        "properties": {
+            "id": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Document-local node id used by edges.",
+            },
+            "name": {"type": "string", "description": "Node name."},
+            "kind": {
+                "type": "string",
+                "enum": ["node", "gather"],
+                "description": "Submitted node or gather hub.",
+            },
+            "path": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Node-name chain from the run root, inclusive.",
+            },
+            "instance": {
+                "type": "integer",
+                "minimum": 1,
+                "description": ("1-based occurrence among submissions sharing (name, path)."),
+            },
+            "policy": {"$ref": "#/$defs/policy"},
+            "params": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/param"},
+                "description": "Settable parameters; dependency edges are excluded.",
+            },
+        },
+    }
+
+
+def _edge_schema() -> dict:
+    return {
+        "type": "object",
+        "description": "A dependency edge from one node id to another.",
+        "required": ["from", "to"],
+        "additionalProperties": False,
+        "properties": {
+            "from": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Dependency node id.",
+            },
+            "to": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Dependent node id.",
+            },
+        },
+    }
+
+
+def _options_schema() -> dict:
+    return {
+        "type": "object",
+        "description": "The six concrete, document-visible run options.",
+        "required": [
+            "max_workers",
+            "summary",
+            "fixed_clock",
+            "retries",
+            "retry_delay_seconds",
+            "timeout",
+        ],
+        "additionalProperties": False,
+        "properties": {
+            "max_workers": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Bounded worker count for the run pool.",
+            },
+            "summary": {
+                "type": "boolean",
+                "description": "Log container counts instead of items.",
+            },
+            "fixed_clock": {
+                "type": "boolean",
+                "description": "Reference mode for byte-identical logs.",
+            },
+            "retries": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Run-level retries after a failed attempt.",
+            },
+            "retry_delay_seconds": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Backoff between run attempts, in seconds.",
+            },
+            "timeout": {
+                "type": ["number", "null"],
+                "exclusiveMinimum": 0,
+                "description": "Whole-attempt wall budget in seconds, or null.",
+            },
+        },
+    }
+
+
+def plan_schema() -> dict:
+    """Return the JSON Schema (draft 2020-12) for a fully-emitted plan document."""
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": _SCHEMA_ID,
+        "title": "sequence_extensions flow-plan/2",
+        "description": (
+            "Strict, fully-emitted flow-plan/2 plan document produced by "
+            "plan_document().  The manifest projection is the same shape with "
+            "every parameter 'value' absent."
+        ),
+        "type": "object",
+        "required": ["schema", "parameters", "nodes", "edges", "options"],
+        "additionalProperties": False,
+        "properties": {
+            "schema": {
+                "const": "flow-plan/2",
+                "description": "Document schema marker.",
+            },
+            "parameters": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/param"},
+                "description": "Root callable parameters with bound values.",
+            },
+            "nodes": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/node"},
+                "description": "Every emitted node, in post-order.",
+            },
+            "edges": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/edge"},
+                "description": "Dependency edges as node-id pairs.",
+            },
+            "options": {"$ref": "#/$defs/options"},
+        },
+        "$defs": {
+            "param": _param_schema(),
+            "node": _node_schema(),
+            "policy": _policy_schema(),
+            "edge": _edge_schema(),
+            "options": _options_schema(),
+        },
+    }

@@ -311,6 +311,7 @@ def test_flow_public_surface_pinned():
         "node_key",
         "plan_document",
         "plan_manifest",
+        "plan_schema",
         "validate_node_policy",
     ]
     # every exported name is actually bound on the package

@@ -53,6 +53,7 @@ from ._planning.document import (
     plan_document,
     plan_manifest,
 )
+from ._planning.schema import plan_schema
 from ._recording.runlog import DIFF_EXCLUDE, SCHEMA_VERSION, RunLog, jsonable
 
 __all__ = [
@@ -84,5 +85,6 @@ __all__ = [
     "node_key",
     "plan_document",
     "plan_manifest",
+    "plan_schema",
     "validate_node_policy",
 ]

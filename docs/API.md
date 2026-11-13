@@ -70,6 +70,7 @@ from sequence_extensions.flow import (
     apply_override,
     plan_document,
     plan_manifest,
+    plan_schema,
     execute_plan,
     diff_plans,
 )
@@ -95,6 +96,7 @@ __version__ = "3.0.1"
 | `apply_override` | Merge parameter, node-policy, and option overrides into a document (name-wide or one identity) |
 | `execute_plan` | Decode a `flow-plan/2` document and run it — the import path |
 | `plan_manifest` | The same document with every `value` stripped |
+| `plan_schema` | The machine-readable JSON Schema (draft 2020-12) for a fully-emitted document |
 | `diff_plans` | Plain-data diff of two documents; identical plans compare equal |
 | `Run` | One run's account: result, identity, status, log, duration, error, failed nodes |
 | `RunOptions` | Per-run options (pool, log, summary, fixed clock, retries, node defaults, per-node policies, parameter injection) |
@@ -1145,6 +1147,28 @@ print(diff_plans(document, edited))
 Path("plan.json").write_text(json.dumps(jsonable(edited)))
 run = execute_plan(campaign, json.loads(Path("plan.json").read_text()), log="runs")
 ```
+
+### Plan JSON Schema
+
+`sequence_extensions.flow.plan_schema()` returns the normative machine-readable
+definition of a fully-emitted `flow-plan/2` document, as a JSON Schema **draft
+2020-12** object. The checked-in artifact is
+`src/sequence_extensions/schemas/flow-plan-2.schema.json` and is shipped inside
+the wheel; regenerate it with:
+
+```python
+import json
+
+from sequence_extensions.flow import plan_schema
+
+print(json.dumps(plan_schema(), indent=2))
+```
+
+The artifact must equal `json.dumps(plan_schema(), indent=2) + "\n"`. A drift
+test (`tests/flow/test_plan_schema.py`) fails if it diverges. The schema
+describes the strict, fully-emitted profile. `execute_plan()` still accepts
+looser input: omitted `parameters`, `options`, `policy`, and per-node `params`
+fall back to defaults or empty values.
 
 ### `flow-runner` — run a plan from the command line
 

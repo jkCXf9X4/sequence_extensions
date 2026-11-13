@@ -41,10 +41,15 @@ jobs:
           /tmp/smoke/bin/pip install dist/*.whl
           /tmp/smoke/bin/flow-runner --help
 
+      - name: Stage the plan schema
+        run: cp src/sequence_extensions/schemas/flow-plan-2.schema.json dist/
+
       - uses: actions/upload-artifact@v4
         with:
           name: sequence-extensions-flow-wheel
-          path: dist/*.whl
+          path: |
+            dist/*.whl
+            dist/*.schema.json
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
