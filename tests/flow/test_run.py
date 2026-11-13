@@ -541,6 +541,68 @@ def test_caller_owned_pool_is_drained_not_settled_on_error(tmp_path):
     shared.__exit__(None, None, None)
 
 
+def test_caller_owned_pool_drains_a_queued_node_after_root_failure(tmp_path, monkeypatch):
+    """A node still queued when the root fails must run, not be cancelled.
+
+    The error path drains a caller-owned pool, so it must not set the run's
+    cancellation flag: that flag is the engine-owned "settle" signal and
+    aborts an attempt before its body starts.
+    """
+    import sequence_extensions.flow._execution.run as run_module
+    from sequence_extensions.graph import GraphPool
+
+    recorded = []
+    gate = threading.Event()
+    drain_started = threading.Event()
+    real_drain = run_module.drain
+
+    def observing_drain(ctx):
+        drain_started.set()
+        assert gate.wait(5.0), "test never released the first node"
+        return real_drain(ctx)
+
+    monkeypatch.setattr(run_module, "drain", observing_drain)
+
+    @node
+    def slow(i):
+        if i == 1:
+            assert gate.wait(5.0), "first node was never released"
+        recorded.append(i)
+        return i
+
+    @node
+    def campaign():
+        slow.submit(1)
+        slow.submit(2)
+        raise RuntimeError("abort")
+
+    shared = GraphPool(max_workers=1)
+    caught = []
+
+    def go():
+        try:
+            execute_flow(campaign, options=RunOptions(log=tmp_path, pool=shared))
+        except RuntimeError as exc:
+            caught.append(exc)
+
+    helper = threading.Thread(target=go, daemon=True)
+    try:
+        helper.start()
+        assert drain_started.wait(5.0), "work never reached the error-path drain"
+        gate.set()  # the queued node can only start after this point
+        helper.join(5.0)
+    finally:
+        gate.set()
+        shared.__exit__(None, None, None)
+
+    assert not helper.is_alive()
+    assert len(caught) == 1
+    assert sorted(recorded) == [1, 2]
+    recs = _read_log(tmp_path)
+    assert recs[-1]["status"] == "error"
+    assert all(r["status"] == "ok" for r in _node_records(recs) if r["node"] == "slow")
+
+
 def test_concurrent_runs_in_one_process(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
 

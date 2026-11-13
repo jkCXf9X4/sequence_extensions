@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Caller-owned pools drain when the root node fails.** Every failed run set
+  the cancellation flag, which is the engine-owned pool's settle signal; a node
+  still queued on a caller-owned pool could be aborted before its body ran. The
+  flag is now set only for engine-owned pools and run-level timeouts, so
+  caller-owned work is drained as documented and the run log stays complete.
+
 ## [3.1.0] - 2026-11-13
 
 ### Added

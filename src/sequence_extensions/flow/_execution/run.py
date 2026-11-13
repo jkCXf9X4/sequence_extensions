@@ -245,7 +245,13 @@ class _RunAttempt:
                 and getattr(exc, "run_timeout", None) == self.run_id
             )
             self.status = "timeout" if run_level_timeout else "error"
-            self.ctx.cancelled.set()
+            # Cancellation is the engine-owned pool's settle signal: it stops
+            # pending nodes from starting so __exit__ can cancel them.  A
+            # caller-owned pool is drained instead, so its queued work must
+            # still run; a run-level timeout has already set this flag in
+            # _call_root and keeps it regardless of pool ownership.
+            if self.owned_pool is not None or run_level_timeout:
+                self.ctx.cancelled.set()
 
     def _finish_records(self) -> None:
         if self.status == "ok":
